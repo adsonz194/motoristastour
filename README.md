@@ -37,8 +37,13 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 ## Regras operacionais atendidas
 
 - Um grupo pode ter mais de um carrinho e motorista, sem duplicar o atendimento.
+- Tours são organizados por 1ª onda (09:00) e 2ª onda (11:00), sem horário obrigatório de encerramento.
+- Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª onda) ou 09:50 (2ª onda).
 - Iniciar tour soma uma saída para cada motorista alocado no Prestige.
 - Buscar na Casa não cria nova saída de tour.
-- Um grupo na Casa pode aguardar transporte enquanto o motorista retorna ao Prestige.
+- Um grupo pode aguardar na Casa enquanto o motorista retorna ao Prestige; se o motorista permanecer na Casa, segue indisponível.
+- Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
 - Galeria controla presença, apresentação e fila de destino, sem registrar a venda.
+- A operação é zerada automaticamente ao mudar o dia em America/Sao_Paulo; administradores também podem zerá-la manualmente. Cadastros e usuários são preservados.
+- Administradores podem criar e excluir usuários; a própria conta e o último administrador são protegidos contra exclusão.
 - Toda transição gera histórico com data, responsável, estado anterior e novo estado.

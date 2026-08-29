@@ -28,9 +28,21 @@ const DRIVER_STATUS = {
   DESTINO_FINAL: { label: 'Destino final', tone: 'teal' }
 };
 
+const WAVES = {
+  WAVE_1: { label: '1ª onda', tourTime: '09:00', transferTime: '07:50' },
+  WAVE_2: { label: '2ª onda', tourTime: '11:00', transferTime: '09:50' }
+};
+
+const TRANSFER_STATUS = {
+  AGENDADO: { label: 'Agendado', tone: 'teal' },
+  EM_DESLOCAMENTO: { label: 'Em deslocamento', tone: 'blue' },
+  CHEGOU_PRESTIGE: { label: 'Chegou ao Praia do Forte', tone: 'green' }
+};
+
 const NAV = [
   { id: 'dashboard', label: 'Painel Geral', icon: LayoutDashboard },
   { id: 'prestige', label: 'Prestige Praia do Forte', icon: Building2 },
+  { id: 'transfers', label: 'Convites Waves → Praia', icon: Route },
   { id: 'tours', label: 'Tours em Andamento', icon: Route },
   { id: 'gallery', label: 'Galeria', icon: Image },
   { id: 'home', label: 'Casa (Aguardando)', icon: House },
@@ -96,6 +108,11 @@ function StatusPill({ status, driver = false }) {
   return <span className={classNames('status-pill', `tone-${meta.tone}`)}>{meta.label}</span>;
 }
 
+function TransferStatusPill({ status }) {
+  const meta = TRANSFER_STATUS[status] || { label: status, tone: 'gray' };
+  return <span className={classNames('status-pill', `tone-${meta.tone}`)}>{meta.label}</span>;
+}
+
 function Avatar({ name, color = 'blue' }) {
   return <span className={classNames('avatar', `avatar-${color}`)}>{initials(name)}</span>;
 }
@@ -129,7 +146,7 @@ function Login({ onLogin }) {
 }
 
 function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
-  const nav = NAV.filter((item) => !item.admin || user.role === 'ADMIN');
+  const nav = user.role === 'HOSTESS' ? NAV.filter((item) => item.id === 'dashboard') : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
   return <aside className={classNames('sidebar', open && 'sidebar-open')}>
     <div className="sidebar-top"><Logo /><button className="sidebar-close" onClick={() => setOpen(false)} aria-label="Fechar menu"><X /></button></div>
     <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{label}</span></button>)}</nav>
@@ -170,7 +187,15 @@ function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum gru
   if (!tours.length) return <div className="empty-state">{empty}</div>;
   return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour);
-    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong>{tour.selfGuide && <small className="self-guide">Self Guide</small>}</td><td>{tour.people}</td><td>{tour.allocations?.length || '—'}</td><td>{driverNames(tour)}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Onda não definida'} · {tour.scheduledTime || '—'}</small>{tour.selfGuide && <small className="self-guide">Self Guide</small>}</td><td>{tour.people}</td><td>{tour.allocations?.length || '—'}</td><td>{driverNames(tour)}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+  })}</tbody></table></div>;
+}
+
+function TransferTable({ transfers, onAction, empty = 'Nenhum convite agendado para hoje.' }) {
+  if (!transfers.length) return <div className="empty-state">{empty}</div>;
+  return <div className="table-wrap transfer-table"><table><thead><tr><th>Horário</th><th>Onda do tour</th><th>Grupo / Convidados</th><th>Pessoas</th><th>Concierge</th><th>Trajeto</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{transfers.map((transfer) => {
+    const next = transfer.status === 'AGENDADO' ? 'start' : transfer.status === 'EM_DESLOCAMENTO' ? 'arrive' : null;
+    return <tr key={transfer.id}><td><strong>{transfer.scheduledTime}</strong></td><td><span className="wave-badge">{WAVES[transfer.wave]?.label || transfer.wave}<small>Tour {transfer.tourStartTime}</small></span></td><td><strong>{transfer.groupName}</strong></td><td>{transfer.people}</td><td>{transfer.conciergeName}</td><td><span className="route-copy">Waves Bahia <ChevronRight size={13} /> Praia do Forte</span></td><td><TransferStatusPill status={transfer.status} /></td><td className="actions-cell">{next && <button className="mini-action" onClick={() => onAction(transfer, next)}>{next === 'start' ? 'Iniciar traslado' : 'Confirmar chegada'}</button>}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -183,8 +208,9 @@ function Flow({ counts }) {
   return <div className="flow"><Route size={18} /><div className="flow-line">{stages.map(([stage, count], index) => <React.Fragment key={stage}><div className={classNames('flow-stage', count > 0 && 'flow-active')}><span>{stage}</span><strong>{count}</strong></div>{index < stages.length - 1 && <ChevronRight size={16} />}</React.Fragment>)}</div></div>;
 }
 
-function Dashboard({ data, user, onAction, onCreate, setPage }) {
+function Dashboard({ data, user, onAction, onCreate, onCreateTransfer, onTransferAction, setPage }) {
   const tours = data.tours || [];
+  const transfers = data.transfers || [];
   const count = (states) => tours.filter((tour) => states.includes(tour.status));
   const metrics = {
     available: count(['DISPONIVEL']), enTour: count(['EM_TOUR']), home: count(['NA_CASA', 'AGUARDANDO_CASA']), gallery: count(['NA_GALERIA', 'EM_APRESENTACAO']), destination: count(['AGUARDANDO_DESTINO'])
@@ -204,8 +230,10 @@ function Dashboard({ data, user, onAction, onCreate, setPage }) {
       <MetricCard icon={House} color="orange" title="Aguardando na Casa" count={metrics.home.length} sub={`${people(metrics.home)} pessoas`} />
       <MetricCard icon={Users} color="purple" title="Na Galeria" count={metrics.gallery.length} sub={`${people(metrics.gallery)} pessoas`} />
       <MetricCard icon={Check} color="green" title="Aguardando destino" count={metrics.destination.length} sub={`${people(metrics.destination)} pessoas`} />
+      <MetricCard icon={Route} color="teal" title="Convites do Waves" count={transfers.filter((item) => item.status !== 'CHEGOU_PRESTIGE').length} sub={`${transfers.reduce((sum, item) => sum + item.people, 0)} convidados`} />
     </section>
     <Flow counts={metrics} />
+    <section className="panel transfers-dashboard"><div className="panel-heading"><div><h2>Convites: Waves Bahia → Praia do Forte</h2><p>07:50 para a 1ª onda (09:00) · 09:50 para a 2ª onda (11:00)</p></div><div className="heading-actions"><button className="text-button" onClick={onCreateTransfer}>Novo convite</button><button className="text-button" onClick={() => setPage('transfers')}>Ver todos</button></div></div><TransferTable transfers={transfers.slice(0, 3)} onAction={onTransferAction} /></section>
     <section className="dashboard-columns main-columns"><div className="panel"><div className="panel-heading"><div><h2>Tours em andamento</h2><p>Grupos em deslocamento e em etapas ativas</p></div><button className="text-button" onClick={() => setPage('tours')}>Ver todos</button></div><TourTable tours={activeTours} data={data} onAction={onAction} compact /></div>
       <div className="panel gallery-panel"><div className="panel-heading"><div><h2>Na Galeria</h2><p>{galleryTours.length} grupos · {people(galleryTours)} pessoas</p></div><button className="text-button" onClick={() => setPage('gallery')}>Ver todos</button></div><div className="gallery-list">{galleryTours.length ? galleryTours.map((tour) => <div className="gallery-row" key={tour.id}><Avatar name={consultantName(tour)} color="purple" /><div><strong>{tour.groupName}</strong><span>{consultantName(tour)} · {tour.people} pessoas</span></div><StatusPill status={tour.status} /></div>) : <div className="empty-state">Galeria sem grupos no momento.</div>}</div></div></section>
     <section className="dashboard-columns bottom-columns"><div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando na Casa</h2><p>Fila de transporte prioritária</p></div><button className="text-button" onClick={() => setPage('home')}>Ver todos</button></div><Queue items={houseTours} data={data} /></div>
@@ -238,6 +266,12 @@ function OperationalPage({ page, data, onAction, onCreate }) {
     destinations: { title: 'Destinos finais', description: 'Fila de grupos que concluíram a apresentação na Galeria.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
   }[page];
   return <><SectionHeader {...options} action={onCreate} /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
+}
+
+function TransfersPage({ data, onCreate, onAction }) {
+  const transfers = data.transfers || [];
+  const byWave = (wave) => transfers.filter((transfer) => transfer.wave === wave && transfer.status !== 'CHEGOU_PRESTIGE');
+  return <><SectionHeader title="Convites Waves → Praia do Forte" description="Traslado dos hóspedes convidados pelos concierges para acompanhar os consultores no tour." action={onCreate} actionText="Novo convite" /><section className="wave-schedule-grid">{Object.entries(WAVES).map(([wave, schedule]) => <article key={wave}><Route size={26} /><div><span>{schedule.label.toUpperCase()}</span><strong>{schedule.transferTime}</strong><p>Waves Bahia <ChevronRight size={13} /> Praia do Forte</p><small>Conecta ao tour das {schedule.tourTime} · {byWave(wave).length} convite{byWave(wave).length === 1 ? '' : 's'} pendente{byWave(wave).length === 1 ? '' : 's'}</small></div></article>)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Convites de hoje</h2><p>O traslado não possui horário de encerramento; a chegada é registrada quando acontecer.</p></div></div><TransferTable transfers={transfers} onAction={onAction} /></section></>;
 }
 
 function GalleryPage({ data, onAction }) {
@@ -273,24 +307,70 @@ function ReportsPage({ data }) {
 
 function SettingsPage({ data, user, token, refresh, notify }) {
   const [open, setOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const [form, setForm] = useState({ name: '', username: '', password: '', role: 'MOTORISTA' });
   const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [deletingUser, setDeletingUser] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   if (user.role !== 'ADMIN') return <section className="restricted"><LockKeyhole size={35} /><h1>Acesso restrito</h1><p>Somente administradores podem gerenciar usuários.</p></section>;
   async function createUser(event) {
     event.preventDefault(); setSaving(true);
     try { await api(token, '/api/users', { method: 'POST', body: JSON.stringify(form) }); setForm({ name: '', username: '', password: '', role: 'MOTORISTA' }); setOpen(false); await refresh(); notify('Usuário criado com sucesso.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <><SectionHeader title="Configurações" description="Gerencie os usuários e os níveis de acesso ao sistema." action={() => setOpen(true)} actionText="Novo usuário" /><section className="panel full-panel"><div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Administradores podem criar e manter os acessos da operação.</p></div></div><div className="table-wrap"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Criado em</th></tr></thead><tbody>{data.users.map((item) => <tr key={item.id}><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{item.role === 'ADMIN' ? 'Administrador' : item.role === 'MOTORISTA' ? 'Motorista' : 'Hostess'}</span></td><td><span className="active-dot">Ativo</span></td><td>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(new Date(item.createdAt))}</td></tr>)}</tbody></table></div></section>{open && <Modal title="Criar usuário" onClose={() => setOpen(false)}><form className="modal-form" onSubmit={createUser}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>Senha inicial<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required /></label><label>Perfil<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="ADMIN">Administrador</option></select></label><div className="role-help"><strong>Hostess:</strong> vê somente totais de tours e Self Guide.<br /><strong>Motorista:</strong> executa todos os processos operacionais.<br /><strong>Administrador:</strong> possui acesso completo e cria usuários.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Criar usuário</button></form></Modal>}</>;
+  async function resetOperation() {
+    setResetting(true);
+    try { await api(token, '/api/operation/reset', { method: 'POST' }); await refresh(); setResetOpen(false); notify('Dados operacionais zerados para o dia atual.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setResetting(false); }
+  }
+  async function deleteUser() {
+    if (!deletingUser) return;
+    setDeleting(true);
+    try { await api(token, `/api/users/${deletingUser.id}`, { method: 'DELETE' }); await refresh(); setDeletingUser(null); notify('Usuário excluído com sucesso.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setDeleting(false); }
+  }
+  return <>
+    <SectionHeader title="Configurações" description="Gerencie os usuários e os níveis de acesso ao sistema." action={() => setOpen(true)} actionText="Novo usuário" />
+    <section className="panel full-panel">
+      <div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Administradores podem criar, excluir e manter os acessos da operação.</p></div></div>
+      <div className="table-wrap users-table"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Ações</th></tr></thead><tbody>{data.users.map((item) => <tr key={item.id}>
+        <td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{item.role === 'ADMIN' ? 'Administrador' : item.role === 'MOTORISTA' ? 'Motorista' : 'Hostess'}</span></td><td><span className="active-dot">Ativo</span></td><td>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(new Date(item.createdAt))}</td><td className="actions-cell">{item.id === user.id ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td>
+      </tr>)}</tbody></table></div>
+    </section>
+    <section className="operation-reset"><div><h2>Zerar dados operacionais</h2><p>Remove tours, convites Waves, filas, atividades e indicadores de motoristas. Usuários e cadastros são preservados.</p></div><button className="button button-danger" onClick={() => setResetOpen(true)}>Zerar operação</button></section>
+    {open && <Modal title="Criar usuário" onClose={() => setOpen(false)}><form className="modal-form" onSubmit={createUser}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>Senha inicial<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required /></label><label>Perfil<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="ADMIN">Administrador</option></select></label><div className="role-help"><strong>Hostess:</strong> vê somente totais de tours e Self Guide.<br /><strong>Motorista:</strong> executa todos os processos operacionais.<br /><strong>Administrador:</strong> possui acesso completo e cria usuários.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Criar usuário</button></form></Modal>}
+    {resetOpen && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove todos os dados operacionais do dia: tours, convites Waves, filas, histórico e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}
+    {deletingUser && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente. Essa ação não pode ser desfeita.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}
+  </>;
 }
 
 function CreateTourModal({ data, onClose, token, refresh, notify }) {
-  const [form, setForm] = useState({ groupName: '', people: '', consultantId: data.consultants[0]?.id || '', selfGuide: false });
+  const [form, setForm] = useState({ groupName: '', people: '', consultantId: data.consultants[0]?.id || '', wave: 'WAVE_1', selfGuide: false });
   const [saving, setSaving] = useState(false);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
     try { await api(token, '/api/tours', { method: 'POST', body: JSON.stringify({ ...form, people: Number(form.people) }) }); await refresh(); notify('Grupo cadastrado no Prestige.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title="Cadastrar novo tour" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Família ou casal<input value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="Ex.: Família de Maria" required /></label><label>Quantidade de pessoas<input type="number" min="1" max="48" value={form.people} onChange={(event) => setForm({ ...form, people: event.target.value })} required /></label><label>Consultor<select value={form.consultantId} onChange={(event) => setForm({ ...form, consultantId: event.target.value })}>{data.consultants.filter((item) => item.active).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={form.selfGuide} onChange={(event) => setForm({ ...form, selfGuide: event.target.checked })} /> Grupo Self Guide</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Cadastrar no Prestige</button></form></Modal>;
+  return <Modal title="Cadastrar novo tour" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Família ou casal<input value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="Ex.: Família de Maria" required /></label><label>Quantidade de pessoas<input type="number" min="1" max="48" value={form.people} onChange={(event) => setForm({ ...form, people: event.target.value })} required /></label><label>Onda do tour<select value={form.wave} onChange={(event) => setForm({ ...form, wave: event.target.value })}>{Object.entries(WAVES).map(([key, wave]) => <option key={key} value={key}>{wave.label} · saída às {wave.tourTime}</option>)}</select></label><label>Consultor<select value={form.consultantId} onChange={(event) => setForm({ ...form, consultantId: event.target.value })}>{data.consultants.filter((item) => item.active).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={form.selfGuide} onChange={(event) => setForm({ ...form, selfGuide: event.target.checked })} /> Grupo Self Guide</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Cadastrar no Prestige</button></form></Modal>;
+}
+
+function CreateTransferModal({ onClose, token, refresh, notify }) {
+  const [form, setForm] = useState({ groupName: '', people: '', conciergeName: '', wave: 'WAVE_1' });
+  const [saving, setSaving] = useState(false);
+  const schedule = WAVES[form.wave];
+  async function submit(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, '/api/transfers', { method: 'POST', body: JSON.stringify({ ...form, people: Number(form.people) }) }); await refresh(); notify('Convite Waves agendado.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title="Novo convite do Waves" onClose={onClose}><div className="transfer-modal-route"><Route size={24} /><span>Prestige Waves Bahia <ChevronRight size={16} /> Prestige Praia do Forte</span></div><form className="modal-form" onSubmit={submit}><label>Grupo ou hóspedes<input value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="Ex.: Casal de Maria" required /></label><label>Quantidade de pessoas<input type="number" min="1" max="48" value={form.people} onChange={(event) => setForm({ ...form, people: event.target.value })} required /></label><label>Concierge responsável<input value={form.conciergeName} onChange={(event) => setForm({ ...form, conciergeName: event.target.value })} placeholder="Nome do concierge" required /></label><label>Convite para a onda<select value={form.wave} onChange={(event) => setForm({ ...form, wave: event.target.value })}>{Object.entries(WAVES).map(([key, wave]) => <option key={key} value={key}>{wave.label} · tour às {wave.tourTime}</option>)}</select></label><div className="schedule-callout"><strong>Traslado às {schedule.transferTime}</strong><span>Chegada prevista antes do tour das {schedule.tourTime}. Não há horário obrigatório para encerrar o traslado.</span></div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Agendar convite</button></form></Modal>;
+}
+
+function TransferActionModal({ transfer, action, onClose, token, refresh, notify }) {
+  const isStart = action === 'start';
+  const [saving, setSaving] = useState(false);
+  async function confirm() {
+    setSaving(true);
+    try { await api(token, `/api/transfers/${transfer.id}/action`, { method: 'POST', body: JSON.stringify({ action }) }); await refresh(); notify(isStart ? 'Traslado iniciado.' : 'Chegada ao Praia do Forte registrada.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title={isStart ? 'Iniciar traslado do Waves' : 'Confirmar chegada ao Praia'} onClose={onClose}><div className="action-tour-summary"><Avatar name={transfer.groupName} color="teal" /><div><strong>{transfer.groupName}</strong><span>{transfer.people} pessoas · {WAVES[transfer.wave]?.label} · {transfer.scheduledTime}</span></div></div><p className="modal-intro">{isStart ? 'Registre a saída do concierge com os hóspedes do Prestige Waves Bahia.' : 'Confirme a chegada ao Prestige Praia do Forte para o convite do tour.'}</p><button className="button button-primary modal-confirm" onClick={confirm} disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} <Check size={17} /> Confirmar</button></Modal>;
 }
 
 function ActionModal({ tour, action, data, onClose, token, refresh, notify }) {
@@ -336,8 +416,11 @@ function App() {
     if (!data || !user) return null;
     const openAction = (tour, action) => setModal({ kind: 'action', tour, action });
     const openCreate = () => setModal({ kind: 'create' });
-    if (page === 'dashboard') return <Dashboard data={data} user={user} onAction={openAction} onCreate={openCreate} setPage={setPage} />;
+    const openTransfer = () => setModal({ kind: 'transfer' });
+    const openTransferAction = (transfer, action) => setModal({ kind: 'transfer-action', transfer, action });
+    if (page === 'dashboard') return <Dashboard data={data} user={user} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
     if (['prestige', 'tours', 'home', 'destinations'].includes(page)) return <OperationalPage page={page} data={data} onAction={openAction} onCreate={openCreate} />;
+    if (page === 'transfers') return <TransfersPage data={data} onCreate={openTransfer} onAction={openTransferAction} />;
     if (page === 'gallery') return <GalleryPage data={data} onAction={openAction} />;
     if (page === 'drivers') return <DriversPage data={data} />;
     if (page === 'consultants') return <ConsultantsPage data={data} />;
@@ -349,7 +432,7 @@ function App() {
   }, [data, user, page, token]);
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
-  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} /><main className="content-area">{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{user.role !== 'HOSTESS' && <MobileNav page={page} setPage={setPage} />}</div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} /><main className="content-area">{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{user.role !== 'HOSTESS' && <MobileNav page={page} setPage={setPage} />}</div>;
 }
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);

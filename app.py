@@ -10,6 +10,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
@@ -44,6 +45,15 @@ DRIVER_HOME = "CASA"
 DRIVER_GALLERY = "GALERIA"
 DRIVER_DESTINATION = "DESTINO_FINAL"
 
+TRANSFER_SCHEDULES = {
+    "WAVE_1": {"label": "1ª onda", "tourTime": "09:00", "transferTime": "07:50"},
+    "WAVE_2": {"label": "2ª onda", "tourTime": "11:00", "transferTime": "09:50"},
+}
+TRANSFER_SCHEDULED = "AGENDADO"
+TRANSFER_IN_PROGRESS = "EM_DESLOCAMENTO"
+TRANSFER_ARRIVED = "CHEGOU_PRESTIGE"
+OPERATION_TZ = ZoneInfo("America/Sao_Paulo")
+
 # This is a one-way scrypt hash. The initial password is never stored in source code.
 INITIAL_ADMIN_HASH = (
     "c75658f843ab803ffbeeee35e0af7299:"
@@ -63,6 +73,11 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def operation_date() -> str:
+    """Operational day in Praia do Forte's timezone, regardless of the Render region."""
+    return datetime.now(OPERATION_TZ).date().isoformat()
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(6)}"
 
@@ -70,6 +85,7 @@ def new_id(prefix: str) -> str:
 def initial_database() -> dict[str, Any]:
     created = timestamp()
     return {
+        "operationDate": operation_date(),
         "users": [{
             "id": "user_admin",
             "username": "adson.gonzalez",
@@ -108,19 +124,23 @@ def initial_database() -> dict[str, Any]:
         ],
         "tours": [
             {
-                "id": "tour_yasmin", "groupName": "Família de Yasmin", "people": 8, "selfGuide": False, "consultantId": "con_yasmin",
+                "id": "tour_yasmin", "groupName": "Família de Yasmin", "people": 8, "selfGuide": False, "consultantId": "con_yasmin", "wave": "WAVE_1", "scheduledTime": "09:00",
                 "status": STATE_IN_TOUR, "phase": "Golf", "createdAt": created, "updatedAt": created,
                 "allocations": [
                     {"driverId": "drv_carlos", "cartId": "cart_01", "seats": 6, "arrived": True},
                     {"driverId": "drv_joao", "cartId": "cart_02", "seats": 2, "arrived": True},
                 ],
             },
-            {"id": "tour_rafael", "groupName": "Casal de Rafael", "people": 2, "selfGuide": True, "consultantId": "con_rafael", "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_lucas", "groupName": "Família de Lucas", "people": 5, "selfGuide": False, "consultantId": "con_lucas", "status": STATE_WAITING_HOME, "phase": "Casa", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_fernanda", "groupName": "Casal de Fernanda", "people": 2, "selfGuide": False, "consultantId": "con_fernanda", "status": STATE_GALLERY, "phase": "Galeria", "createdAt": created, "updatedAt": created, "allocations": [{"driverId": "drv_ricardo", "cartId": "cart_05", "seats": 2, "arrived": True}]},
-            {"id": "tour_juliana", "groupName": "Família de Juliana", "people": 4, "selfGuide": True, "consultantId": "con_juliana", "status": STATE_PRESENTATION, "phase": "Galeria", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_marcela", "groupName": "Família de Marcela", "people": 6, "selfGuide": False, "consultantId": "con_yasmin", "status": STATE_WAITING_DESTINATION, "phase": "Galeria", "destinationId": "dest_prestige", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_bruno", "groupName": "Casal de Bruno", "people": 2, "selfGuide": False, "consultantId": "con_rafael", "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created, "allocations": []},
+            {"id": "tour_rafael", "groupName": "Casal de Rafael", "people": 2, "selfGuide": True, "consultantId": "con_rafael", "wave": "WAVE_1", "scheduledTime": "09:00", "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created, "allocations": []},
+            {"id": "tour_lucas", "groupName": "Família de Lucas", "people": 5, "selfGuide": False, "consultantId": "con_lucas", "wave": "WAVE_1", "scheduledTime": "09:00", "status": STATE_WAITING_HOME, "phase": "Casa", "createdAt": created, "updatedAt": created, "allocations": []},
+            {"id": "tour_fernanda", "groupName": "Casal de Fernanda", "people": 2, "selfGuide": False, "consultantId": "con_fernanda", "wave": "WAVE_1", "scheduledTime": "09:00", "status": STATE_GALLERY, "phase": "Galeria", "createdAt": created, "updatedAt": created, "allocations": [{"driverId": "drv_ricardo", "cartId": "cart_05", "seats": 2, "arrived": True}]},
+            {"id": "tour_juliana", "groupName": "Família de Juliana", "people": 4, "selfGuide": True, "consultantId": "con_juliana", "wave": "WAVE_2", "scheduledTime": "11:00", "status": STATE_PRESENTATION, "phase": "Galeria", "createdAt": created, "updatedAt": created, "allocations": []},
+            {"id": "tour_marcela", "groupName": "Família de Marcela", "people": 6, "selfGuide": False, "consultantId": "con_yasmin", "wave": "WAVE_2", "scheduledTime": "11:00", "status": STATE_WAITING_DESTINATION, "phase": "Galeria", "destinationId": "dest_prestige", "createdAt": created, "updatedAt": created, "allocations": []},
+            {"id": "tour_bruno", "groupName": "Casal de Bruno", "people": 2, "selfGuide": False, "consultantId": "con_rafael", "wave": "WAVE_2", "scheduledTime": "11:00", "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created, "allocations": []},
+        ],
+        "transfers": [
+            {"id": "transfer_adriana", "groupName": "Família de Adriana", "people": 4, "conciergeName": "Marina", "wave": "WAVE_1", "scheduledTime": "07:50", "tourStartTime": "09:00", "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created},
+            {"id": "transfer_gustavo", "groupName": "Casal de Gustavo", "people": 2, "conciergeName": "André", "wave": "WAVE_2", "scheduledTime": "09:50", "tourStartTime": "11:00", "status": TRANSFER_IN_PROGRESS, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created},
         ],
         "activities": [
             {"id": "act_1", "at": created, "userName": "Sistema", "message": "Painel operacional iniciado", "previous": None, "next": None},
@@ -146,6 +166,37 @@ def save_database(db: dict[str, Any]) -> None:
     temporary = DATABASE_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(DATABASE_PATH)
+
+
+def reset_operational_data(db: dict[str, Any], message: str) -> None:
+    """Keep people and system setup, but start a clean operational day."""
+    current_time = timestamp()
+    db["operationDate"] = operation_date()
+    db["tours"] = []
+    db["transfers"] = []
+    for driver in db["drivers"]:
+        driver["status"] = DRIVER_AVAILABLE
+        driver["toursStarted"] = 0
+        driver["homePickups"] = 0
+        driver["lastActivity"] = current_time
+    for cart in db["carts"]:
+        cart["status"] = "DISPONIVEL"
+    db["activities"] = [{"id": new_id("act"), "at": current_time, "userName": "Sistema", "message": message, "previous": None, "next": None}]
+
+
+def ensure_operational_day(db: dict[str, Any]) -> bool:
+    """Reset on the first access of a new business day in Brazil's timezone."""
+    if db.get("operationDate") == operation_date():
+        return False
+    reset_operational_data(db, f"Operação iniciada para {operation_date()}.")
+    return True
+
+
+def operational_database() -> dict[str, Any]:
+    db = load_database()
+    if ensure_operational_day(db):
+        save_database(db)
+    return db
 
 
 def clean_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -203,8 +254,8 @@ def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
     return user
 
 
-def log_activity(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any] | None, previous: str | None, next_state: str | None, message: str) -> None:
-    activity = {"id": new_id("act"), "at": timestamp(), "userName": user["name"], "tourId": tour["id"] if tour else None, "message": message, "previous": previous, "next": next_state}
+def log_activity(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any] | None, previous: str | None, next_state: str | None, message: str, transfer: dict[str, Any] | None = None) -> None:
+    activity = {"id": new_id("act"), "at": timestamp(), "userName": user["name"], "tourId": tour["id"] if tour else None, "transferId": transfer["id"] if transfer else None, "message": message, "previous": previous, "next": next_state}
     db["activities"].insert(0, activity)
     del db["activities"][250:]
 
@@ -228,6 +279,28 @@ def change_tour_state(db: dict[str, Any], user: dict[str, Any], tour: dict[str, 
     tour["status"] = next_state
     tour["updatedAt"] = timestamp()
     log_activity(db, user, tour, previous, next_state, message)
+
+
+def change_transfer_state(db: dict[str, Any], user: dict[str, Any], transfer: dict[str, Any], next_state: str, message: str) -> None:
+    previous = transfer["status"]
+    transfer["status"] = next_state
+    transfer["updatedAt"] = timestamp()
+    log_activity(db, user, None, previous, next_state, message, transfer=transfer)
+
+
+def apply_transfer_action(db: dict[str, Any], user: dict[str, Any], transfer: dict[str, Any], action: str) -> None:
+    require_operational(user)
+    if action == "start":
+        if transfer["status"] != TRANSFER_SCHEDULED:
+            raise APIError("Apenas convites agendados podem iniciar o traslado.")
+        change_transfer_state(db, user, transfer, TRANSFER_IN_PROGRESS, f"Traslado de {transfer['groupName']} saiu do Waves Bahia.")
+        return
+    if action == "arrive":
+        if transfer["status"] != TRANSFER_IN_PROGRESS:
+            raise APIError("O traslado precisa estar em deslocamento para confirmar a chegada.")
+        change_transfer_state(db, user, transfer, TRANSFER_ARRIVED, f"{transfer['groupName']} chegou ao Praia do Forte para a {TRANSFER_SCHEDULES[transfer['wave']]['label']}.")
+        return
+    raise APIError("Ação de traslado não encontrada.", 404)
 
 
 def normalized_allocations(db: dict[str, Any], raw_allocations: Any, people: int) -> list[dict[str, Any]]:
@@ -307,9 +380,12 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] not in {STATE_IN_TOUR, STATE_HOME}:
             raise APIError("O grupo precisa estar em deslocamento para ser entregue na Galeria.")
         for allocation in allocations():
-            update_driver(db, allocation["driverId"], DRIVER_GALLERY)
+            # The group remains in the Gallery, but its driver and cart immediately return to the available pool.
+            update_driver(db, allocation["driverId"], DRIVER_AVAILABLE)
+            update_cart(db, allocation["cartId"], "DISPONIVEL")
+        tour["allocations"] = []
         tour["phase"] = "Galeria"
-        change_tour_state(db, user, tour, STATE_GALLERY, f"{tour['groupName']} foi entregue na Galeria.")
+        change_tour_state(db, user, tour, STATE_GALLERY, f"{tour['groupName']} foi entregue na Galeria; motorista liberado para retornar ao Prestige.")
         return
 
     if action == "presentation-started":
@@ -380,7 +456,7 @@ def login():
     username = str(payload.get("username", "")).strip().lower()
     password = str(payload.get("password", ""))
     with DB_LOCK:
-        db = load_database()
+        db = operational_database()
         user = next((item for item in db["users"] if item["username"].lower() == username and item["active"]), None)
         if not user or not password_matches(password, user["passwordHash"]):
             raise APIError("Usuário ou senha inválidos.", 401)
@@ -403,19 +479,21 @@ def logout():
 @app.get("/api/auth/me")
 def auth_me():
     with DB_LOCK:
-        return jsonify(user=clean_user(get_current_user(load_database())))
+        return jsonify(user=clean_user(get_current_user(operational_database())))
 
 
 @app.get("/api/bootstrap")
 def bootstrap():
     with DB_LOCK:
-        db = load_database()
+        db = operational_database()
         user = get_current_user(db)
         return jsonify(
             user=clean_user(user),
             data=safe_database(db),
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE},
             driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION},
+            waves=TRANSFER_SCHEDULES,
+            transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED},
         )
 
 
@@ -423,7 +501,7 @@ def bootstrap():
 def create_user():
     payload = request.get_json(silent=True) or {}
     with DB_LOCK:
-        db = load_database()
+        db = operational_database()
         user = get_current_user(db)
         require_admin(user)
         username = str(payload.get("username", "")).strip().lower()
@@ -445,7 +523,7 @@ def create_user():
 def create_tour():
     payload = request.get_json(silent=True) or {}
     with DB_LOCK:
-        db = load_database()
+        db = operational_database()
         user = get_current_user(db)
         require_operational(user)
         group_name = str(payload.get("groupName", "")).strip()
@@ -456,23 +534,93 @@ def create_tour():
         if not group_name or not 1 <= people <= 48:
             raise APIError("Informe o grupo e uma quantidade de pessoas entre 1 e 48.")
         find(db["consultants"], payload.get("consultantId"), "Consultor")
-        tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
+        wave = payload.get("wave", "WAVE_1")
+        if wave not in TRANSFER_SCHEDULES:
+            raise APIError("Selecione a 1ª ou a 2ª onda do tour.")
+        tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
         db["tours"].insert(0, tour)
         log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
         save_database(db)
         return jsonify(tour=tour), 201
 
 
+@app.delete("/api/users/<user_id>")
+def delete_user(user_id: str):
+    with DB_LOCK:
+        db = operational_database()
+        current_user = get_current_user(db)
+        require_admin(current_user)
+        target = find(db["users"], user_id, "Usuário")
+        if target["id"] == current_user["id"]:
+            raise APIError("O administrador conectado não pode excluir a própria conta.")
+        if target["role"] == ROLE_ADMIN and sum(1 for item in db["users"] if item["role"] == ROLE_ADMIN and item["active"]) <= 1:
+            raise APIError("Mantenha ao menos um administrador ativo no sistema.")
+        db["users"] = [item for item in db["users"] if item["id"] != target["id"]]
+        log_activity(db, current_user, None, None, None, f"Usuário {target['name']} excluído.")
+        for token, session in list(SESSIONS.items()):
+            if session["userId"] == target["id"]:
+                SESSIONS.pop(token, None)
+        save_database(db)
+        return jsonify(ok=True)
+
+
 @app.post("/api/tours/<tour_id>/action")
 def tour_action(tour_id: str):
     payload = request.get_json(silent=True) or {}
     with DB_LOCK:
-        db = load_database()
+        db = operational_database()
         user = get_current_user(db)
         tour = find(db["tours"], tour_id, "Tour")
         apply_action(db, user, tour, payload.get("action", ""), payload)
         save_database(db)
         return jsonify(tour=tour)
+
+
+@app.post("/api/transfers")
+def create_transfer():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_operational(user)
+        group_name = str(payload.get("groupName", "")).strip()
+        concierge_name = str(payload.get("conciergeName", "")).strip()
+        try:
+            people = int(payload.get("people", 0))
+        except (ValueError, TypeError):
+            people = 0
+        wave = payload.get("wave", "")
+        if not group_name or not concierge_name or not 1 <= people <= 48 or wave not in TRANSFER_SCHEDULES:
+            raise APIError("Preencha grupo, pessoas, concierge e onda do convite.")
+        schedule = TRANSFER_SCHEDULES[wave]
+        transfer = {"id": new_id("transfer"), "groupName": group_name, "people": people, "conciergeName": concierge_name, "wave": wave, "scheduledTime": schedule["transferTime"], "tourStartTime": schedule["tourTime"], "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp()}
+        db.setdefault("transfers", []).insert(0, transfer)
+        log_activity(db, user, None, None, TRANSFER_SCHEDULED, f"Convite de {group_name} agendado no Waves Bahia para {schedule['transferTime']}.", transfer=transfer)
+        save_database(db)
+        return jsonify(transfer=transfer), 201
+
+
+@app.post("/api/transfers/<transfer_id>/action")
+def transfer_action(transfer_id: str):
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        transfer = find(db.setdefault("transfers", []), transfer_id, "Convite")
+        apply_transfer_action(db, user, transfer, payload.get("action", ""))
+        save_database(db)
+        return jsonify(transfer=transfer)
+
+
+@app.post("/api/operation/reset")
+def reset_operation():
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        reset_operational_data(db, f"Operação zerada manualmente por {user['name']}.")
+        save_database(db)
+        return jsonify(ok=True, operationDate=db["operationDate"])
 
 
 @app.get("/")
