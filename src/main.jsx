@@ -1,0 +1,355 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  BarChart3, Bell, Building2, CalendarDays, CarFront, Check, ChevronRight, CircleUserRound,
+  Clock3, FileClock, Flag, House, Image, LayoutDashboard, LoaderCircle, LockKeyhole,
+  LogOut, MapPin, Menu, MoreHorizontal, Plus, Route, Settings, ShieldCheck, ShoppingCart,
+  Star, UserCog, UserRound, Users, X
+} from 'lucide-react';
+import './styles.css';
+
+const STATUS = {
+  DISPONIVEL: { label: 'Disponível', tone: 'teal' },
+  EM_TOUR: { label: 'Em percurso', tone: 'blue' },
+  NA_CASA: { label: 'Na Casa', tone: 'orange' },
+  AGUARDANDO_CASA: { label: 'Aguardando na Casa', tone: 'orange' },
+  NA_GALERIA: { label: 'Na Galeria', tone: 'purple' },
+  EM_APRESENTACAO: { label: 'Em apresentação', tone: 'purple' },
+  AGUARDANDO_DESTINO: { label: 'Aguardando destino', tone: 'green' },
+  EM_DESTINO_FINAL: { label: 'Em destino final', tone: 'blue' },
+  CONCLUIDO: { label: 'Concluído', tone: 'gray' }
+};
+
+const DRIVER_STATUS = {
+  DISPONIVEL: { label: 'Disponível', tone: 'green' },
+  EM_TOUR: { label: 'Em tour', tone: 'blue' },
+  CASA: { label: 'Na Casa', tone: 'orange' },
+  GALERIA: { label: 'Na Galeria', tone: 'purple' },
+  DESTINO_FINAL: { label: 'Destino final', tone: 'teal' }
+};
+
+const NAV = [
+  { id: 'dashboard', label: 'Painel Geral', icon: LayoutDashboard },
+  { id: 'prestige', label: 'Prestige Praia do Forte', icon: Building2 },
+  { id: 'tours', label: 'Tours em Andamento', icon: Route },
+  { id: 'gallery', label: 'Galeria', icon: Image },
+  { id: 'home', label: 'Casa (Aguardando)', icon: House },
+  { id: 'destinations', label: 'Destinos Finais', icon: MapPin },
+  { id: 'consultants', label: 'Consultores', icon: UserRound },
+  { id: 'drivers', label: 'Motoristas', icon: CarFront },
+  { id: 'carts', label: 'Carrinhos', icon: ShoppingCart },
+  { id: 'history', label: 'Histórico', icon: FileClock },
+  { id: 'reports', label: 'Relatórios', icon: BarChart3 },
+  { id: 'settings', label: 'Configurações', icon: Settings, admin: true }
+];
+
+const actionMeta = {
+  start: { title: 'Iniciar tour', text: 'Defina os carrinhos e motoristas para registrar a saída do Prestige.', label: 'Iniciar tour', allocations: true },
+  'arrived-home': { title: 'Registrar chegada na Casa', text: 'Confirme que todos os carrinhos vinculados chegaram à Casa.', label: 'Chegou na Casa' },
+  'return-prestige': { title: 'Deixar grupo na Casa', text: 'Os motoristas retornarão ao Prestige e o grupo ficará na fila de transporte.', label: 'Deixar na Casa' },
+  'pickup-home': { title: 'Buscar grupo na Casa', text: 'Selecione os novos carrinhos e motoristas. Esta busca não soma saída de tour.', label: 'Buscar na Casa', allocations: true },
+  'deliver-gallery': { title: 'Entregar na Galeria', text: 'Confirme que o grupo foi entregue à operação da Galeria.', label: 'Entregar na Galeria' },
+  'presentation-started': { title: 'Iniciar apresentação', text: 'O sistema registrará somente o início da apresentação; não registra venda.', label: 'Iniciar apresentação' },
+  'presentation-finished': { title: 'Finalizar apresentação', text: 'Informe o destino final. O grupo entrará na fila de transporte.', label: 'Finalizar apresentação', destination: true },
+  'assign-destination': { title: 'Assumir destino final', text: 'Selecione carrinhos e motoristas disponíveis para o destino.', label: 'Assumir destino', allocations: true },
+  'complete-destination': { title: 'Concluir destino final', text: 'Confirme a entrega. Os carrinhos e motoristas serão liberados.', label: 'Concluir destino' }
+};
+
+function classNames(...values) {
+  return values.filter(Boolean).join(' ');
+}
+
+function initials(name = '') {
+  return name.split(' ').filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'TI';
+}
+
+function time(value) {
+  if (!value) return '—';
+  return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+}
+
+function dateLabel() {
+  return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
+}
+
+function api(token, path, options = {}) {
+  return fetch(path, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    }
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Não foi possível concluir a ação.');
+    return payload;
+  });
+}
+
+function Logo() {
+  return <div className="brand"><span className="brand-star"><Star size={27} fill="currentColor" /></span><span><strong>IBEROSTAR</strong><small>TOUR INTERNO</small></span></div>;
+}
+
+function StatusPill({ status, driver = false }) {
+  const meta = (driver ? DRIVER_STATUS : STATUS)[status] || { label: status, tone: 'gray' };
+  return <span className={classNames('status-pill', `tone-${meta.tone}`)}>{meta.label}</span>;
+}
+
+function Avatar({ name, color = 'blue' }) {
+  return <span className={classNames('avatar', `avatar-${color}`)}>{initials(name)}</span>;
+}
+
+function Login({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  async function submit(event) {
+    event.preventDefault();
+    setError(''); setLoading(true);
+    try {
+      const result = await api('', '/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+      onLogin(result.token, result.user);
+    } catch (err) {
+      setError(err.message);
+    } finally { setLoading(false); }
+  }
+
+  return <main className="login-page">
+    <section className="login-brand-panel"><Logo /><div className="login-illustration"><div className="orbit orbit-a" /><div className="orbit orbit-b" /><Route size={54} /><h1>Tour interno,<br />operação sob controle.</h1><p>Acompanhe cada família do Prestige ao destino final em tempo real.</p></div><p className="login-footer">Iberostar Tour Interno · Painel operacional</p></section>
+    <section className="login-form-panel"><form className="login-card" onSubmit={submit}><div className="login-kicker"><ShieldCheck size={18} /> Acesso seguro</div><h2>Bem-vindo</h2><p>Entre com suas credenciais para acessar o painel.</p>
+      <label>Usuário<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Seu usuário" required /></label>
+      <label>Senha<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Sua senha" required /></label>
+      {error && <div className="form-error">{error}</div>}
+      <button className="button button-primary login-submit" disabled={loading}>{loading ? <LoaderCircle className="spin" size={18} /> : <LockKeyhole size={18} />} Entrar no painel</button>
+    </form></section>
+  </main>;
+}
+
+function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
+  const nav = NAV.filter((item) => !item.admin || user.role === 'ADMIN');
+  return <aside className={classNames('sidebar', open && 'sidebar-open')}>
+    <div className="sidebar-top"><Logo /><button className="sidebar-close" onClick={() => setOpen(false)} aria-label="Fechar menu"><X /></button></div>
+    <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{label}</span></button>)}</nav>
+    <button className="nav-item nav-exit" onClick={signOut}><LogOut size={19} /><span>Sair</span></button>
+  </aside>;
+}
+
+function MobileNav({ page, setPage }) {
+  const items = NAV.slice(0, 4);
+  return <nav className="mobile-nav">{items.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : label.split(' ')[0]}</span></button>)}<button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button></nav>;
+}
+
+function Topbar({ user, setMenuOpen }) {
+  const [clock, setClock] = useState(time(new Date()));
+  useEffect(() => { const timer = setInterval(() => setClock(time(new Date())), 30000); return () => clearInterval(timer); }, []);
+  const role = user.role === 'ADMIN' ? 'Administrador' : user.role === 'MOTORISTA' ? 'Motorista' : 'Hostess';
+  return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className="bell"><Bell size={20} /></button><div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
+}
+
+function MetricCard({ icon: Icon, color, title, count, sub }) {
+  return <article className="metric-card"><div className={classNames('metric-icon', `metric-${color}`)}><Icon size={29} /></div><div className="metric-copy"><small>{title}</small><div><strong>{count}</strong><span>{sub}</span></div></div></article>;
+}
+
+function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum grupo nesta etapa.' }) {
+  const consultant = (tour) => data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
+  const driverNames = (tour) => (tour.allocations || []).map((item) => data.drivers.find((driver) => driver.id === item.driverId)?.name).filter(Boolean).join(', ') || '—';
+  const actionFor = (tour) => {
+    if (tour.status === 'DISPONIVEL') return 'start';
+    if (tour.status === 'EM_TOUR') return tour.phase === 'Casa → Galeria' ? 'deliver-gallery' : 'arrived-home';
+    if (tour.status === 'NA_CASA') return 'deliver-gallery';
+    if (tour.status === 'AGUARDANDO_CASA') return 'pickup-home';
+    if (tour.status === 'NA_GALERIA') return 'presentation-started';
+    if (tour.status === 'EM_APRESENTACAO') return 'presentation-finished';
+    if (tour.status === 'AGUARDANDO_DESTINO') return 'assign-destination';
+    if (tour.status === 'EM_DESTINO_FINAL') return 'complete-destination';
+    return null;
+  };
+  if (!tours.length) return <div className="empty-state">{empty}</div>;
+  return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
+    const action = actionFor(tour); const consultantName = consultant(tour);
+    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong>{tour.selfGuide && <small className="self-guide">Self Guide</small>}</td><td>{tour.people}</td><td>{tour.allocations?.length || '—'}</td><td>{driverNames(tour)}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+  })}</tbody></table></div>;
+}
+
+function DriverCard({ driver }) {
+  return <article className="driver-card"><div className="driver-heading"><Avatar name={driver.name} color="photo" /><div><strong>{driver.name}</strong><span>Operação interna</span></div></div><StatusPill driver status={driver.status} /><div className="driver-stats"><span><small>Tours hoje</small><strong>{driver.toursStarted}</strong></span><span><small>Buscas Casa</small><strong>{driver.homePickups}</strong></span></div></article>;
+}
+
+function Flow({ counts }) {
+  const stages = [['Prestige', counts.available.length], ['Em tour', counts.enTour.length], ['Casa', counts.home.length], ['Galeria', counts.gallery.length], ['Destino', counts.destination.length]];
+  return <div className="flow"><Route size={18} /><div className="flow-line">{stages.map(([stage, count], index) => <React.Fragment key={stage}><div className={classNames('flow-stage', count > 0 && 'flow-active')}><span>{stage}</span><strong>{count}</strong></div>{index < stages.length - 1 && <ChevronRight size={16} />}</React.Fragment>)}</div></div>;
+}
+
+function Dashboard({ data, user, onAction, onCreate, setPage }) {
+  const tours = data.tours || [];
+  const count = (states) => tours.filter((tour) => states.includes(tour.status));
+  const metrics = {
+    available: count(['DISPONIVEL']), enTour: count(['EM_TOUR']), home: count(['NA_CASA', 'AGUARDANDO_CASA']), gallery: count(['NA_GALERIA', 'EM_APRESENTACAO']), destination: count(['AGUARDANDO_DESTINO'])
+  };
+  const people = (items) => items.reduce((sum, tour) => sum + tour.people, 0);
+  const activeTours = tours.filter((tour) => !['DISPONIVEL', 'CONCLUIDO'].includes(tour.status)).slice(0, 5);
+  const galleryTours = tours.filter((tour) => ['NA_GALERIA', 'EM_APRESENTACAO'].includes(tour.status));
+  const houseTours = tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status));
+  const destTours = tours.filter((tour) => tour.status === 'AGUARDANDO_DESTINO');
+  const consultantName = (tour) => data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
+  if (user.role === 'HOSTESS') return <HostessDashboard tours={tours} />;
+  return <>
+    <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria.</p></div><button className="button button-primary" onClick={onCreate}><Plus size={18} /> Novo tour</button></section>
+    <section className="metrics-grid">
+      <MetricCard icon={Users} color="teal" title="Disponíveis no Prestige" count={metrics.available.length} sub={`${people(metrics.available)} pessoas`} />
+      <MetricCard icon={CarFront} color="blue" title="Em tour" count={metrics.enTour.length} sub={`${people(metrics.enTour)} pessoas`} />
+      <MetricCard icon={House} color="orange" title="Aguardando na Casa" count={metrics.home.length} sub={`${people(metrics.home)} pessoas`} />
+      <MetricCard icon={Users} color="purple" title="Na Galeria" count={metrics.gallery.length} sub={`${people(metrics.gallery)} pessoas`} />
+      <MetricCard icon={Check} color="green" title="Aguardando destino" count={metrics.destination.length} sub={`${people(metrics.destination)} pessoas`} />
+    </section>
+    <Flow counts={metrics} />
+    <section className="dashboard-columns main-columns"><div className="panel"><div className="panel-heading"><div><h2>Tours em andamento</h2><p>Grupos em deslocamento e em etapas ativas</p></div><button className="text-button" onClick={() => setPage('tours')}>Ver todos</button></div><TourTable tours={activeTours} data={data} onAction={onAction} compact /></div>
+      <div className="panel gallery-panel"><div className="panel-heading"><div><h2>Na Galeria</h2><p>{galleryTours.length} grupos · {people(galleryTours)} pessoas</p></div><button className="text-button" onClick={() => setPage('gallery')}>Ver todos</button></div><div className="gallery-list">{galleryTours.length ? galleryTours.map((tour) => <div className="gallery-row" key={tour.id}><Avatar name={consultantName(tour)} color="purple" /><div><strong>{tour.groupName}</strong><span>{consultantName(tour)} · {tour.people} pessoas</span></div><StatusPill status={tour.status} /></div>) : <div className="empty-state">Galeria sem grupos no momento.</div>}</div></div></section>
+    <section className="dashboard-columns bottom-columns"><div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando na Casa</h2><p>Fila de transporte prioritária</p></div><button className="text-button" onClick={() => setPage('home')}>Ver todos</button></div><Queue items={houseTours} data={data} /></div>
+      <div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando destino final</h2><p>Apresentação concluída</p></div><button className="text-button" onClick={() => setPage('destinations')}>Ver todos</button></div><Queue items={destTours} data={data} destinations /></div>
+      <div className="panel activity-panel"><div className="panel-heading"><div><h2>Atividade recente</h2><p>Rastreabilidade da operação</p></div></div><div className="activity-list">{data.activities.slice(0, 4).map((activity) => <div className="activity" key={activity.id}><span className="activity-icon"><FileClock size={15} /></span><p>{activity.message}<small>{time(activity.at)}</small></p></div>)}</div></div></section>
+    <section className="panel drivers-panel"><div className="panel-heading"><div><h2>Status dos motoristas</h2><p>Disponibilidade, saídas e buscas na Casa</p></div><button className="text-button" onClick={() => setPage('drivers')}>Ver todos</button></div><div className="driver-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</div></section>
+  </>;
+}
+
+function HostessDashboard({ tours }) {
+  const totalSelfGuide = tours.filter((tour) => tour.selfGuide && tour.status !== 'CONCLUIDO');
+  const active = tours.filter((tour) => tour.status !== 'CONCLUIDO');
+  return <><section className="page-title hostess-title"><div><span>VISUALIZAÇÃO HOSTESS</span><h1>Resumo da operação</h1><p>Quantidade de tours e grupos Self Guide em tempo real.</p></div><ShieldCheck size={36} /></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS EM OPERAÇÃO</span><strong>{active.length}</strong><small>{active.reduce((sum, tour) => sum + tour.people, 0)} pessoas no total</small></div></article><article><Flag size={35} /><div><span>SELF GUIDE</span><strong>{totalSelfGuide.length}</strong><small>{totalSelfGuide.reduce((sum, tour) => sum + tour.people, 0)} pessoas em grupos Self Guide</small></div></article></section><section className="panel hostess-note"><h2>Seu perfil é de acompanhamento</h2><p>As demais informações da operação são controladas por motoristas e administradores. Os indicadores acima são atualizados sempre que um tour muda de etapa.</p></section></>;
+}
+
+function Queue({ items, data, destinations = false }) {
+  if (!items.length) return <div className="empty-state">Nenhum grupo aguardando.</div>;
+  return <div className="queue-list">{items.map((tour) => <div className="queue-row" key={tour.id}><Avatar name={tour.groupName} color="orange" /><div><strong>{tour.groupName}</strong><span>{tour.people} pessoas · {destinations ? data.destinations.find((item) => item.id === tour.destinationId)?.name || 'Destino pendente' : 'Aguardando transporte'}</span></div><ChevronRight size={18} /></div>)}</div>;
+}
+
+function SectionHeader({ title, description, action, actionText = 'Novo tour' }) {
+  return <section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>{title}</h1><p>{description}</p></div>{action && <button className="button button-primary" onClick={action}><Plus size={18} /> {actionText}</button>}</section>;
+}
+
+function OperationalPage({ page, data, onAction, onCreate }) {
+  const options = {
+    prestige: { title: 'Prestige Praia do Forte', description: 'Grupos disponíveis para iniciar o tour.', tours: data.tours.filter((tour) => tour.status === 'DISPONIVEL') },
+    tours: { title: 'Tours em andamento', description: 'Acompanhe e avance os grupos por cada etapa operacional.', tours: data.tours.filter((tour) => !['DISPONIVEL', 'CONCLUIDO'].includes(tour.status)) },
+    home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
+    destinations: { title: 'Destinos finais', description: 'Fila de grupos que concluíram a apresentação na Galeria.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
+  }[page];
+  return <><SectionHeader {...options} action={onCreate} /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
+}
+
+function GalleryPage({ data, onAction }) {
+  const tours = data.tours.filter((tour) => ['NA_GALERIA', 'EM_APRESENTACAO'].includes(tour.status));
+  const consultantName = (tour) => data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
+  const groupsByConsultant = data.consultants.map((consultant) => ({ consultant, tours: tours.filter((tour) => tour.consultantId === consultant.id) })).filter((item) => item.tours.length);
+  return <><SectionHeader title="Galeria" description="Controle de presença, apresentação e fila de transporte - sem registro de vendas." /><section className="gallery-summary"><article><Image /><div><small>GRUPOS NA GALERIA</small><strong>{tours.length}</strong></div></article><article><Users /><div><small>PESSOAS NA GALERIA</small><strong>{tours.reduce((sum, tour) => sum + tour.people, 0)}</strong></div></article><article><UserCog /><div><small>CONSULTORES ATIVOS</small><strong>{groupsByConsultant.length}</strong></div></article></section><section className="dashboard-columns"><div className="panel"><div className="panel-heading"><div><h2>Distribuição por consultor</h2><p>Grupos atualmente entregues na Galeria</p></div></div><div className="consultant-distribution">{groupsByConsultant.length ? groupsByConsultant.map(({ consultant, tours: assigned }) => <div key={consultant.id}><Avatar name={consultant.name} color="purple" /><span>{consultant.name}</span><strong>{assigned.length} grupo{assigned.length > 1 ? 's' : ''}</strong></div>) : <div className="empty-state">Nenhum grupo na Galeria.</div>}</div></div><div className="panel"><div className="panel-heading"><div><h2>Apresentações</h2><p>Estado de cada grupo</p></div></div><div className="gallery-list">{tours.map((tour) => <div className="gallery-row" key={tour.id}><Avatar name={consultantName(tour)} color="purple" /><div><strong>{tour.groupName}</strong><span>{consultantName(tour)} · {tour.people} pessoas</span></div><div className="gallery-action"><StatusPill status={tour.status} />{tour.status === 'NA_GALERIA' && <button className="mini-action" onClick={() => onAction(tour, 'presentation-started')}>Iniciar</button>}{tour.status === 'EM_APRESENTACAO' && <button className="mini-action" onClick={() => onAction(tour, 'presentation-finished')}>Finalizar</button>}</div></div>)}</div></div></section></>;
+}
+
+function DriversPage({ data }) {
+  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>Uma saída é contabilizada somente ao iniciar novo tour no Prestige.</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th></tr></thead><tbody>{data.drivers.map((driver) => <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td></tr>)}</tbody></table></div></section></>;
+}
+
+function ConsultantsPage({ data }) {
+  const currentTours = data.tours.filter((tour) => tour.status !== 'CONCLUIDO');
+  return <><SectionHeader title="Consultores" description="Consultores vinculados aos grupos da operação." /><section className="consultants-grid">{data.consultants.map((consultant) => { const tours = currentTours.filter((tour) => tour.consultantId === consultant.id); return <article className="consultant-card" key={consultant.id}><Avatar name={consultant.name} color="pink" /><h2>{consultant.name}</h2><span className={consultant.active ? 'active-dot' : 'inactive-dot'}>{consultant.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>grupos ativos</small></div></article>; })}</section></>;
+}
+
+function CartsPage({ data }) {
+  return <><SectionHeader title="Carrinhos" description="Capacidade e situação dos carrinhos vinculados à operação." /><section className="carts-grid">{data.carts.map((cart) => <article className="cart-card" key={cart.id}><div className={cart.status === 'DISPONIVEL' ? 'cart-icon available' : 'cart-icon'}><ShoppingCart size={27} /></div><h2>{cart.name}</h2><p>Capacidade para <strong>{cart.capacity} pessoas</strong></p><span className={classNames('status-pill', cart.status === 'DISPONIVEL' ? 'tone-green' : 'tone-blue')}>{cart.status === 'DISPONIVEL' ? 'Disponível' : 'Em uso'}</span></article>)}</section></>;
+}
+
+function HistoryPage({ data }) {
+  return <><SectionHeader title="Histórico e auditoria" description="Todas as movimentações relevantes da operação são registradas aqui." /><section className="panel full-panel"><div className="history-list">{data.activities.map((activity) => <article key={activity.id}><span className="history-mark"><FileClock size={18} /></span><div><h3>{activity.message}</h3><p>{activity.userName} · {new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(activity.at))}</p>{activity.previous && <div className="history-state"><StatusPill status={activity.previous} /><ChevronRight size={14} /><StatusPill status={activity.next} /></div>}</div></article>)}</div></section></>;
+}
+
+function ReportsPage({ data }) {
+  const active = data.tours.filter((tour) => tour.status !== 'CONCLUIDO');
+  const selfGuide = active.filter((tour) => tour.selfGuide);
+  const availableDrivers = data.drivers.filter((driver) => driver.status === 'DISPONIVEL');
+  return <><SectionHeader title="Relatórios" description="Indicadores rápidos para a coordenação da operação." /><section className="report-grid"><MetricCard icon={Route} color="blue" title="Tours ativos" count={active.length} sub={`${active.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={Flag} color="orange" title="Grupos Self Guide" count={selfGuide.length} sub={`${selfGuide.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={CarFront} color="green" title="Motoristas disponíveis" count={availableDrivers.length} sub={`${data.drivers.length} cadastrados`} /><MetricCard icon={ShoppingCart} color="purple" title="Carrinhos em operação" count={data.carts.filter((cart) => cart.status !== 'DISPONIVEL').length} sub={`${data.carts.length} cadastrados`} /></section><section className="panel full-panel"><div className="panel-heading"><div><h2>Saídas por motorista</h2><p>Contagem de tours iniciados no Prestige Praia do Forte.</p></div></div><div className="bar-list">{data.drivers.map((driver) => <div key={driver.id}><span>{driver.name}</span><div><i style={{ width: `${Math.max(8, Math.round((driver.toursStarted / Math.max(...data.drivers.map((item) => item.toursStarted), 1)) * 100))}%` }} /></div><strong>{driver.toursStarted}</strong></div>)}</div></section></>;
+}
+
+function SettingsPage({ data, user, token, refresh, notify }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name: '', username: '', password: '', role: 'MOTORISTA' });
+  const [saving, setSaving] = useState(false);
+  if (user.role !== 'ADMIN') return <section className="restricted"><LockKeyhole size={35} /><h1>Acesso restrito</h1><p>Somente administradores podem gerenciar usuários.</p></section>;
+  async function createUser(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, '/api/users', { method: 'POST', body: JSON.stringify(form) }); setForm({ name: '', username: '', password: '', role: 'MOTORISTA' }); setOpen(false); await refresh(); notify('Usuário criado com sucesso.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <><SectionHeader title="Configurações" description="Gerencie os usuários e os níveis de acesso ao sistema." action={() => setOpen(true)} actionText="Novo usuário" /><section className="panel full-panel"><div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Administradores podem criar e manter os acessos da operação.</p></div></div><div className="table-wrap"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Criado em</th></tr></thead><tbody>{data.users.map((item) => <tr key={item.id}><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{item.role === 'ADMIN' ? 'Administrador' : item.role === 'MOTORISTA' ? 'Motorista' : 'Hostess'}</span></td><td><span className="active-dot">Ativo</span></td><td>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(new Date(item.createdAt))}</td></tr>)}</tbody></table></div></section>{open && <Modal title="Criar usuário" onClose={() => setOpen(false)}><form className="modal-form" onSubmit={createUser}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>Senha inicial<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required /></label><label>Perfil<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="ADMIN">Administrador</option></select></label><div className="role-help"><strong>Hostess:</strong> vê somente totais de tours e Self Guide.<br /><strong>Motorista:</strong> executa todos os processos operacionais.<br /><strong>Administrador:</strong> possui acesso completo e cria usuários.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Criar usuário</button></form></Modal>}</>;
+}
+
+function CreateTourModal({ data, onClose, token, refresh, notify }) {
+  const [form, setForm] = useState({ groupName: '', people: '', consultantId: data.consultants[0]?.id || '', selfGuide: false });
+  const [saving, setSaving] = useState(false);
+  async function submit(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, '/api/tours', { method: 'POST', body: JSON.stringify({ ...form, people: Number(form.people) }) }); await refresh(); notify('Grupo cadastrado no Prestige.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title="Cadastrar novo tour" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Família ou casal<input value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="Ex.: Família de Maria" required /></label><label>Quantidade de pessoas<input type="number" min="1" max="48" value={form.people} onChange={(event) => setForm({ ...form, people: event.target.value })} required /></label><label>Consultor<select value={form.consultantId} onChange={(event) => setForm({ ...form, consultantId: event.target.value })}>{data.consultants.filter((item) => item.active).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={form.selfGuide} onChange={(event) => setForm({ ...form, selfGuide: event.target.checked })} /> Grupo Self Guide</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Cadastrar no Prestige</button></form></Modal>;
+}
+
+function ActionModal({ tour, action, data, onClose, token, refresh, notify }) {
+  const meta = actionMeta[action];
+  const capacity = Math.max(...data.carts.map((cart) => cart.capacity), 6);
+  const initialCount = meta.allocations ? Math.ceil(tour.people / capacity) : 0;
+  const [allocations, setAllocations] = useState(() => Array.from({ length: initialCount }, () => ({ driverId: '', cartId: '', seats: '' })));
+  const [destinationId, setDestinationId] = useState(tour.destinationId || data.destinations[0]?.id || '');
+  const [saving, setSaving] = useState(false);
+  const drivers = data.drivers.filter((driver) => driver.status === 'DISPONIVEL');
+  const carts = data.carts.filter((cart) => cart.status === 'DISPONIVEL');
+  const updateAllocation = (index, field, value) => setAllocations((current) => current.map((allocation, itemIndex) => itemIndex === index ? { ...allocation, [field]: value } : allocation));
+  async function submit(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, `/api/tours/${tour.id}/action`, { method: 'POST', body: JSON.stringify({ action, allocations, destinationId }) }); await refresh(); notify(`${meta.label} registrado.`, 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title={meta.title} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{tour.people} pessoas · {STATUS[tour.status]?.label}</span></div></div><p className="modal-intro">{meta.text}</p><form className="modal-form" onSubmit={submit}>{meta.allocations && <div className="allocation-form"><div className="allocation-title"><span>Alocação de transporte</span>{initialCount > 1 && <small>{initialCount} carrinhos necessários para a capacidade</small>}</div>{allocations.map((allocation, index) => <div className="allocation-row" key={index}><label>Motorista<select value={allocation.driverId} onChange={(event) => updateAllocation(index, 'driverId', event.target.value)} required><option value="">Selecione</option>{drivers.map((driver) => <option value={driver.id} key={driver.id}>{driver.name}</option>)}</select></label><label>Carrinho<select value={allocation.cartId} onChange={(event) => updateAllocation(index, 'cartId', event.target.value)} required><option value="">Selecione</option>{carts.map((cart) => <option value={cart.id} key={cart.id}>{cart.name} · {cart.capacity} lugares</option>)}</select></label></div>)}</div>}{meta.destination && <label>Destino final<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required>{data.destinations.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}<button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} <Check size={17} /> Confirmar</button></form></Modal>;
+}
+
+function Modal({ title, onClose, children }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button onClick={onClose} aria-label="Fechar"><X size={21} /></button></div>{children}</section></div>;
+}
+
+function App() {
+  const [token, setToken] = useState(() => localStorage.getItem('iberostar-tour-token') || '');
+  const [user, setUser] = useState(null);
+  const [data, setData] = useState(null);
+  const [page, setPage] = useState('dashboard');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [modal, setModal] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [loading, setLoading] = useState(Boolean(token));
+
+  const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
+  const refresh = async () => {
+    const payload = await api(token, '/api/bootstrap');
+    setUser(payload.user); setData(payload.data);
+  };
+  useEffect(() => { if (!token) { setLoading(false); return; } setLoading(true); refresh().catch(() => { localStorage.removeItem('iberostar-tour-token'); setToken(''); }).finally(() => setLoading(false)); }, [token]);
+  function login(nextToken, nextUser) { localStorage.setItem('iberostar-tour-token', nextToken); setUser(nextUser); setToken(nextToken); }
+  async function signOut() { try { await api(token, '/api/auth/logout', { method: 'POST' }); } catch { /* session may already be gone */ } localStorage.removeItem('iberostar-tour-token'); setToken(''); setUser(null); setData(null); }
+  const content = useMemo(() => {
+    if (!data || !user) return null;
+    const openAction = (tour, action) => setModal({ kind: 'action', tour, action });
+    const openCreate = () => setModal({ kind: 'create' });
+    if (page === 'dashboard') return <Dashboard data={data} user={user} onAction={openAction} onCreate={openCreate} setPage={setPage} />;
+    if (['prestige', 'tours', 'home', 'destinations'].includes(page)) return <OperationalPage page={page} data={data} onAction={openAction} onCreate={openCreate} />;
+    if (page === 'gallery') return <GalleryPage data={data} onAction={openAction} />;
+    if (page === 'drivers') return <DriversPage data={data} />;
+    if (page === 'consultants') return <ConsultantsPage data={data} />;
+    if (page === 'carts') return <CartsPage data={data} />;
+    if (page === 'history') return <HistoryPage data={data} />;
+    if (page === 'reports') return <ReportsPage data={data} />;
+    if (page === 'settings') return <SettingsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+    return null;
+  }, [data, user, page, token]);
+  if (!token) return <Login onLogin={login} />;
+  if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} /><main className="content-area">{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{user.role !== 'HOSTESS' && <MobileNav page={page} setPage={setPage} />}</div>;
+}
+
+createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);
