@@ -149,7 +149,7 @@ function Login({ onLogin }) {
 }
 
 function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
-  const nav = user.role === 'HOSTESS' ? NAV.filter((item) => item.id === 'dashboard') : user.role === 'CONCIERGE' ? NAV.filter((item) => item.id === 'transfers') : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
+  const nav = user.role === 'HOSTESS' ? NAV.filter((item) => item.id === 'prestige') : user.role === 'CONCIERGE' ? NAV.filter((item) => item.id === 'transfers') : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
   return <aside className={classNames('sidebar', open && 'sidebar-open')}>
     <div className="sidebar-top"><Logo /><button className="sidebar-close" onClick={() => setOpen(false)} aria-label="Fechar menu"><X /></button></div>
     <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{label}</span></button>)}</nav>
@@ -276,6 +276,13 @@ function HostessDashboard({ tours, token, refresh, notify }) {
   const active = tours.filter((tour) => tour.status !== 'CONCLUIDO');
   const awaitingDriver = tours.filter((tour) => tour.requiresDetails && tour.status === 'DISPONIVEL');
   return <><section className="page-title hostess-title"><div><span>VISUALIZAÇÃO HOSTESS</span><h1>Resumo da operação</h1><p>Registre apenas a quantidade de tours; o motorista completa os dados na saída.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidade de tours</button></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS EM OPERAÇÃO</span><strong>{active.length}</strong><small>{awaitingDriver.length} aguardando motorista</small></div></article><article><Flag size={35} /><div><span>SELF GUIDE</span><strong>{totalSelfGuide.length}</strong><small>{totalSelfGuide.reduce((sum, tour) => sum + tour.people, 0)} hóspedes em grupos Self Guide</small></div></article></section><section className="panel hostess-note"><h2>Seu perfil é de registro e acompanhamento</h2><p>Não é necessário informar consultor nem quantidade de hóspedes. Esses dados, junto com carrinhos e motoristas, são definidos pela equipe de transporte.</p></section>{open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}</>;
+}
+
+function HostessPrestigePage({ data, user, token, refresh, notify }) {
+  const [open, setOpen] = useState(false);
+  const awaitingDriver = (data.tours || []).filter((tour) => tour.requiresDetails && tour.status === 'DISPONIVEL');
+  const registeredToday = (data.tours || []).filter((tour) => tour.registeredBy === 'HOSTESS').length;
+  return <><CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} /><section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>Prestige Praia do Forte</h1><p>A Hostess registra somente a quantidade de tours disponíveis.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidade de tours</button></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS REGISTRADOS</span><strong>{registeredToday}</strong><small>{awaitingDriver.length} aguardando identificação pelo motorista</small></div></article><article><Users size={35} /><div><span>PRÓXIMA ETAPA</span><strong>{awaitingDriver.length}</strong><small>motorista informa família, hóspedes e transporte</small></div></article></section><section className="panel hostess-note"><h2>Registro simplificado</h2><p>Nesta aba a Hostess não informa família, consultor, quantidade de hóspedes ou motoristas: apenas a quantidade de tours.</p></section>{open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}</>;
 }
 
 function Queue({ items, data, destinations = false }) {
@@ -491,7 +498,7 @@ function App() {
   const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
   const refresh = async () => {
     const payload = await api(token, '/api/bootstrap');
-    setUser(payload.user); setData(payload.data); setPage((current) => payload.user.role === 'CONCIERGE' ? 'transfers' : current);
+    setUser(payload.user); setData(payload.data); setPage((current) => payload.user.role === 'CONCIERGE' ? 'transfers' : payload.user.role === 'HOSTESS' ? 'prestige' : current);
   };
   useEffect(() => { if (!token) { setLoading(false); return; } setLoading(true); refresh().catch(() => { localStorage.removeItem('iberostar-tour-token'); setToken(''); }).finally(() => setLoading(false)); }, [token]);
   function login(nextToken, nextUser) { localStorage.setItem('iberostar-tour-token', nextToken); setUser(nextUser); setToken(nextToken); }
@@ -503,6 +510,7 @@ function App() {
     const openTransfer = () => setModal({ kind: 'transfer' });
     const openTransferAction = (transfer, action) => setModal({ kind: 'transfer-action', transfer, action });
     if (user.role === 'CONCIERGE') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
+    if (user.role === 'HOSTESS') return <HostessPrestigePage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (page === 'dashboard') return <Dashboard data={data} user={user} token={token} refresh={refresh} notify={notify} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
     if (['prestige', 'tours', 'home', 'destinations'].includes(page)) return <OperationalPage page={page} data={data} onAction={openAction} onCreate={openCreate} />;
     if (page === 'transfers') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
