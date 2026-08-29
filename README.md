@@ -37,9 +37,9 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 
 ## Regras operacionais atendidas
 
-- Cada carrinho leva 5 passageiros além do motorista: 1 lugar reservado ao consultor e até 4 hóspedes. A distribuição de hóspedes por carrinho é informada pelo motorista (por exemplo, 3 em um e 2 em outro).
-- Um grupo pode ter mais de um carrinho e motorista, sem duplicar o atendimento. O sistema exige carrinhos suficientes para todos os hóspedes.
-- A Hostess registra somente a quantidade total de tours, a quantidade de tours Self Guide e a onda; não informa família, consultor nem hóspedes. O motorista completa esses dados ao iniciar a saída.
+- Cada carrinho leva até 5 passageiros além do motorista. Ao selecionar um motorista, o sistema reserva automaticamente um carrinho disponível; não é necessário informar hóspedes nem escolher o carrinho.
+- Um tour pode ter mais de um carrinho e motorista, sem duplicar o atendimento. Para adicionar um carrinho, informe somente o motorista.
+- A Hostess registra somente a quantidade total de tours, a quantidade de tours Self Guide e a onda. No início da saída, o motorista informa somente os motoristas que participarão; não há campos de família, casal, consultor ou quantidade de hóspedes.
 - Tours são organizados por 1ª onda (09:00) e 2ª onda (11:00), sem horário obrigatório de encerramento.
 - Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª onda) ou 09:50 (2ª onda).
 - Cada Concierge vê apenas seus próprios convites. O painel exibe o total de famílias convidadas, pessoas convidadas e desistências; uma desistência só pode ser registrada antes do início do traslado.

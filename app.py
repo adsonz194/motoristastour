@@ -365,54 +365,43 @@ def apply_transfer_action(db: dict[str, Any], user: dict[str, Any], transfer: di
     raise APIError("Ação de traslado não encontrada.", 404)
 
 
-def normalized_allocations(db: dict[str, Any], raw_allocations: Any, people: int) -> list[dict[str, Any]]:
+def normalized_allocations(db: dict[str, Any], raw_allocations: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_allocations, list) or not raw_allocations:
-        raise APIError("Selecione pelo menos um carrinho e um motorista.")
+        raise APIError("Selecione pelo menos um motorista.")
     drivers: set[str] = set()
     carts: set[str] = set()
     allocations: list[dict[str, Any]] = []
     for allocation in raw_allocations:
         driver_id = allocation.get("driverId")
-        cart_id = allocation.get("cartId")
-        if not driver_id or not cart_id:
-            raise APIError("Cada alocação exige motorista e carrinho.")
-        if driver_id in drivers or cart_id in carts:
-            raise APIError("Não repita motorista ou carrinho na mesma saída.")
+        if not driver_id:
+            raise APIError("Informe o motorista de cada carrinho.")
+        if driver_id in drivers:
+            raise APIError("Não repita motorista na mesma saída.")
         drivers.add(driver_id)
-        carts.add(cart_id)
         driver = find(db["drivers"], driver_id, "Motorista")
-        cart = find(db["carts"], cart_id, "Carrinho")
         if not driver.get("active", True) or driver["status"] != DRIVER_AVAILABLE:
             raise APIError(f"{driver['name']} não está disponível.")
         if not driver_has_checked_in(db, driver_id):
             raise APIError(f"{driver['name']} ainda não fez check-in hoje.")
+        requested_cart_id = allocation.get("cartId")
+        if requested_cart_id:
+            cart = find(db["carts"], requested_cart_id, "Carrinho")
+        else:
+            cart = next((item for item in db["carts"] if item["id"] not in carts and item.get("status") == "DISPONIVEL"), None)
+            if not cart:
+                raise APIError("Não há carrinho disponível para este motorista.")
+        if cart["id"] in carts:
+            raise APIError("Não repita carrinho na mesma saída.")
+        carts.add(cart["id"])
         if cart["status"] != "DISPONIVEL":
             raise APIError(f"{cart['name']} não está disponível.")
-        try:
-            guest_seats = int(allocation.get("seats", 0))
-        except (TypeError, ValueError):
-            guest_seats = 0
-        if not 1 <= guest_seats <= cart.get("guestCapacity", CART_GUEST_CAPACITY):
-            raise APIError(f"{cart['name']} leva até {cart.get('guestCapacity', CART_GUEST_CAPACITY)} hóspedes: o quinto lugar é reservado ao consultor.")
-        allocations.append({"driverId": driver_id, "cartId": cart_id, "seats": guest_seats, "guestSeats": guest_seats, "arrived": False})
-    if sum(item["seats"] for item in allocations) < people:
-        raise APIError("Os lugares para hóspedes não atendem todas as pessoas do grupo. Cada carrinho leva até 4 hóspedes e 1 consultor.")
+        allocations.append({"driverId": driver_id, "cartId": cart["id"], "seats": 0, "guestSeats": 0, "arrived": False})
     return allocations
 
 
-def register_hostess_tour_details(db: dict[str, Any], tour: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Drivers identify a tour registered only as a quantity by the hostess."""
-    group_name = str(payload.get("groupName", "")).strip()
-    try:
-        people = int(payload.get("people", 0))
-    except (TypeError, ValueError):
-        people = 0
-    if not group_name or not 1 <= people <= 48:
-        raise APIError("Informe o nome da família/casal e a quantidade de hóspedes entre 1 e 48.")
-    consultant_id = payload.get("consultantId") or None
-    if consultant_id:
-        find(db["consultants"], consultant_id, "Consultor")
-    tour.update({"groupName": group_name, "people": people, "consultantId": consultant_id, "selfGuide": bool(payload.get("selfGuide")), "requiresDetails": False})
+def confirm_quantity_tour_start(tour: dict[str, Any]) -> None:
+    """A quantity-only tour needs only driver assignments to start."""
+    tour.update({"requiresDetails": False, "updatedAt": timestamp()})
 
 
 def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_guide_quantity: Any = 0) -> list[dict[str, Any]]:
@@ -450,9 +439,9 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
     if action == "start":
         if tour["status"] != STATE_AVAILABLE:
             raise APIError("Apenas grupos disponíveis podem iniciar tour.")
-        if tour.get("requiresDetails") or not tour.get("people"):
-            register_hostess_tour_details(db, tour, payload)
-        tour["allocations"] = normalized_allocations(db, payload.get("allocations"), tour["people"])
+        if tour.get("requiresDetails"):
+            confirm_quantity_tour_start(tour)
+        tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, tours=True)
             update_cart(db, allocation["cartId"], "EM_USO")
@@ -507,7 +496,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
     if action == "pickup-home":
         if tour["status"] != STATE_WAITING_HOME:
             raise APIError("O grupo não está aguardando na Casa.")
-        tour["allocations"] = normalized_allocations(db, payload.get("allocations"), tour["people"])
+        tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, home_pickup=True)
             update_cart(db, allocation["cartId"], "EM_USO")
@@ -552,7 +541,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
     if action == "assign-destination":
         if tour["status"] != STATE_WAITING_DESTINATION:
             raise APIError("O grupo não está aguardando destino.")
-        tour["allocations"] = normalized_allocations(db, payload.get("allocations"), tour["people"])
+        tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_DESTINATION)
             update_cart(db, allocation["cartId"], "EM_USO")
