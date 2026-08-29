@@ -47,6 +47,8 @@ DRIVER_DESTINATION = "DESTINO_FINAL"
 DRIVER_LEAVE = "FOLGA"
 DRIVER_MEDICAL = "ATESTADO"
 DRIVER_STATUSES = {DRIVER_AVAILABLE, DRIVER_IN_TOUR, DRIVER_HOME, DRIVER_GALLERY, DRIVER_DESTINATION, DRIVER_LEAVE, DRIVER_MEDICAL}
+CART_PASSENGER_CAPACITY = 5  # Passenger seats; the driver is not counted here.
+CART_GUEST_CAPACITY = 4  # One passenger seat is reserved for the consultant.
 
 TRANSFER_SCHEDULES = {
     "WAVE_1": {"label": "1ª onda", "tourTime": "09:00", "transferTime": "07:50"},
@@ -113,11 +115,11 @@ def initial_database() -> dict[str, Any]:
             {"id": "drv_ricardo", "name": "Ricardo", "active": True, "status": DRIVER_GALLERY, "toursStarted": 3, "homePickups": 0, "lastActivity": created},
         ],
         "carts": [
-            {"id": "cart_01", "name": "Carrinho 01", "capacity": 6, "status": "EM_USO"},
-            {"id": "cart_02", "name": "Carrinho 02", "capacity": 6, "status": "EM_USO"},
-            {"id": "cart_03", "name": "Carrinho 03", "capacity": 6, "status": "DISPONIVEL"},
-            {"id": "cart_04", "name": "Carrinho 04", "capacity": 6, "status": "EM_USO"},
-            {"id": "cart_05", "name": "Carrinho 05", "capacity": 6, "status": "EM_USO"},
+            {"id": "cart_01", "name": "Carrinho 01", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
+            {"id": "cart_02", "name": "Carrinho 02", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
+            {"id": "cart_03", "name": "Carrinho 03", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "DISPONIVEL"},
+            {"id": "cart_04", "name": "Carrinho 04", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
+            {"id": "cart_05", "name": "Carrinho 05", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
         ],
         "destinations": [
             {"id": "dest_prestige", "name": "Prestige Praia do Forte", "active": True},
@@ -203,6 +205,11 @@ def operational_database() -> dict[str, Any]:
     if "attendance" not in db:
         db["attendance"] = []
         schema_updated = True
+    for cart in db.get("carts", []):
+        if cart.get("capacity") != CART_PASSENGER_CAPACITY or cart.get("guestCapacity") != CART_GUEST_CAPACITY:
+            cart["capacity"] = CART_PASSENGER_CAPACITY
+            cart["guestCapacity"] = CART_GUEST_CAPACITY
+            schema_updated = True
     if ensure_operational_day(db) or schema_updated:
         save_database(db)
     return db
@@ -364,10 +371,31 @@ def normalized_allocations(db: dict[str, Any], raw_allocations: Any, people: int
             raise APIError(f"{driver['name']} ainda não fez check-in hoje.")
         if cart["status"] != "DISPONIVEL":
             raise APIError(f"{cart['name']} não está disponível.")
-        allocations.append({"driverId": driver_id, "cartId": cart_id, "seats": int(allocation.get("seats") or cart["capacity"]), "arrived": False})
+        try:
+            guest_seats = int(allocation.get("seats", 0))
+        except (TypeError, ValueError):
+            guest_seats = 0
+        if not 1 <= guest_seats <= cart.get("guestCapacity", CART_GUEST_CAPACITY):
+            raise APIError(f"{cart['name']} leva até {cart.get('guestCapacity', CART_GUEST_CAPACITY)} hóspedes: o quinto lugar é reservado ao consultor.")
+        allocations.append({"driverId": driver_id, "cartId": cart_id, "seats": guest_seats, "guestSeats": guest_seats, "arrived": False})
     if sum(item["seats"] for item in allocations) < people:
-        raise APIError("A capacidade dos carrinhos não atende todas as pessoas do grupo.")
+        raise APIError("Os lugares para hóspedes não atendem todas as pessoas do grupo. Cada carrinho leva até 4 hóspedes e 1 consultor.")
     return allocations
+
+
+def register_hostess_tour_details(db: dict[str, Any], tour: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Drivers identify a tour registered only as a quantity by the hostess."""
+    group_name = str(payload.get("groupName", "")).strip()
+    try:
+        people = int(payload.get("people", 0))
+    except (TypeError, ValueError):
+        people = 0
+    if not group_name or not 1 <= people <= 48:
+        raise APIError("Informe o nome da família/casal e a quantidade de hóspedes entre 1 e 48.")
+    consultant_id = payload.get("consultantId") or None
+    if consultant_id:
+        find(db["consultants"], consultant_id, "Consultor")
+    tour.update({"groupName": group_name, "people": people, "consultantId": consultant_id, "selfGuide": bool(payload.get("selfGuide")), "requiresDetails": False})
 
 
 def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
@@ -377,6 +405,8 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
     if action == "start":
         if tour["status"] != STATE_AVAILABLE:
             raise APIError("Apenas grupos disponíveis podem iniciar tour.")
+        if tour.get("requiresDetails") or not tour.get("people"):
+            register_hostess_tour_details(db, tour, payload)
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"), tour["people"])
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, tours=True)
@@ -388,18 +418,42 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
     if action == "arrived-home":
         if tour["status"] != STATE_IN_TOUR:
             raise APIError("O grupo precisa estar em tour para chegar à Casa.")
-        for allocation in allocations():
-            update_driver(db, allocation["driverId"], DRIVER_HOME)
+        driver_id = payload.get("driverId")
+        allocation = next((item for item in allocations() if item["driverId"] == driver_id), None)
+        if not allocation:
+            raise APIError("Selecione um motorista vinculado a este grupo.")
+        if allocation.get("homeDecision"):
+            raise APIError("Este motorista já registrou sua situação na Casa.")
+        decision = payload.get("homeDecision")
+        if decision not in {"DEIXOU_NA_CASA", "AGUARDOU_NA_CASA"}:
+            raise APIError("Informe se o motorista deixou o grupo ou permaneceu na Casa.")
+        allocation["homeDecision"] = decision
+        allocation["arrivedAtHome"] = timestamp()
+        allocation["arrived"] = True
+        if decision == "DEIXOU_NA_CASA":
+            update_driver(db, driver_id, DRIVER_AVAILABLE)
+            update_cart(db, allocation["cartId"], "DISPONIVEL")
+        else:
+            update_driver(db, driver_id, DRIVER_HOME)
         tour["phase"] = "Casa"
-        change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} chegou à Casa.")
+        recorded = sum(1 for item in allocations() if item.get("homeDecision"))
+        if recorded < len(allocations()):
+            tour["updatedAt"] = timestamp()
+            log_activity(db, user, tour, STATE_IN_TOUR, STATE_IN_TOUR, f"{find(db['drivers'], driver_id, 'Motorista')['name']} registrou: {'deixou o grupo na Casa' if decision == 'DEIXOU_NA_CASA' else 'aguardou na Casa'} ({recorded}/{len(allocations())} motoristas).")
+            return
+        if any(item.get("homeDecision") == "AGUARDOU_NA_CASA" for item in allocations()):
+            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa; os motoristas registraram suas situações.")
+        else:
+            change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando transporte na Casa; todos os motoristas retornaram ao Prestige.")
         return
 
     if action == "return-prestige":
         if tour["status"] != STATE_HOME:
             raise APIError("A ação é válida somente para grupos na Casa.")
         for allocation in allocations():
-            update_driver(db, allocation["driverId"], DRIVER_AVAILABLE)
-            update_cart(db, allocation["cartId"], "DISPONIVEL")
+            if allocation.get("homeDecision") != "DEIXOU_NA_CASA":
+                update_driver(db, allocation["driverId"], DRIVER_AVAILABLE)
+                update_cart(db, allocation["cartId"], "DISPONIVEL")
         tour["allocations"] = []
         tour["phase"] = "Casa"
         change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando transporte na Casa.")
@@ -632,6 +686,33 @@ def create_tour():
         log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
         save_database(db)
         return jsonify(tour=tour), 201
+
+
+@app.post("/api/tours/hostess")
+def register_hostess_tours():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        if user["role"] != ROLE_HOSTESS:
+            raise APIError("Somente o perfil Hostess registra a quantidade de tours.", 403)
+        try:
+            quantity = int(payload.get("quantity", 0))
+        except (TypeError, ValueError):
+            quantity = 0
+        if not 1 <= quantity <= 30:
+            raise APIError("Informe uma quantidade de tours entre 1 e 30.")
+        created_at = timestamp()
+        existing = sum(1 for item in db["tours"] if item.get("registeredBy") == ROLE_HOSTESS)
+        tours = []
+        for offset in range(quantity):
+            number = existing + offset + 1
+            tour = {"id": new_id("tour"), "groupName": f"Tour {number} aguardando motorista", "people": 0, "selfGuide": False, "consultantId": None, "wave": "WAVE_1", "scheduledTime": TRANSFER_SCHEDULES["WAVE_1"]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": ROLE_HOSTESS, "createdAt": created_at, "updatedAt": created_at, "allocations": []}
+            db["tours"].insert(0, tour)
+            tours.append(tour)
+        log_activity(db, user, None, None, STATE_AVAILABLE, f"Hostess registrou {quantity} tour{'s' if quantity > 1 else ''} aguardando motorista.")
+        save_database(db)
+        return jsonify(tours=tours), 201
 
 
 @app.delete("/api/users/<user_id>")
