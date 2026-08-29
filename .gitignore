@@ -3,3 +3,5 @@ dist/
 data/database.json
 .env
 *.log
+__pycache__/
+*.py[cod]

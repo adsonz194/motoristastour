@@ -4,9 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "start": "node server.mjs"
+    "ui:dev": "vite",
+    "ui:build": "vite build"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

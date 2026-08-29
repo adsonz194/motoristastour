@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: motoristastour
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --bind 0.0.0.0:$PORT app:app
+    healthCheckPath: /
+    disk:
+      name: operational-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1

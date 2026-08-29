@@ -1,23 +1,30 @@
 # Iberostar Tour Interno
 
-Painel operacional para controlar grupos e familias entre Prestige, Casa, Galeria e destino final. O projeto foi construído a partir do plano operacional e da referência visual fornecidos.
+Painel operacional para controlar grupos e famílias entre Prestige, Casa, Galeria e destino final. A aplicação de produção é executada em **Python com Flask e Gunicorn**, pronta para publicação no Render.
 
 ## Executar localmente
 
-```bash
-pnpm install
-pnpm dev
-```
-
-Em outro terminal, execute a API:
+Requer Python 3.11 ou superior.
 
 ```bash
-pnpm start
+python -m venv .venv
+./.venv/Scripts/python -m pip install -r requirements.txt
+./.venv/Scripts/python app.py
 ```
 
-Abra `http://localhost:5173`. A API usa a porta `4174` e salva seus dados em `data/database.json`, criado automaticamente na primeira execução.
+No macOS ou Linux, ative o ambiente virtual antes de executar os dois últimos comandos. Abra `http://localhost:4174`.
 
-Para gerar a versão de produção, execute `pnpm build`; em seguida, `pnpm start` publica o conteúdo de `dist/` na porta `4174`.
+Os dados são salvos em `data/database.json`, criado automaticamente na primeira execução. A pasta de dados não é versionada para impedir que acessos e dados operacionais sejam enviados ao GitHub.
+
+## Publicação no Render
+
+O arquivo `render.yaml` já está configurado para criar um Web Service Python com Gunicorn e um disco persistente para o banco local. No Render, selecione **New → Blueprint** e conecte este repositório. O serviço usará:
+
+- Build: `pip install -r requirements.txt`
+- Start: `gunicorn --workers 1 --bind 0.0.0.0:$PORT app:app`
+- Disco persistente: `/opt/render/project/src/data`
+
+O disco exige um plano compatível com armazenamento persistente e a aplicação está fixada em uma única instância, pois o banco JSON é local ao serviço. Para escalar para múltiplas instâncias, migre o armazenamento para PostgreSQL.
 
 ## Perfis
 
