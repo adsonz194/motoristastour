@@ -27,7 +27,8 @@ SESSIONS: dict[str, dict[str, Any]] = {}
 ROLE_ADMIN = "ADMIN"
 ROLE_DRIVER = "MOTORISTA"
 ROLE_HOSTESS = "HOSTESS"
-ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS}
+ROLE_CONCIERGE = "CONCIERGE"
+ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE}
 
 STATE_AVAILABLE = "DISPONIVEL"
 STATE_IN_TOUR = "EM_TOUR"
@@ -57,6 +58,7 @@ TRANSFER_SCHEDULES = {
 TRANSFER_SCHEDULED = "AGENDADO"
 TRANSFER_IN_PROGRESS = "EM_DESLOCAMENTO"
 TRANSFER_ARRIVED = "CHEGOU_PRESTIGE"
+TRANSFER_WITHDRAWN = "DESISTENCIA"
 OPERATION_TZ = ZoneInfo("America/Sao_Paulo")
 
 # This is a one-way scrypt hash. The initial password is never stored in source code.
@@ -253,6 +255,11 @@ def require_operational(user: dict[str, Any]) -> None:
         raise APIError("Seu perfil é somente de consulta.", 403)
 
 
+def require_transfer_access(user: dict[str, Any]) -> None:
+    if user["role"] not in {ROLE_ADMIN, ROLE_DRIVER, ROLE_CONCIERGE}:
+        raise APIError("Seu perfil não possui acesso aos convites Waves.", 403)
+
+
 def require_admin(user: dict[str, Any]) -> None:
     if user["role"] != ROLE_ADMIN:
         raise APIError("Apenas administradores podem realizar esta ação.", 403)
@@ -334,6 +341,16 @@ def change_transfer_state(db: dict[str, Any], user: dict[str, Any], transfer: di
 
 
 def apply_transfer_action(db: dict[str, Any], user: dict[str, Any], transfer: dict[str, Any], action: str) -> None:
+    if action == "withdraw":
+        if user["role"] == ROLE_CONCIERGE:
+            if transfer.get("conciergeUserId") != user["id"]:
+                raise APIError("Você pode registrar desistência apenas nos seus próprios convites.", 403)
+        elif user["role"] != ROLE_ADMIN:
+            raise APIError("Somente o concierge responsável ou um administrador registra desistências.", 403)
+        if transfer["status"] != TRANSFER_SCHEDULED:
+            raise APIError("A desistência só pode ser registrada antes do início do traslado.")
+        change_transfer_state(db, user, transfer, TRANSFER_WITHDRAWN, f"{transfer['groupName']} registrou desistência do convite Waves.")
+        return
     require_operational(user)
     if action == "start":
         if transfer["status"] != TRANSFER_SCHEDULED:
@@ -581,14 +598,18 @@ def bootstrap():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
+        data = safe_database(db)
+        if user["role"] == ROLE_CONCIERGE:
+            # Concierges receive only their own invitations; they cannot inspect the operation.
+            data = {"operationDate": db["operationDate"], "transfers": [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]}
         return jsonify(
             user=clean_user(user),
-            data=safe_database(db),
+            data=data,
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE},
             driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
             attendance=attendance_for(db, user["id"]),
             waves=TRANSFER_SCHEDULES,
-            transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED},
+            transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED, "DESISTENCIA": TRANSFER_WITHDRAWN},
         )
 
 
@@ -885,9 +906,9 @@ def create_transfer():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_operational(user)
+        require_transfer_access(user)
         group_name = str(payload.get("groupName", "")).strip()
-        concierge_name = str(payload.get("conciergeName", "")).strip()
+        concierge_name = user["name"] if user["role"] == ROLE_CONCIERGE else str(payload.get("conciergeName", "")).strip()
         try:
             people = int(payload.get("people", 0))
         except (ValueError, TypeError):
@@ -896,7 +917,7 @@ def create_transfer():
         if not group_name or not concierge_name or not 1 <= people <= 48 or wave not in TRANSFER_SCHEDULES:
             raise APIError("Preencha grupo, pessoas, concierge e onda do convite.")
         schedule = TRANSFER_SCHEDULES[wave]
-        transfer = {"id": new_id("transfer"), "groupName": group_name, "people": people, "conciergeName": concierge_name, "wave": wave, "scheduledTime": schedule["transferTime"], "tourStartTime": schedule["tourTime"], "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp()}
+        transfer = {"id": new_id("transfer"), "groupName": group_name, "people": people, "conciergeName": concierge_name, "conciergeUserId": user["id"] if user["role"] == ROLE_CONCIERGE else None, "wave": wave, "scheduledTime": schedule["transferTime"], "tourStartTime": schedule["tourTime"], "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp()}
         db.setdefault("transfers", []).insert(0, transfer)
         log_activity(db, user, None, None, TRANSFER_SCHEDULED, f"Convite de {group_name} agendado no Waves Bahia para {schedule['transferTime']}.", transfer=transfer)
         save_database(db)
