@@ -30,7 +30,7 @@ O disco exige um plano compatível com armazenamento persistente e a aplicação
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
 - **Motorista:** executa os processos operacionais, sem acesso à gestão de usuários.
-- **Hostess:** visualiza somente os totais de tours e de grupos Self Guide.
+- **Hostess:** visualiza somente os totais de tours e de grupos Self Gean.
 - **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado.
 
 O primeiro acesso administrativo usa o usuário e a senha definidos pela operação. A senha é armazenada somente como hash no banco local.
@@ -39,7 +39,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 
 - Cada carrinho leva até 5 passageiros além do motorista. Ao selecionar um motorista, o sistema reserva automaticamente um carrinho disponível; não é necessário informar hóspedes nem escolher o carrinho.
 - Um tour pode ter mais de um carrinho e motorista, sem duplicar o atendimento. Para adicionar um carrinho, informe somente o motorista.
-- A Hostess registra somente a quantidade total de tours, a quantidade de tours Self Guide e a onda. No início da saída, o motorista informa somente os motoristas que participarão; não há campos de família, casal, consultor ou quantidade de hóspedes.
+- A Hostess registra separadamente a quantidade de tours e a quantidade de Self Gean, além da onda. Por exemplo: 3 tours e 2 Self Gean geram 5 registros. No início da saída, o motorista informa somente os motoristas que participarão; não há campos de família, casal, consultor ou quantidade de hóspedes.
 - Tours são organizados por 1ª onda (09:00) e 2ª onda (11:00), sem horário obrigatório de encerramento.
 - Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª onda) ou 09:50 (2ª onda).
 - Cada Concierge vê apenas seus próprios convites. O painel exibe o total de famílias convidadas, pessoas convidadas e desistências; uma desistência só pode ser registrada antes do início do traslado.
