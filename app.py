@@ -415,6 +415,28 @@ def register_hostess_tour_details(db: dict[str, Any], tour: dict[str, Any], payl
     tour.update({"groupName": group_name, "people": people, "consultantId": consultant_id, "selfGuide": bool(payload.get("selfGuide")), "requiresDetails": False})
 
 
+def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any) -> list[dict[str, Any]]:
+    """Register tour quantities; drivers complete guest data at dispatch time."""
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        quantity = 0
+    if not 1 <= quantity <= 30:
+        raise APIError("Informe uma quantidade de tours entre 1 e 30.")
+    if wave not in TRANSFER_SCHEDULES:
+        raise APIError("Selecione a 1ª ou a 2ª onda do tour.")
+    created_at = timestamp()
+    existing = sum(1 for item in db["tours"] if item.get("requiresDetails"))
+    tours = []
+    for offset in range(quantity):
+        number = existing + offset + 1
+        tour = {"id": new_id("tour"), "groupName": f"Tour {number} aguardando motorista", "people": 0, "selfGuide": False, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
+        db["tours"].insert(0, tour)
+        tours.append(tour)
+    log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity > 1 else ''} registrado{'s' if quantity > 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}.")
+    return tours
+
+
 def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
     require_operational(user)
     allocations = lambda: tour.get("allocations", [])
@@ -691,6 +713,10 @@ def create_tour():
         db = operational_database()
         user = get_current_user(db)
         require_operational(user)
+        if "quantity" in payload:
+            tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"))
+            save_database(db)
+            return jsonify(tours=tours), 201
         group_name = str(payload.get("groupName", "")).strip()
         try:
             people = int(payload.get("people", 0))
@@ -717,21 +743,7 @@ def register_hostess_tours():
         user = get_current_user(db)
         if user["role"] != ROLE_HOSTESS:
             raise APIError("Somente o perfil Hostess registra a quantidade de tours.", 403)
-        try:
-            quantity = int(payload.get("quantity", 0))
-        except (TypeError, ValueError):
-            quantity = 0
-        if not 1 <= quantity <= 30:
-            raise APIError("Informe uma quantidade de tours entre 1 e 30.")
-        created_at = timestamp()
-        existing = sum(1 for item in db["tours"] if item.get("registeredBy") == ROLE_HOSTESS)
-        tours = []
-        for offset in range(quantity):
-            number = existing + offset + 1
-            tour = {"id": new_id("tour"), "groupName": f"Tour {number} aguardando motorista", "people": 0, "selfGuide": False, "consultantId": None, "wave": "WAVE_1", "scheduledTime": TRANSFER_SCHEDULES["WAVE_1"]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": ROLE_HOSTESS, "createdAt": created_at, "updatedAt": created_at, "allocations": []}
-            db["tours"].insert(0, tour)
-            tours.append(tour)
-        log_activity(db, user, None, None, STATE_AVAILABLE, f"Hostess registrou {quantity} tour{'s' if quantity > 1 else ''} aguardando motorista.")
+        tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"))
         save_database(db)
         return jsonify(tours=tours), 201
 

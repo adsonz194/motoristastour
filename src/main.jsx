@@ -262,12 +262,13 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
 
 function HostessTourModal({ onClose, token, refresh, notify }) {
   const [quantity, setQuantity] = useState('1');
+  const [wave, setWave] = useState('WAVE_1');
   const [saving, setSaving] = useState(false);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
-    try { await api(token, '/api/tours/hostess', { method: 'POST', body: JSON.stringify({ quantity: Number(quantity) }) }); await refresh(); notify('Quantidade de tours registrada.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+    try { await api(token, '/api/tours/hostess', { method: 'POST', body: JSON.stringify({ quantity: Number(quantity), wave }) }); await refresh(); notify('Quantidade de tours registrada.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title="Registrar quantidade de tours" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Quantidade de tours<input type="number" min="1" max="30" value={quantity} onChange={(event) => setQuantity(event.target.value)} required /></label><div className="role-help">A Hostess registra somente a quantidade. Nome da família, hóspedes, consultor, carrinhos e motoristas serão informados pelo motorista no momento da saída.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Registrar tours</button></form></Modal>;
+  return <Modal title="Registrar quantidade de tours" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Quantidade de tours<input type="number" min="1" max="30" value={quantity} onChange={(event) => setQuantity(event.target.value)} required /></label><label>Onda do tour<select value={wave} onChange={(event) => setWave(event.target.value)}>{Object.entries(WAVES).map(([key, item]) => <option value={key} key={key}>{item.label} · saída às {item.tourTime}</option>)}</select></label><div className="role-help">A Hostess registra somente a quantidade e a onda. Nome da família, hóspedes, consultor, carrinhos e motoristas serão informados pelo motorista na saída.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Registrar tours</button></form></Modal>;
 }
 
 function HostessDashboard({ tours, token, refresh, notify }) {
@@ -282,7 +283,7 @@ function HostessPrestigePage({ data, user, token, refresh, notify }) {
   const [open, setOpen] = useState(false);
   const awaitingDriver = (data.tours || []).filter((tour) => tour.requiresDetails && tour.status === 'DISPONIVEL');
   const registeredToday = (data.tours || []).filter((tour) => tour.registeredBy === 'HOSTESS').length;
-  return <><CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} /><section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>Prestige Praia do Forte</h1><p>A Hostess registra somente a quantidade de tours disponíveis.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidade de tours</button></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS REGISTRADOS</span><strong>{registeredToday}</strong><small>{awaitingDriver.length} aguardando identificação pelo motorista</small></div></article><article><Users size={35} /><div><span>PRÓXIMA ETAPA</span><strong>{awaitingDriver.length}</strong><small>motorista informa família, hóspedes e transporte</small></div></article></section><section className="panel hostess-note"><h2>Registro simplificado</h2><p>Nesta aba a Hostess não informa família, consultor, quantidade de hóspedes ou motoristas: apenas a quantidade de tours.</p></section>{open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}</>;
+  return <><CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} /><section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>Prestige Praia do Forte</h1><p>A Hostess registra somente a quantidade de tours e a onda.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidade de tours</button></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS REGISTRADOS</span><strong>{registeredToday}</strong><small>{awaitingDriver.length} aguardando identificação pelo motorista</small></div></article><article><Users size={35} /><div><span>PRÓXIMA ETAPA</span><strong>{awaitingDriver.length}</strong><small>motorista informa família, hóspedes e transporte</small></div></article></section><section className="panel hostess-note"><h2>Registro simplificado</h2><p>Nesta aba a Hostess não informa família, consultor, quantidade de hóspedes ou motoristas: somente a quantidade de tours e a onda.</p></section>{open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}</>;
 }
 
 function Queue({ items, data, destinations = false }) {
@@ -301,7 +302,7 @@ function OperationalPage({ page, data, onAction, onCreate }) {
     home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
     destinations: { title: 'Destinos finais', description: 'Fila de grupos que concluíram a apresentação na Galeria.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
   }[page];
-  return <><SectionHeader {...options} action={onCreate} /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
+  return <><SectionHeader {...options} action={onCreate} actionText={page === 'prestige' ? 'Quantidade de tours' : 'Novo tour'} /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
 }
 
 function TransfersPage({ data, user, onCreate, onAction }) {
@@ -414,13 +415,13 @@ function SettingsPage({ data, user, token, refresh, notify }) {
 }
 
 function CreateTourModal({ data, onClose, token, refresh, notify }) {
-  const [form, setForm] = useState({ groupName: '', people: '', consultantId: data.consultants[0]?.id || '', wave: 'WAVE_1', selfGuide: false });
+  const [form, setForm] = useState({ quantity: '1', wave: 'WAVE_1' });
   const [saving, setSaving] = useState(false);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
-    try { await api(token, '/api/tours', { method: 'POST', body: JSON.stringify({ ...form, people: Number(form.people) }) }); await refresh(); notify('Grupo cadastrado no Prestige.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+    try { await api(token, '/api/tours', { method: 'POST', body: JSON.stringify({ ...form, quantity: Number(form.quantity) }) }); await refresh(); notify('Quantidade de tours registrada.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title="Cadastrar novo tour" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Família ou casal<input value={form.groupName} onChange={(event) => setForm({ ...form, groupName: event.target.value })} placeholder="Ex.: Família de Maria" required /></label><label>Quantidade de hóspedes<input type="number" min="1" max="48" value={form.people} onChange={(event) => setForm({ ...form, people: event.target.value })} required /></label><label>Onda do tour<select value={form.wave} onChange={(event) => setForm({ ...form, wave: event.target.value })}>{Object.entries(WAVES).map(([key, wave]) => <option key={key} value={key}>{wave.label} · saída às {wave.tourTime}</option>)}</select></label><label>Consultor<select value={form.consultantId} onChange={(event) => setForm({ ...form, consultantId: event.target.value })}>{data.consultants.filter((item) => item.active).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><div className="role-help">Cada carrinho comporta 5 passageiros além do motorista: 1 consultor e até 4 hóspedes. A distribuição por carrinho é definida ao iniciar o tour.</div><label className="checkbox-label"><input type="checkbox" checked={form.selfGuide} onChange={(event) => setForm({ ...form, selfGuide: event.target.checked })} /> Grupo Self Guide</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Cadastrar no Prestige</button></form></Modal>;
+  return <Modal title="Cadastrar quantidade de tours" onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Quantidade de tours<input type="number" min="1" max="30" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} required /></label><label>Onda do tour<select value={form.wave} onChange={(event) => setForm({ ...form, wave: event.target.value })}>{Object.entries(WAVES).map(([key, wave]) => <option key={key} value={key}>{wave.label} · saída às {wave.tourTime}</option>)}</select></label><div className="role-help">A família, hóspedes, consultor, carrinhos e motoristas serão informados pelo motorista no início do tour.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Registrar tours</button></form></Modal>;
 }
 
 function CreateTransferModal({ user, onClose, token, refresh, notify }) {
