@@ -415,7 +415,7 @@ def register_hostess_tour_details(db: dict[str, Any], tour: dict[str, Any], payl
     tour.update({"groupName": group_name, "people": people, "consultantId": consultant_id, "selfGuide": bool(payload.get("selfGuide")), "requiresDetails": False})
 
 
-def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any) -> list[dict[str, Any]]:
+def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_guide_quantity: Any = 0) -> list[dict[str, Any]]:
     """Register tour quantities; drivers complete guest data at dispatch time."""
     try:
         quantity = int(quantity)
@@ -423,6 +423,12 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
         quantity = 0
     if not 1 <= quantity <= 30:
         raise APIError("Informe uma quantidade de tours entre 1 e 30.")
+    try:
+        self_guide_quantity = int(self_guide_quantity)
+    except (TypeError, ValueError):
+        self_guide_quantity = -1
+    if not 0 <= self_guide_quantity <= quantity:
+        raise APIError("A quantidade de tours Self Guide deve estar entre zero e a quantidade total de tours.")
     if wave not in TRANSFER_SCHEDULES:
         raise APIError("Selecione a 1ª ou a 2ª onda do tour.")
     created_at = timestamp()
@@ -430,10 +436,10 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
     tours = []
     for offset in range(quantity):
         number = existing + offset + 1
-        tour = {"id": new_id("tour"), "groupName": f"Tour {number} aguardando motorista", "people": 0, "selfGuide": False, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
+        tour = {"id": new_id("tour"), "groupName": f"Tour {number} aguardando motorista", "people": 0, "selfGuide": offset < self_guide_quantity, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
         db["tours"].insert(0, tour)
         tours.append(tour)
-    log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity > 1 else ''} registrado{'s' if quantity > 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}.")
+    log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity > 1 else ''} registrado{'s' if quantity > 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}, incluindo {self_guide_quantity} Self Guide.")
     return tours
 
 
@@ -714,7 +720,7 @@ def create_tour():
         user = get_current_user(db)
         require_operational(user)
         if "quantity" in payload:
-            tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"))
+            tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGuideQuantity", 0))
             save_database(db)
             return jsonify(tours=tours), 201
         group_name = str(payload.get("groupName", "")).strip()
@@ -743,7 +749,7 @@ def register_hostess_tours():
         user = get_current_user(db)
         if user["role"] != ROLE_HOSTESS:
             raise APIError("Somente o perfil Hostess registra a quantidade de tours.", 403)
-        tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"))
+        tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGuideQuantity", 0))
         save_database(db)
         return jsonify(tours=tours), 201
 
