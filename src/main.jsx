@@ -25,7 +25,9 @@ const DRIVER_STATUS = {
   EM_TOUR: { label: 'Em tour', tone: 'blue' },
   CASA: { label: 'Na Casa', tone: 'orange' },
   GALERIA: { label: 'Na Galeria', tone: 'purple' },
-  DESTINO_FINAL: { label: 'Destino final', tone: 'teal' }
+  DESTINO_FINAL: { label: 'Destino final', tone: 'teal' },
+  FOLGA: { label: 'Folga', tone: 'gray' },
+  ATESTADO: { label: 'Atestado', tone: 'orange' }
 };
 
 const WAVES = {
@@ -208,7 +210,18 @@ function Flow({ counts }) {
   return <div className="flow"><Route size={18} /><div className="flow-line">{stages.map(([stage, count], index) => <React.Fragment key={stage}><div className={classNames('flow-stage', count > 0 && 'flow-active')}><span>{stage}</span><strong>{count}</strong></div>{index < stages.length - 1 && <ChevronRight size={16} />}</React.Fragment>)}</div></div>;
 }
 
-function Dashboard({ data, user, onAction, onCreate, onCreateTransfer, onTransferAction, setPage }) {
+function CheckInCard({ data, user, token, refresh, notify }) {
+  const [saving, setSaving] = useState(false);
+  const attendance = (data.attendance || []).find((item) => item.userId === user.id);
+  async function checkIn() {
+    setSaving(true);
+    try { await api(token, '/api/attendance/check-in', { method: 'POST' }); await refresh(); notify('Check-in registrado. Você está trabalhando hoje.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  const location = attendance?.location || user.checkInLocation || 'Prestige Praia do Forte';
+  return <section className={classNames('checkin-card', attendance && 'checked-in')}><div><span>{attendance ? 'CHECK-IN CONFIRMADO' : 'SITUAÇÃO DE HOJE'}</span><h2>{attendance ? 'Você está trabalhando' : 'Folga ou atestado'}</h2><p>Local de check-in: <strong>{location}</strong>{attendance ? ` · confirmado às ${time(attendance.checkInAt)}.` : '.'}</p></div>{attendance ? <span className="checkin-done"><Check size={18} /> Em serviço</span> : <button className="button button-primary" onClick={checkIn} disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Fazer check-in</button>}</section>;
+}
+
+function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onCreateTransfer, onTransferAction, setPage }) {
   const tours = data.tours || [];
   const transfers = data.transfers || [];
   const count = (states) => tours.filter((tour) => states.includes(tour.status));
@@ -221,8 +234,10 @@ function Dashboard({ data, user, onAction, onCreate, onCreateTransfer, onTransfe
   const houseTours = tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status));
   const destTours = tours.filter((tour) => tour.status === 'AGUARDANDO_DESTINO');
   const consultantName = (tour) => data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
-  if (user.role === 'HOSTESS') return <HostessDashboard tours={tours} />;
+  const checkIn = user.role !== 'ADMIN' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+  if (user.role === 'HOSTESS') return <>{checkIn}<HostessDashboard tours={tours} /></>;
   return <>
+    {checkIn}
     <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria.</p></div><button className="button button-primary" onClick={onCreate}><Plus size={18} /> Novo tour</button></section>
     <section className="metrics-grid">
       <MetricCard icon={Users} color="teal" title="Disponíveis no Prestige" count={metrics.available.length} sub={`${people(metrics.available)} pessoas`} />
@@ -281,13 +296,51 @@ function GalleryPage({ data, onAction }) {
   return <><SectionHeader title="Galeria" description="Controle de presença, apresentação e fila de transporte - sem registro de vendas." /><section className="gallery-summary"><article><Image /><div><small>GRUPOS NA GALERIA</small><strong>{tours.length}</strong></div></article><article><Users /><div><small>PESSOAS NA GALERIA</small><strong>{tours.reduce((sum, tour) => sum + tour.people, 0)}</strong></div></article><article><UserCog /><div><small>CONSULTORES ATIVOS</small><strong>{groupsByConsultant.length}</strong></div></article></section><section className="dashboard-columns"><div className="panel"><div className="panel-heading"><div><h2>Distribuição por consultor</h2><p>Grupos atualmente entregues na Galeria</p></div></div><div className="consultant-distribution">{groupsByConsultant.length ? groupsByConsultant.map(({ consultant, tours: assigned }) => <div key={consultant.id}><Avatar name={consultant.name} color="purple" /><span>{consultant.name}</span><strong>{assigned.length} grupo{assigned.length > 1 ? 's' : ''}</strong></div>) : <div className="empty-state">Nenhum grupo na Galeria.</div>}</div></div><div className="panel"><div className="panel-heading"><div><h2>Apresentações</h2><p>Estado de cada grupo</p></div></div><div className="gallery-list">{tours.map((tour) => <div className="gallery-row" key={tour.id}><Avatar name={consultantName(tour)} color="purple" /><div><strong>{tour.groupName}</strong><span>{consultantName(tour)} · {tour.people} pessoas</span></div><div className="gallery-action"><StatusPill status={tour.status} />{tour.status === 'NA_GALERIA' && <button className="mini-action" onClick={() => onAction(tour, 'presentation-started')}>Iniciar</button>}{tour.status === 'EM_APRESENTACAO' && <button className="mini-action" onClick={() => onAction(tour, 'presentation-finished')}>Finalizar</button>}</div></div>)}</div></div></section></>;
 }
 
-function DriversPage({ data }) {
-  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>Uma saída é contabilizada somente ao iniciar novo tour no Prestige.</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th></tr></thead><tbody>{data.drivers.map((driver) => <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td></tr>)}</tbody></table></div></section></>;
+function DriverEditorModal({ driver, onClose, token, refresh, notify }) {
+  const editing = Boolean(driver);
+  const [form, setForm] = useState({ name: driver?.name || '', active: driver?.active ?? true, status: driver?.status || 'DISPONIVEL' });
+  const [saving, setSaving] = useState(false);
+  async function submit(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, editing ? `/api/drivers/${driver.id}` : '/api/drivers', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? 'Motorista atualizado.' : 'Motorista cadastrado.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title={editing ? 'Editar motorista' : 'Novo motorista'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Disponibilidade<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>{Object.entries(DRIVER_STATUS).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Cadastrar motorista'}</button></form></Modal>;
 }
 
-function ConsultantsPage({ data }) {
+function DriversPage({ data, user, token, refresh, notify }) {
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [savingDelete, setSavingDelete] = useState(false);
+  const admin = user.role === 'ADMIN';
+  async function removeDriver() {
+    setSavingDelete(true);
+    try { await api(token, `/api/drivers/${deleting.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify('Motorista excluído.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
+  }
+  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." action={admin ? () => setEditing({}) : undefined} actionText="Novo motorista" /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>O administrador pode alterar situação, atividade e cadastro.</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Cadastro</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th>{admin && <th>Ações</th>}</tr></thead><tbody>{data.drivers.map((driver) => <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td><span className={driver.active ? 'active-dot' : 'inactive-dot'}>{driver.active ? 'Ativo' : 'Inativo'}</span></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td>{admin && <td className="actions-cell"><button className="mini-action" onClick={() => setEditing(driver)}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(driver)}>Excluir</button></td>}</tr>)}</tbody></table></div></section>{editing && <DriverEditorModal key={editing.id || 'new'} driver={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir motorista" onClose={() => setDeleting(null)}><div className="danger-copy"><CarFront size={25} /><p>Excluir <strong>{deleting.name}</strong> removerá o cadastro. Motoristas vinculados a um tour ativo precisam ser liberados antes.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeDriver} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
+}
+
+function ConsultantEditorModal({ consultant, onClose, token, refresh, notify }) {
+  const editing = Boolean(consultant);
+  const [form, setForm] = useState({ name: consultant?.name || '', active: consultant?.active ?? true });
+  const [saving, setSaving] = useState(false);
+  async function submit(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, editing ? `/api/consultants/${consultant.id}` : '/api/consultants', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? 'Consultor atualizado.' : 'Consultor cadastrado.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title={editing ? 'Editar consultor' : 'Novo consultor'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Cadastrar consultor'}</button></form></Modal>;
+}
+
+function ConsultantsPage({ data, user, token, refresh, notify }) {
+  const [editing, setEditing] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+  const [savingDelete, setSavingDelete] = useState(false);
+  const admin = user.role === 'ADMIN';
   const currentTours = data.tours.filter((tour) => tour.status !== 'CONCLUIDO');
-  return <><SectionHeader title="Consultores" description="Consultores vinculados aos grupos da operação." /><section className="consultants-grid">{data.consultants.map((consultant) => { const tours = currentTours.filter((tour) => tour.consultantId === consultant.id); return <article className="consultant-card" key={consultant.id}><Avatar name={consultant.name} color="pink" /><h2>{consultant.name}</h2><span className={consultant.active ? 'active-dot' : 'inactive-dot'}>{consultant.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>grupos ativos</small></div></article>; })}</section></>;
+  async function removeConsultant() {
+    setSavingDelete(true);
+    try { await api(token, `/api/consultants/${deleting.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify('Consultor excluído.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
+  }
+  return <><SectionHeader title="Consultores" description="Consultores vinculados aos grupos da operação." action={admin ? () => setEditing({}) : undefined} actionText="Novo consultor" /><section className="consultants-grid">{data.consultants.map((consultant) => { const tours = currentTours.filter((tour) => tour.consultantId === consultant.id); return <article className="consultant-card" key={consultant.id}><Avatar name={consultant.name} color="pink" /><h2>{consultant.name}</h2><span className={consultant.active ? 'active-dot' : 'inactive-dot'}>{consultant.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>grupos ativos</small></div>{admin && <p className="card-actions"><button className="mini-action" onClick={() => setEditing(consultant)}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(consultant)}>Excluir</button></p>}</article>; })}</section>{editing && <ConsultantEditorModal key={editing.id || 'new'} consultant={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir consultor" onClose={() => setDeleting(null)}><div className="danger-copy"><UserRound size={25} /><p>Excluir <strong>{deleting.name}</strong> remove o cadastro, preservando apenas os registros antigos de tours.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeConsultant} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
 }
 
 function CartsPage({ data }) {
@@ -305,41 +358,34 @@ function ReportsPage({ data }) {
   return <><SectionHeader title="Relatórios" description="Indicadores rápidos para a coordenação da operação." /><section className="report-grid"><MetricCard icon={Route} color="blue" title="Tours ativos" count={active.length} sub={`${active.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={Flag} color="orange" title="Grupos Self Guide" count={selfGuide.length} sub={`${selfGuide.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={CarFront} color="green" title="Motoristas disponíveis" count={availableDrivers.length} sub={`${data.drivers.length} cadastrados`} /><MetricCard icon={ShoppingCart} color="purple" title="Carrinhos em operação" count={data.carts.filter((cart) => cart.status !== 'DISPONIVEL').length} sub={`${data.carts.length} cadastrados`} /></section><section className="panel full-panel"><div className="panel-heading"><div><h2>Saídas por motorista</h2><p>Contagem de tours iniciados no Prestige Praia do Forte.</p></div></div><div className="bar-list">{data.drivers.map((driver) => <div key={driver.id}><span>{driver.name}</span><div><i style={{ width: `${Math.max(8, Math.round((driver.toursStarted / Math.max(...data.drivers.map((item) => item.toursStarted), 1)) * 100))}%` }} /></div><strong>{driver.toursStarted}</strong></div>)}</div></section></>;
 }
 
-function SettingsPage({ data, user, token, refresh, notify }) {
-  const [open, setOpen] = useState(false);
-  const [resetOpen, setResetOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', username: '', password: '', role: 'MOTORISTA' });
+function UserEditorModal({ account, drivers, onClose, token, refresh, notify }) {
+  const editing = Boolean(account);
+  const [form, setForm] = useState({ name: account?.name || '', username: account?.username || '', password: '', role: account?.role || 'MOTORISTA', active: account?.active ?? true, driverId: account?.driverId || '', checkInLocation: account?.checkInLocation || 'Prestige Praia do Forte' });
   const [saving, setSaving] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  async function submit(event) {
+    event.preventDefault(); setSaving(true);
+    try { await api(token, editing ? `/api/users/${account.id}` : '/api/users', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? 'Usuário atualizado.' : 'Usuário criado com sucesso.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  return <Modal title={editing ? 'Editar usuário' : 'Criar usuário'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>{editing ? 'Nova senha (opcional)' : 'Senha inicial'}<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required={!editing} /></label><label>Perfil<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="ADMIN">Administrador</option></select></label>{form.role === 'MOTORISTA' && <label>Cadastro de motorista (opcional)<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Sem vínculo</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}{form.role !== 'ADMIN' && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}<label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Usuário ativo</label><div className="role-help"><strong>Check-in diário:</strong> todo usuário Motorista ou Hostess entra como folga/atestado até confirmar presença. Vincule o motorista ao cadastro para o check-in refletir a disponibilidade.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Criar usuário'}</button></form></Modal>;
+}
+
+function SettingsPage({ data, user, token, refresh, notify }) {
+  const [editor, setEditor] = useState(null);
+  const [resetOpen, setResetOpen] = useState(false);
   const [deletingUser, setDeletingUser] = useState(null);
+  const [resetting, setResetting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   if (user.role !== 'ADMIN') return <section className="restricted"><LockKeyhole size={35} /><h1>Acesso restrito</h1><p>Somente administradores podem gerenciar usuários.</p></section>;
-  async function createUser(event) {
-    event.preventDefault(); setSaving(true);
-    try { await api(token, '/api/users', { method: 'POST', body: JSON.stringify(form) }); setForm({ name: '', username: '', password: '', role: 'MOTORISTA' }); setOpen(false); await refresh(); notify('Usuário criado com sucesso.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
-  }
+  const checkins = new Map((data.attendance || []).map((item) => [item.userId, item]));
   async function resetOperation() {
     setResetting(true);
     try { await api(token, '/api/operation/reset', { method: 'POST' }); await refresh(); setResetOpen(false); notify('Dados operacionais zerados para o dia atual.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setResetting(false); }
   }
   async function deleteUser() {
-    if (!deletingUser) return;
     setDeleting(true);
     try { await api(token, `/api/users/${deletingUser.id}`, { method: 'DELETE' }); await refresh(); setDeletingUser(null); notify('Usuário excluído com sucesso.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setDeleting(false); }
   }
-  return <>
-    <SectionHeader title="Configurações" description="Gerencie os usuários e os níveis de acesso ao sistema." action={() => setOpen(true)} actionText="Novo usuário" />
-    <section className="panel full-panel">
-      <div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Administradores podem criar, excluir e manter os acessos da operação.</p></div></div>
-      <div className="table-wrap users-table"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Ações</th></tr></thead><tbody>{data.users.map((item) => <tr key={item.id}>
-        <td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{item.role === 'ADMIN' ? 'Administrador' : item.role === 'MOTORISTA' ? 'Motorista' : 'Hostess'}</span></td><td><span className="active-dot">Ativo</span></td><td>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' }).format(new Date(item.createdAt))}</td><td className="actions-cell">{item.id === user.id ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td>
-      </tr>)}</tbody></table></div>
-    </section>
-    <section className="operation-reset"><div><h2>Zerar dados operacionais</h2><p>Remove tours, convites Waves, filas, atividades e indicadores de motoristas. Usuários e cadastros são preservados.</p></div><button className="button button-danger" onClick={() => setResetOpen(true)}>Zerar operação</button></section>
-    {open && <Modal title="Criar usuário" onClose={() => setOpen(false)}><form className="modal-form" onSubmit={createUser}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>Senha inicial<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required /></label><label>Perfil<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="ADMIN">Administrador</option></select></label><div className="role-help"><strong>Hostess:</strong> vê somente totais de tours e Self Guide.<br /><strong>Motorista:</strong> executa todos os processos operacionais.<br /><strong>Administrador:</strong> possui acesso completo e cria usuários.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Criar usuário</button></form></Modal>}
-    {resetOpen && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove todos os dados operacionais do dia: tours, convites Waves, filas, histórico e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}
-    {deletingUser && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente. Essa ação não pode ser desfeita.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}
-  </>;
+  return <><SectionHeader title="Configurações" description="Gerencie usuários, acessos e presença diária da equipe." action={() => setEditor({})} actionText="Novo usuário" /><section className="panel full-panel"><div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>O administrador pode editar, desativar ou excluir qualquer cadastro.</p></div></div><div className="table-wrap users-table"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Check-in hoje</th><th>Ações</th></tr></thead><tbody>{data.users.map((item) => { const checkin = checkins.get(item.id); return <tr key={item.id}><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{item.role === 'ADMIN' ? 'Administrador' : item.role === 'MOTORISTA' ? 'Motorista' : 'Hostess'}</span></td><td><span className={item.active ? 'active-dot' : 'inactive-dot'}>{item.active ? 'Ativo' : 'Inativo'}</span></td><td>{item.role === 'ADMIN' ? '—' : checkin ? <span className="active-dot">Trabalhando · {time(checkin.checkInAt)}</span> : <span className="inactive-dot">Folga / atestado</span>}</td><td className="actions-cell"><button className="mini-action" onClick={() => setEditor(item)}>Editar</button>{item.id === user.id ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td></tr>; })}</tbody></table></div></section><section className="operation-reset"><div><h2>Zerar dados operacionais</h2><p>Remove tours, convites Waves, filas, atividades, check-ins e indicadores de motoristas. Usuários e cadastros são preservados.</p></div><button className="button button-danger" onClick={() => setResetOpen(true)}>Zerar operação</button></section>{editor && <UserEditorModal key={editor.id || 'new'} account={editor.id ? editor : null} drivers={data.drivers} onClose={() => setEditor(null)} token={token} refresh={refresh} notify={notify} />}{resetOpen && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove tours, convites Waves, filas, histórico, check-ins e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}{deletingUser && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}</>;
 }
 
 function CreateTourModal({ data, onClose, token, refresh, notify }) {
@@ -418,12 +464,12 @@ function App() {
     const openCreate = () => setModal({ kind: 'create' });
     const openTransfer = () => setModal({ kind: 'transfer' });
     const openTransferAction = (transfer, action) => setModal({ kind: 'transfer-action', transfer, action });
-    if (page === 'dashboard') return <Dashboard data={data} user={user} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
+    if (page === 'dashboard') return <Dashboard data={data} user={user} token={token} refresh={refresh} notify={notify} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
     if (['prestige', 'tours', 'home', 'destinations'].includes(page)) return <OperationalPage page={page} data={data} onAction={openAction} onCreate={openCreate} />;
     if (page === 'transfers') return <TransfersPage data={data} onCreate={openTransfer} onAction={openTransferAction} />;
     if (page === 'gallery') return <GalleryPage data={data} onAction={openAction} />;
-    if (page === 'drivers') return <DriversPage data={data} />;
-    if (page === 'consultants') return <ConsultantsPage data={data} />;
+    if (page === 'drivers') return <DriversPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+    if (page === 'consultants') return <ConsultantsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (page === 'carts') return <CartsPage data={data} />;
     if (page === 'history') return <HistoryPage data={data} />;
     if (page === 'reports') return <ReportsPage data={data} />;

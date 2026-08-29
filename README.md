@@ -28,7 +28,7 @@ O disco exige um plano compatível com armazenamento persistente e a aplicação
 
 ## Perfis
 
-- **Administrador:** cria e gerencia usuários e executa todos os processos.
+- **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
 - **Motorista:** executa os processos operacionais, sem acesso à gestão de usuários.
 - **Hostess:** visualiza somente os totais de tours e de grupos Self Guide.
 
@@ -44,6 +44,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Um grupo pode aguardar na Casa enquanto o motorista retorna ao Prestige; se o motorista permanecer na Casa, segue indisponível.
 - Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
 - Galeria controla presença, apresentação e fila de destino, sem registrar a venda.
-- A operação é zerada automaticamente ao mudar o dia em America/Sao_Paulo; administradores também podem zerá-la manualmente. Cadastros e usuários são preservados.
-- Administradores podem criar e excluir usuários; a própria conta e o último administrador são protegidos contra exclusão.
+- A operação é zerada automaticamente ao mudar o dia em America/Sao_Paulo; administradores também podem zerá-la manualmente. Check-ins, cadastros e usuários são tratados corretamente para o novo dia.
+- Todo Motorista e Hostess inicia o dia como “Folga ou atestado” e confirma “Fazer check-in” ao entrar, vendo o local definido pelo administrador. Um motorista vinculado não pode ser alocado em um tour antes do check-in; ao confirmar presença, seu cadastro fica disponível quando não houver tour ativo.
+- Administradores podem criar, editar, desativar e excluir usuários, motoristas e consultores. A própria conta e o último administrador são protegidos contra perda de acesso; motoristas em tour ativo precisam ser liberados antes de excluir ou mudar a disponibilidade.
 - Toda transição gera histórico com data, responsável, estado anterior e novo estado.

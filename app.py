@@ -44,6 +44,9 @@ DRIVER_IN_TOUR = "EM_TOUR"
 DRIVER_HOME = "CASA"
 DRIVER_GALLERY = "GALERIA"
 DRIVER_DESTINATION = "DESTINO_FINAL"
+DRIVER_LEAVE = "FOLGA"
+DRIVER_MEDICAL = "ATESTADO"
+DRIVER_STATUSES = {DRIVER_AVAILABLE, DRIVER_IN_TOUR, DRIVER_HOME, DRIVER_GALLERY, DRIVER_DESTINATION, DRIVER_LEAVE, DRIVER_MEDICAL}
 
 TRANSFER_SCHEDULES = {
     "WAVE_1": {"label": "1ª onda", "tourTime": "09:00", "transferTime": "07:50"},
@@ -142,6 +145,7 @@ def initial_database() -> dict[str, Any]:
             {"id": "transfer_adriana", "groupName": "Família de Adriana", "people": 4, "conciergeName": "Marina", "wave": "WAVE_1", "scheduledTime": "07:50", "tourStartTime": "09:00", "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created},
             {"id": "transfer_gustavo", "groupName": "Casal de Gustavo", "people": 2, "conciergeName": "André", "wave": "WAVE_2", "scheduledTime": "09:50", "tourStartTime": "11:00", "status": TRANSFER_IN_PROGRESS, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created},
         ],
+        "attendance": [],
         "activities": [
             {"id": "act_1", "at": created, "userName": "Sistema", "message": "Painel operacional iniciado", "previous": None, "next": None},
             {"id": "act_2", "at": created, "userName": "Sistema", "message": "Família de Yasmin está no roteiro do tour", "tourId": "tour_yasmin", "previous": STATE_AVAILABLE, "next": STATE_IN_TOUR},
@@ -174,6 +178,7 @@ def reset_operational_data(db: dict[str, Any], message: str) -> None:
     db["operationDate"] = operation_date()
     db["tours"] = []
     db["transfers"] = []
+    db["attendance"] = []
     for driver in db["drivers"]:
         driver["status"] = DRIVER_AVAILABLE
         driver["toursStarted"] = 0
@@ -194,7 +199,11 @@ def ensure_operational_day(db: dict[str, Any]) -> bool:
 
 def operational_database() -> dict[str, Any]:
     db = load_database()
-    if ensure_operational_day(db):
+    schema_updated = False
+    if "attendance" not in db:
+        db["attendance"] = []
+        schema_updated = True
+    if ensure_operational_day(db) or schema_updated:
         save_database(db)
     return db
 
@@ -270,6 +279,35 @@ def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool =
     driver["lastActivity"] = timestamp()
 
 
+def active_driver_assignment(db: dict[str, Any], driver_id: str) -> dict[str, Any] | None:
+    """Return a tour currently relying on a driver, if there is one."""
+    for tour in db.get("tours", []):
+        if tour.get("status") == STATE_COMPLETE:
+            continue
+        if any(item.get("driverId") == driver_id for item in tour.get("allocations", [])):
+            return tour
+    return None
+
+
+def validate_driver_link(db: dict[str, Any], driver_id: Any, user_id: str | None = None) -> str | None:
+    if not driver_id:
+        return None
+    driver_id = str(driver_id)
+    find(db["drivers"], driver_id, "Motorista")
+    if any(item.get("driverId") == driver_id and item["id"] != user_id for item in db["users"]):
+        raise APIError("Esse motorista já está vinculado a outro usuário.", 409)
+    return driver_id
+
+
+def attendance_for(db: dict[str, Any], user_id: str) -> dict[str, Any] | None:
+    return next((item for item in db.setdefault("attendance", []) if item.get("userId") == user_id and item.get("operationDate") == operation_date()), None)
+
+
+def driver_has_checked_in(db: dict[str, Any], driver_id: str) -> bool:
+    linked_accounts = [item for item in db["users"] if item.get("driverId") == driver_id and item.get("active", True) and item["role"] == ROLE_DRIVER]
+    return not linked_accounts or any(attendance_for(db, account["id"]) for account in linked_accounts)
+
+
 def update_cart(db: dict[str, Any], cart_id: str, status: str) -> None:
     find(db["carts"], cart_id, "Carrinho")["status"] = status
 
@@ -320,8 +358,10 @@ def normalized_allocations(db: dict[str, Any], raw_allocations: Any, people: int
         carts.add(cart_id)
         driver = find(db["drivers"], driver_id, "Motorista")
         cart = find(db["carts"], cart_id, "Carrinho")
-        if driver["status"] != DRIVER_AVAILABLE:
+        if not driver.get("active", True) or driver["status"] != DRIVER_AVAILABLE:
             raise APIError(f"{driver['name']} não está disponível.")
+        if not driver_has_checked_in(db, driver_id):
+            raise APIError(f"{driver['name']} ainda não fez check-in hoje.")
         if cart["status"] != "DISPONIVEL":
             raise APIError(f"{cart['name']} não está disponível.")
         allocations.append({"driverId": driver_id, "cartId": cart_id, "seats": int(allocation.get("seats") or cart["capacity"]), "arrived": False})
@@ -491,7 +531,8 @@ def bootstrap():
             user=clean_user(user),
             data=safe_database(db),
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE},
-            driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION},
+            driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
+            attendance=attendance_for(db, user["id"]),
             waves=TRANSFER_SCHEDULES,
             transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED},
         )
@@ -512,11 +553,60 @@ def create_user():
             raise APIError("Preencha nome, usuário, senha de ao menos 8 caracteres e perfil.")
         if any(item["username"] == username for item in db["users"]):
             raise APIError("Esse usuário já existe.", 409)
+        driver_id = validate_driver_link(db, payload.get("driverId")) if role == ROLE_DRIVER else None
         new_user = {"id": new_id("user"), "username": username, "name": name, "role": role, "active": True, "passwordHash": generate_password_hash(password), "createdAt": timestamp()}
+        if driver_id:
+            new_user["driverId"] = driver_id
+        if role in {ROLE_DRIVER, ROLE_HOSTESS}:
+            new_user["checkInLocation"] = str(payload.get("checkInLocation", "")).strip() or "Prestige Praia do Forte"
         db["users"].append(new_user)
         log_activity(db, user, None, None, None, f"Usuário {name} criado com perfil {role}.")
         save_database(db)
         return jsonify(user=clean_user(new_user)), 201
+
+
+@app.put("/api/users/<user_id>")
+def update_user(user_id: str):
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        current_user = get_current_user(db)
+        require_admin(current_user)
+        target = find(db["users"], user_id, "Usuário")
+        name = str(payload.get("name", target["name"])).strip()
+        username = str(payload.get("username", target["username"])).strip().lower()
+        role = payload.get("role", target["role"])
+        active = bool(payload["active"]) if "active" in payload else target.get("active", True)
+        password = str(payload.get("password", ""))
+        if not name or not username or role not in ROLES:
+            raise APIError("Preencha nome, usuário e perfil corretamente.")
+        if any(item["username"].lower() == username and item["id"] != target["id"] for item in db["users"]):
+            raise APIError("Esse usuário já existe.", 409)
+        if password and len(password) < 8:
+            raise APIError("A nova senha deve ter ao menos 8 caracteres.")
+        if target["id"] == current_user["id"] and (role != ROLE_ADMIN or not active):
+            raise APIError("O administrador conectado não pode remover o próprio acesso.")
+        active_admins_after = sum(1 for item in db["users"] if item["id"] != target["id"] and item["role"] == ROLE_ADMIN and item.get("active", True))
+        if role == ROLE_ADMIN and active:
+            active_admins_after += 1
+        if active_admins_after < 1:
+            raise APIError("Mantenha ao menos um administrador ativo no sistema.")
+        driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
+        driver_id = validate_driver_link(db, driver_id, target["id"])
+        target.update({"name": name, "username": username, "role": role, "active": active})
+        if driver_id:
+            target["driverId"] = driver_id
+        else:
+            target.pop("driverId", None)
+        if role in {ROLE_DRIVER, ROLE_HOSTESS}:
+            target["checkInLocation"] = str(payload.get("checkInLocation", target.get("checkInLocation", ""))).strip() or "Prestige Praia do Forte"
+        else:
+            target.pop("checkInLocation", None)
+        if password:
+            target["passwordHash"] = generate_password_hash(password)
+        log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.")
+        save_database(db)
+        return jsonify(user=clean_user(target))
 
 
 @app.post("/api/tours")
@@ -560,6 +650,138 @@ def delete_user(user_id: str):
         for token, session in list(SESSIONS.items()):
             if session["userId"] == target["id"]:
                 SESSIONS.pop(token, None)
+        db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
+        save_database(db)
+        return jsonify(ok=True)
+
+
+@app.post("/api/attendance/check-in")
+def check_in():
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        if user["role"] not in {ROLE_DRIVER, ROLE_HOSTESS}:
+            raise APIError("O check-in é destinado a motoristas e hostess.", 403)
+        existing = attendance_for(db, user["id"])
+        if existing:
+            return jsonify(attendance=existing, alreadyCheckedIn=True)
+        location = user.get("checkInLocation") or "Prestige Praia do Forte"
+        record = {"id": new_id("checkin"), "userId": user["id"], "userName": user["name"], "role": user["role"], "location": location, "status": "TRABALHANDO", "operationDate": operation_date(), "checkInAt": timestamp()}
+        driver_id = user.get("driverId")
+        if user["role"] == ROLE_DRIVER and driver_id:
+            driver = find(db["drivers"], driver_id, "Motorista")
+            if not driver.get("active", True):
+                raise APIError("O cadastro deste motorista está inativo. Procure o administrador.", 409)
+            if not active_driver_assignment(db, driver_id):
+                update_driver(db, driver_id, DRIVER_AVAILABLE)
+        db.setdefault("attendance", []).append(record)
+        log_activity(db, user, None, None, None, f"{user['name']} realizou check-in e está trabalhando.")
+        save_database(db)
+        return jsonify(attendance=record), 201
+
+
+@app.post("/api/drivers")
+def create_driver():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        name = str(payload.get("name", "")).strip()
+        status = payload.get("status", DRIVER_AVAILABLE)
+        if not name or status not in DRIVER_STATUSES:
+            raise APIError("Informe o nome e uma disponibilidade válida.")
+        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": status, "toursStarted": 0, "homePickups": 0, "lastActivity": timestamp()}
+        db["drivers"].append(driver)
+        log_activity(db, user, None, None, None, f"Motorista {name} cadastrado.")
+        save_database(db)
+        return jsonify(driver=driver), 201
+
+
+@app.put("/api/drivers/<driver_id>")
+def update_driver_record(driver_id: str):
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        driver = find(db["drivers"], driver_id, "Motorista")
+        name = str(payload.get("name", driver["name"])).strip()
+        status = payload.get("status", driver["status"])
+        active = bool(payload["active"]) if "active" in payload else driver.get("active", True)
+        if not name or status not in DRIVER_STATUSES:
+            raise APIError("Informe o nome e uma disponibilidade válida.")
+        assigned_tour = active_driver_assignment(db, driver_id)
+        if assigned_tour and (status != driver["status"] or active != driver.get("active", True)):
+            raise APIError(f"{driver['name']} está vinculado ao tour de {assigned_tour['groupName']}. Finalize ou libere o transporte antes de mudar sua disponibilidade.", 409)
+        driver.update({"name": name, "active": active, "status": status, "lastActivity": timestamp()})
+        log_activity(db, user, None, None, None, f"Motorista {name} atualizado para {status}.")
+        save_database(db)
+        return jsonify(driver=driver)
+
+
+@app.delete("/api/drivers/<driver_id>")
+def delete_driver(driver_id: str):
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        driver = find(db["drivers"], driver_id, "Motorista")
+        assigned_tour = active_driver_assignment(db, driver_id)
+        if assigned_tour:
+            raise APIError(f"{driver['name']} está vinculado ao tour de {assigned_tour['groupName']}. Libere-o antes de excluir.", 409)
+        db["drivers"] = [item for item in db["drivers"] if item["id"] != driver_id]
+        for account in db["users"]:
+            if account.get("driverId") == driver_id:
+                account.pop("driverId", None)
+        log_activity(db, user, None, None, None, f"Motorista {driver['name']} excluído.")
+        save_database(db)
+        return jsonify(ok=True)
+
+
+@app.post("/api/consultants")
+def create_consultant():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        name = str(payload.get("name", "")).strip()
+        if not name:
+            raise APIError("Informe o nome do consultor.")
+        consultant = {"id": new_id("con"), "name": name, "active": bool(payload.get("active", True))}
+        db["consultants"].append(consultant)
+        log_activity(db, user, None, None, None, f"Consultor {name} cadastrado.")
+        save_database(db)
+        return jsonify(consultant=consultant), 201
+
+
+@app.put("/api/consultants/<consultant_id>")
+def update_consultant(consultant_id: str):
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        consultant = find(db["consultants"], consultant_id, "Consultor")
+        name = str(payload.get("name", consultant["name"])).strip()
+        if not name:
+            raise APIError("Informe o nome do consultor.")
+        consultant.update({"name": name, "active": bool(payload["active"]) if "active" in payload else consultant.get("active", True)})
+        log_activity(db, user, None, None, None, f"Consultor {name} atualizado.")
+        save_database(db)
+        return jsonify(consultant=consultant)
+
+
+@app.delete("/api/consultants/<consultant_id>")
+def delete_consultant(consultant_id: str):
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        consultant = find(db["consultants"], consultant_id, "Consultor")
+        db["consultants"] = [item for item in db["consultants"] if item["id"] != consultant_id]
+        log_activity(db, user, None, None, None, f"Consultor {consultant['name']} excluído.")
         save_database(db)
         return jsonify(ok=True)
 
