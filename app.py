@@ -217,6 +217,11 @@ def operational_database() -> dict[str, Any]:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
         schema_updated = True
     for tour in db.get("tours", []):
+        # Preserve active groups created before the old support-at-home option was removed.
+        for allocation in tour.get("allocations", []):
+            if allocation.get("homeDecision") == "APOIO_NA_CASA":
+                allocation["homeDecision"] = "AGUARDOU_NA_CASA"
+                schema_updated = True
         if tour.get("status") not in {STATE_GALLERY, STATE_PRESENTATION}:
             continue
         for allocation in tour.get("allocations", []):
@@ -276,7 +281,7 @@ def require_operational(user: dict[str, Any]) -> None:
 
 
 def require_transfer_access(user: dict[str, Any]) -> None:
-    if user["role"] not in {ROLE_ADMIN, ROLE_DRIVER, ROLE_CONCIERGE}:
+    if user["role"] not in {ROLE_ADMIN, ROLE_CONCIERGE}:
         raise APIError("Seu perfil não possui acesso aos convites Waves.", 403)
 
 
@@ -371,7 +376,7 @@ def apply_transfer_action(db: dict[str, Any], user: dict[str, Any], transfer: di
             raise APIError("A desistência só pode ser registrada antes do início do traslado.")
         change_transfer_state(db, user, transfer, TRANSFER_WITHDRAWN, f"{transfer['groupName']} registrou desistência do convite Waves.")
         return
-    require_operational(user)
+    require_admin(user)
     if action == "start":
         if transfer["status"] != TRANSFER_SCHEDULED:
             raise APIError("Apenas convites agendados podem iniciar o traslado.")
@@ -481,8 +486,8 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if allocation.get("homeDecision"):
             raise APIError("Este motorista já registrou sua situação na Casa.")
         decision = payload.get("homeDecision")
-        if decision not in {"DEIXOU_NA_CASA", "AGUARDOU_NA_CASA", "APOIO_NA_CASA"}:
-            raise APIError("Informe se o motorista deixou o grupo, permaneceu ou deu apoio na Casa.")
+        if decision not in {"DEIXOU_NA_CASA", "AGUARDOU_NA_CASA"}:
+            raise APIError("Informe se o motorista deixou o grupo ou permaneceu na Casa.")
         allocation["homeDecision"] = decision
         allocation["arrivedAtHome"] = timestamp()
         allocation["arrived"] = True
@@ -495,14 +500,13 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         recorded = sum(1 for item in allocations() if item.get("homeDecision"))
         if recorded < len(allocations()):
             tour["updatedAt"] = timestamp()
-            decision_label = {"DEIXOU_NA_CASA": "deixou o grupo na Casa", "AGUARDOU_NA_CASA": "permaneceu na Casa", "APOIO_NA_CASA": "deu apoio à família na Casa"}[decision]
+            decision_label = {"DEIXOU_NA_CASA": "deixou o grupo na Casa", "AGUARDOU_NA_CASA": "permaneceu na Casa"}[decision]
             log_activity(db, user, tour, STATE_IN_TOUR, STATE_IN_TOUR, f"{find(db['drivers'], driver_id, 'Motorista')['name']} registrou: {decision_label} ({recorded}/{len(allocations())} motoristas).")
             return
-        staying_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") in {"AGUARDOU_NA_CASA", "APOIO_NA_CASA"}]
-        support_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "APOIO_NA_CASA"]
+        staying_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
         returned_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "DEIXOU_NA_CASA"]
         if staying_driver_names:
-            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa. Permaneceu: {', '.join(staying_driver_names)}. Apoio: {', '.join(support_driver_names) or 'ninguém'}. Retornou ao Prestige: {', '.join(returned_driver_names) or 'ninguém'}.")
+            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa. Permaneceu com o casal: {', '.join(staying_driver_names)}. Retornou ao Prestige: {', '.join(returned_driver_names) or 'ninguém'}.")
         else:
             change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando transporte na Casa; todos os motoristas retornaram ao Prestige.")
         return
@@ -535,7 +539,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] != STATE_HOME:
             raise APIError("O grupo precisa estar na Casa.")
         required_carts = tour.get("requiredCartCount", len(allocations()))
-        staying_allocations = [item for item in allocations() if item.get("homeDecision") in {"AGUARDOU_NA_CASA", "APOIO_NA_CASA"}]
+        staying_allocations = [item for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
         if len(staying_allocations) != required_carts:
             raise APIError("Este grupo precisa de todos os carrinhos que saíram juntos. Chame outro motorista para ir à Casa antes de seguir para a Galeria.")
         for allocation in staying_allocations:
@@ -549,7 +553,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] != STATE_HOME:
             raise APIError("O grupo precisa estar na Casa.")
         required_carts = tour.get("requiredCartCount", len(allocations()))
-        staying_allocations = [item for item in allocations() if item.get("homeDecision") in {"AGUARDOU_NA_CASA", "APOIO_NA_CASA"}]
+        staying_allocations = [item for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
         missing_drivers = required_carts - len(staying_allocations)
         if missing_drivers <= 0:
             raise APIError("Os motoristas necessários já estão na Casa. Registre a saída para a Galeria.")
@@ -660,16 +664,37 @@ def bootstrap():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
+        current_attendance = attendance_for(db, user["id"])
         data = safe_database(db)
         if user["role"] == ROLE_CONCIERGE:
             # Concierges receive only their own invitations; they cannot inspect the operation.
             data = {"operationDate": db["operationDate"], "transfers": [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]}
+        elif user["role"] == ROLE_HOSTESS:
+            # Hostesses only need the registered quantities to do their daily entry.
+            data = {
+                "operationDate": db["operationDate"],
+                "attendance": [current_attendance] if current_attendance else [],
+                "tours": [
+                    {"id": item["id"], "selfGuide": bool(item.get("selfGuide")), "status": item["status"], "requiresDetails": bool(item.get("requiresDetails"))}
+                    for item in db.get("tours", [])
+                ],
+            }
+        elif user["role"] == ROLE_DRIVER:
+            # Drivers receive only the data required to run the transport stages.
+            data = {
+                "operationDate": db["operationDate"],
+                "attendance": [current_attendance] if current_attendance else [],
+                "tours": db.get("tours", []),
+                "drivers": db.get("drivers", []),
+                "consultants": db.get("consultants", []),
+                "destinations": db.get("destinations", []),
+            }
         return jsonify(
             user=clean_user(user),
             data=data,
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE},
             driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
-            attendance=attendance_for(db, user["id"]),
+            attendance=current_attendance,
             waves=TRANSFER_SCHEDULES,
             transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED, "DESISTENCIA": TRANSFER_WITHDRAWN},
         )
@@ -752,7 +777,7 @@ def create_tour():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_operational(user)
+        require_admin(user)
         if "quantity" in payload:
             tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)))
             save_database(db)

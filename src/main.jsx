@@ -58,6 +58,8 @@ const NAV = [
   { id: 'settings', label: 'Configurações', icon: Settings, admin: true }
 ];
 
+const DRIVER_NAV_IDS = new Set(['prestige', 'tours', 'gallery', 'home', 'destinations', 'drivers']);
+
 const actionMeta = {
   start: { title: 'Iniciar tour', text: 'Selecione os motoristas para registrar a saída do Prestige. Um carrinho disponível será reservado automaticamente para cada motorista.', label: 'Iniciar tour', allocations: true },
   'arrived-home': { title: 'Registrar situação na Casa', text: 'Cada motorista registra se deixou o grupo ou se permaneceu aguardando na Casa.', label: 'Registrar Casa', individualArrival: true },
@@ -149,7 +151,13 @@ function Login({ onLogin }) {
 }
 
 function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
-  const nav = user.role === 'HOSTESS' ? NAV.filter((item) => item.id === 'prestige') : user.role === 'CONCIERGE' ? NAV.filter((item) => item.id === 'transfers') : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
+  const nav = user.role === 'HOSTESS'
+    ? NAV.filter((item) => item.id === 'prestige')
+    : user.role === 'CONCIERGE'
+      ? NAV.filter((item) => item.id === 'transfers')
+      : user.role === 'MOTORISTA'
+        ? NAV.filter((item) => DRIVER_NAV_IDS.has(item.id))
+        : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
   return <aside className={classNames('sidebar', open && 'sidebar-open')}>
     <div className="sidebar-top"><Logo /><button className="sidebar-close" onClick={() => setOpen(false)} aria-label="Fechar menu"><X /></button></div>
     <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{label}</span></button>)}</nav>
@@ -157,9 +165,10 @@ function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
   </aside>;
 }
 
-function MobileNav({ page, setPage }) {
-  const items = NAV.slice(0, 4);
-  return <nav className="mobile-nav">{items.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : label.split(' ')[0]}</span></button>)}<button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button></nav>;
+function MobileNav({ page, setPage, user }) {
+  const driver = user.role === 'MOTORISTA';
+  const items = driver ? NAV.filter((item) => ['prestige', 'tours', 'home', 'gallery', 'destinations'].includes(item.id)) : NAV.slice(0, 4);
+  return <nav className="mobile-nav">{items.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : label.split(' ')[0]}</span></button>)}{!driver && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
 }
 
 function Topbar({ user, setMenuOpen }) {
@@ -178,17 +187,16 @@ function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum gru
   const driverDetails = (tour) => {
     const names = (items) => items.map((item) => data.drivers.find((driver) => driver.id === item.driverId)?.name).filter(Boolean).join(', ') || '—';
     if (tour.status !== 'NA_CASA') return { active: names(tour.allocations || []), returned: '', cartsAtHome: (tour.allocations || []).length };
-    const staying = (tour.allocations || []).filter((item) => ['AGUARDOU_NA_CASA', 'APOIO_NA_CASA'].includes(item.homeDecision));
-    const support = (tour.allocations || []).filter((item) => item.homeDecision === 'APOIO_NA_CASA');
+    const staying = (tour.allocations || []).filter((item) => item.homeDecision === 'AGUARDOU_NA_CASA');
     const returned = (tour.allocations || []).filter((item) => item.homeDecision === 'DEIXOU_NA_CASA');
-    return { active: names(staying), support: names(support), returned: names(returned), cartsAtHome: staying.length };
+    return { active: names(staying), returned: names(returned), cartsAtHome: staying.length };
   };
   const actionFor = (tour) => {
     if (tour.status === 'DISPONIVEL') return 'start';
     if (tour.status === 'EM_TOUR') return tour.phase === 'Casa → Galeria' ? 'deliver-gallery' : 'arrived-home';
     if (tour.status === 'NA_CASA') {
       const requiredCarts = tour.requiredCartCount || (tour.allocations || []).length;
-      const driversAtHome = (tour.allocations || []).filter((item) => ['AGUARDOU_NA_CASA', 'APOIO_NA_CASA'].includes(item.homeDecision)).length;
+      const driversAtHome = (tour.allocations || []).filter((item) => item.homeDecision === 'AGUARDOU_NA_CASA').length;
       return driversAtHome < requiredCarts ? 'join-home' : 'depart-home';
     }
     if (tour.status === 'AGUARDANDO_CASA') return 'pickup-home';
@@ -199,7 +207,7 @@ function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum gru
   if (!tours.length) return <div className="empty-state">{empty}</div>;
   return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour); const driverInfo = driverDetails(tour);
-    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Onda não definida'} · {tour.scheduledTime || '—'}</small>{tour.selfGuide && <small className="self-guide">Self Gean</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.support && driverInfo.support !== '—' && <small className="support-driver">APOIO DO 2º CARRINHO: {driverInfo.support}</small>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.support && driverInfo.support !== '—' && <small className="schedule-info">Apoio do 2º carrinho: {driverInfo.support}</small>}{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Onda não definida'} · {tour.scheduledTime || '—'}</small>{tour.selfGuide && <small className="self-guide">Self Gean</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -306,14 +314,14 @@ function SectionHeader({ title, description, action, actionText = 'Novo tour' })
   return <section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>{title}</h1><p>{description}</p></div>{action && <button className="button button-primary" onClick={action}><Plus size={18} /> {actionText}</button>}</section>;
 }
 
-function OperationalPage({ page, data, onAction, onCreate }) {
+function OperationalPage({ page, data, user, onAction, onCreate }) {
   const options = {
     prestige: { title: 'Prestige Praia do Forte', description: 'Grupos disponíveis para iniciar o tour.', tours: data.tours.filter((tour) => tour.status === 'DISPONIVEL') },
     tours: { title: 'Tours em andamento', description: 'Acompanhe e avance os grupos por cada etapa operacional.', tours: data.tours.filter((tour) => !['DISPONIVEL', 'CONCLUIDO'].includes(tour.status)) },
     home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
     destinations: { title: 'Destinos finais', description: 'Grupos que chegaram à Galeria e aguardam ou seguem para o destino final.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
   }[page];
-  return <><SectionHeader {...options} action={onCreate} actionText={page === 'prestige' ? 'Quantidade de tours' : 'Novo tour'} /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
+  return <><SectionHeader {...options} action={user.role === 'ADMIN' && page === 'prestige' ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
 }
 
 function TransfersPage({ data, user, onCreate, onAction }) {
@@ -459,7 +467,7 @@ function TransferActionModal({ transfer, action, onClose, token, refresh, notify
 function ActionModal({ tour, action, data, user, onClose, token, refresh, notify }) {
   const meta = actionMeta[action];
   const isQuantityTour = Boolean(tour.requiresDetails);
-  const homeDrivers = (tour.allocations || []).filter((item) => ['AGUARDOU_NA_CASA', 'APOIO_NA_CASA'].includes(item.homeDecision));
+  const homeDrivers = (tour.allocations || []).filter((item) => item.homeDecision === 'AGUARDOU_NA_CASA');
   const requiredHomeCarts = tour.requiredCartCount || (tour.allocations || []).length;
   const incomingDriversNeeded = Math.max(0, requiredHomeCarts - homeDrivers.length);
   const [allocations, setAllocations] = useState(() => meta.allocations ? Array.from({ length: meta.homeJoin ? Math.max(1, incomingDriversNeeded) : 1 }, () => ({ driverId: '' })) : []);
@@ -469,13 +477,15 @@ function ActionModal({ tour, action, data, user, onClose, token, refresh, notify
   const [destinationId, setDestinationId] = useState(tour.destinationId || '');
   const [saving, setSaving] = useState(false);
   const drivers = data.drivers.filter((driver) => driver.status === 'DISPONIVEL');
+  const priorityDriverIds = new Set((tour.allocations || []).filter((item) => item.homeDecision === 'DEIXOU_NA_CASA').map((item) => item.driverId));
+  const driversForAction = meta.homeJoin ? [...drivers].sort((first, second) => Number(priorityDriverIds.has(second.id)) - Number(priorityDriverIds.has(first.id)) || first.name.localeCompare(second.name, 'pt-BR')) : drivers;
   const updateAllocation = (index, field, value) => setAllocations((current) => current.map((allocation, itemIndex) => itemIndex === index ? { ...allocation, [field]: value } : allocation));
   async function submit(event) {
     event.preventDefault(); setSaving(true);
     const body = { action, allocations, destinationId, driverId: homeDriverId, homeDecision };
     try { await api(token, `/api/tours/${tour.id}/action`, { method: 'POST', body: JSON.stringify(body) }); await refresh(); notify(`${meta.label} registrado.`, 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={meta.title} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{isQuantityTour ? 'Tour registrado por quantidade' : STATUS[tour.status]?.label}</span></div></div><p className="modal-intro">{meta.text}</p><form className="modal-form" onSubmit={submit}>{meta.destination && <label>Destino final<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required><option value="">Selecione o destino</option>{data.destinations.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}{meta.allocations && <div className="allocation-form"><div className="allocation-title"><span>{meta.homeJoin ? 'Motorista a caminho da Casa' : 'Motoristas'}</span><small>{meta.homeJoin ? `Falta ${incomingDriversNeeded} motorista${incomingDriversNeeded === 1 ? '' : 's'} para completar ${requiredHomeCarts} carrinhos` : 'Um carrinho disponível será reservado para cada motorista'}</small></div><p className="allocation-help">{meta.homeJoin ? 'Selecione exatamente o motorista que irá à Casa. Só depois o motorista que permaneceu poderá seguir com o casal para a Galeria.' : 'Informe somente o nome do motorista. Não é necessário informar família, casal, hóspedes ou carrinho.'}</p>{allocations.map((allocation, index) => <div className="allocation-row" key={index}><label>Motorista<select value={allocation.driverId} onChange={(event) => updateAllocation(index, 'driverId', event.target.value)} required><option value="">Selecione</option>{drivers.filter((driver) => driver.id === allocation.driverId || !allocations.some((item, itemIndex) => itemIndex !== index && item.driverId === driver.id)).map((driver) => <option value={driver.id} key={driver.id}>{driver.name}</option>)}</select></label>{!meta.homeJoin && allocations.length > 1 && <button type="button" className="remove-allocation" onClick={() => setAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remover</button>}</div>)}<div className="allocation-footer"><span>{allocations.filter((item) => item.driverId).length} motorista{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'} selecionado{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'}</span>{!meta.homeJoin && <button type="button" className="text-button" onClick={() => setAllocations((current) => [...current, { driverId: '' }])}><Plus size={15} /> Adicionar carrinho</button>}</div></div>}{meta.individualArrival && <div className="allocation-form"><div className="allocation-title"><span>Registro individual do motorista</span><small>{pendingArrivals.length} pendente{pendingArrivals.length === 1 ? '' : 's'}</small></div><label>Motorista<select value={homeDriverId} onChange={(event) => setHomeDriverId(event.target.value)} required>{pendingArrivals.map((item) => { const driver = data.drivers.find((candidate) => candidate.id === item.driverId); return <option value={item.driverId} key={item.driverId}>{driver?.name || 'Motorista'}</option>; })}</select></label><label>Ao chegar na Casa<select value={homeDecision} onChange={(event) => setHomeDecision(event.target.value)}><option value="AGUARDOU_NA_CASA">Permaneceu aguardando com a família</option><option value="APOIO_NA_CASA">Deu apoio à família (2 carrinhos)</option><option value="DEIXOU_NA_CASA">Deixou a família e voltou ao Prestige</option></select></label></div>}<button className="button button-primary" disabled={saving || (meta.individualArrival && !homeDriverId)}>{saving && <LoaderCircle className="spin" size={17} />} <Check size={17} /> Confirmar</button></form></Modal>;
+  return <Modal title={meta.title} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{isQuantityTour ? 'Tour registrado por quantidade' : STATUS[tour.status]?.label}</span></div></div><p className="modal-intro">{meta.text}</p><form className="modal-form" onSubmit={submit}>{meta.destination && <label>Destino final<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required><option value="">Selecione o destino</option>{data.destinations.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}{meta.allocations && <div className="allocation-form"><div className="allocation-title"><span>{meta.homeJoin ? 'Motorista a caminho da Casa' : 'Motoristas'}</span><small>{meta.homeJoin ? `Falta ${incomingDriversNeeded} motorista${incomingDriversNeeded === 1 ? '' : 's'} para completar ${requiredHomeCarts} carrinhos` : 'Um carrinho disponível será reservado para cada motorista'}</small></div><p className="allocation-help">{meta.homeJoin ? 'Quem já saiu com este grupo para a Casa aparece primeiro. Selecione o motorista que irá à Casa para completar os carrinhos antes de seguir à Galeria.' : 'Informe somente o nome do motorista. Não é necessário informar família, casal, hóspedes ou carrinho.'}</p>{allocations.map((allocation, index) => <div className="allocation-row" key={index}><label>Motorista<select value={allocation.driverId} onChange={(event) => updateAllocation(index, 'driverId', event.target.value)} required><option value="">Selecione</option>{driversForAction.filter((driver) => driver.id === allocation.driverId || !allocations.some((item, itemIndex) => itemIndex !== index && item.driverId === driver.id)).map((driver) => <option value={driver.id} key={driver.id}>{meta.homeJoin && priorityDriverIds.has(driver.id) ? `Prioridade · ${driver.name} (já fez este trajeto)` : driver.name}</option>)}</select></label>{!meta.homeJoin && allocations.length > 1 && <button type="button" className="remove-allocation" onClick={() => setAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remover</button>}</div>)}<div className="allocation-footer"><span>{allocations.filter((item) => item.driverId).length} motorista{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'} selecionado{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'}</span>{!meta.homeJoin && <button type="button" className="text-button" onClick={() => setAllocations((current) => [...current, { driverId: '' }])}><Plus size={15} /> Adicionar carrinho</button>}</div></div>}{meta.individualArrival && <div className="allocation-form"><div className="allocation-title"><span>Registro individual do motorista</span><small>{pendingArrivals.length} pendente{pendingArrivals.length === 1 ? '' : 's'}</small></div><label>Motorista<select value={homeDriverId} onChange={(event) => setHomeDriverId(event.target.value)} required>{pendingArrivals.map((item) => { const driver = data.drivers.find((candidate) => candidate.id === item.driverId); return <option value={item.driverId} key={item.driverId}>{driver?.name || 'Motorista'}</option>; })}</select></label><label>Ao chegar na Casa<select value={homeDecision} onChange={(event) => setHomeDecision(event.target.value)}><option value="AGUARDOU_NA_CASA">Permaneceu aguardando com a família</option><option value="DEIXOU_NA_CASA">Deixou a família e voltou ao Prestige</option></select></label></div>}<button className="button button-primary" disabled={saving || (meta.individualArrival && !homeDriverId)}>{saving && <LoaderCircle className="spin" size={17} />} <Check size={17} /> Confirmar</button></form></Modal>;
 }
 
 function Modal({ title, onClose, children }) {
@@ -495,7 +505,7 @@ function App() {
   const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
   const refresh = async () => {
     const payload = await api(token, '/api/bootstrap');
-    setUser(payload.user); setData(payload.data); setPage((current) => payload.user.role === 'CONCIERGE' ? 'transfers' : payload.user.role === 'HOSTESS' ? 'prestige' : current);
+    setUser(payload.user); setData(payload.data); setPage((current) => payload.user.role === 'CONCIERGE' ? 'transfers' : ['HOSTESS', 'MOTORISTA'].includes(payload.user.role) ? 'prestige' : current);
   };
   useEffect(() => { if (!token) { setLoading(false); return; } setLoading(true); refresh().catch(() => { localStorage.removeItem('iberostar-tour-token'); setToken(''); }).finally(() => setLoading(false)); }, [token]);
   function login(nextToken, nextUser) { localStorage.setItem('iberostar-tour-token', nextToken); setUser(nextUser); setToken(nextToken); }
@@ -508,21 +518,22 @@ function App() {
     const openTransferAction = (transfer, action) => setModal({ kind: 'transfer-action', transfer, action });
     if (user.role === 'CONCIERGE') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
     if (user.role === 'HOSTESS') return <HostessPrestigePage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
-    if (page === 'dashboard') return <Dashboard data={data} user={user} token={token} refresh={refresh} notify={notify} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
-    if (['prestige', 'tours', 'home', 'destinations'].includes(page)) return <OperationalPage page={page} data={data} onAction={openAction} onCreate={openCreate} />;
-    if (page === 'transfers') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
-    if (page === 'gallery') return <GalleryPage data={data} onAction={openAction} />;
-    if (page === 'drivers') return <DriversPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
-    if (page === 'consultants') return <ConsultantsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
-    if (page === 'carts') return <CartsPage data={data} />;
-    if (page === 'history') return <HistoryPage data={data} />;
-    if (page === 'reports') return <ReportsPage data={data} />;
-    if (page === 'settings') return <SettingsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+    const activePage = user.role === 'MOTORISTA' && !DRIVER_NAV_IDS.has(page) ? 'prestige' : page;
+    if (activePage === 'dashboard') return <Dashboard data={data} user={user} token={token} refresh={refresh} notify={notify} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
+    if (['prestige', 'tours', 'home', 'destinations'].includes(activePage)) return <OperationalPage page={activePage} data={data} user={user} onAction={openAction} onCreate={openCreate} />;
+    if (activePage === 'transfers') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
+    if (activePage === 'gallery') return <GalleryPage data={data} onAction={openAction} />;
+    if (activePage === 'drivers') return <DriversPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+    if (activePage === 'consultants') return <ConsultantsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+    if (activePage === 'carts') return <CartsPage data={data} />;
+    if (activePage === 'history') return <HistoryPage data={data} />;
+    if (activePage === 'reports') return <ReportsPage data={data} />;
+    if (activePage === 'settings') return <SettingsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     return null;
   }, [data, user, page, token]);
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
-  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} /><main className="content-area">{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{!['HOSTESS', 'CONCIERGE'].includes(user.role) && <MobileNav page={page} setPage={setPage} />}</div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{!['HOSTESS', 'CONCIERGE'].includes(user.role) && <MobileNav page={page} setPage={setPage} user={user} />}</div>;
 }
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);

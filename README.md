@@ -29,8 +29,8 @@ O disco exige um plano compatível com armazenamento persistente e a aplicação
 ## Perfis
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
-- **Motorista:** executa os processos operacionais, sem acesso à gestão de usuários.
-- **Hostess:** visualiza somente os totais de tours e de grupos Self Gean.
+- **Motorista:** acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a convites Waves, cadastros, relatórios ou configurações.
+- **Hostess:** acessa somente a própria tela para registrar as quantidades de tours e Self Gean por onda.
 - **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado.
 
 O primeiro acesso administrativo usa o usuário e a senha definidos pela operação. A senha é armazenada somente como hash no banco local.
@@ -46,7 +46,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Iniciar tour soma uma saída para cada motorista alocado no Prestige.
 - Buscar na Casa não cria nova saída de tour.
 - Cada motorista registra individualmente, ao chegar à Casa, se deixou o grupo e voltou ao Prestige ou se permaneceu aguardando. O painel mostra os nomes de quem permaneceu e de quem retornou. Enquanto houver motorista aguardando, o grupo fica na Casa; quando todos retornam, entra na fila de busca.
-- Em “Registrar Casa”, o motorista também pode marcar “Deu apoio à família (2 carrinhos)”, mantendo o segundo carrinho junto ao casal para a saída à Galeria.
+- Em “Registrar Casa”, cada motorista informa apenas se permaneceu com o casal ou se deixou o grupo e retornou ao Prestige. Ao chamar o motorista que falta para a Casa, a lista prioriza quem já saiu com o mesmo grupo e retornou ao Prestige, por estar mais próximo.
 - Se o tour precisou de dois ou mais carrinhos e algum motorista retornou ao Prestige, quem permaneceu na Casa não pode seguir sozinho à Galeria. O sistema exige a chegada dos motoristas que faltam para completar os carrinhos necessários.
 - Ao buscar um grupo na Casa, motoristas adicionais podem ser alocados ao mesmo grupo, ficando todos classificados como “Em tour” em conjunto.
 - Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
