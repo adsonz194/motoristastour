@@ -216,6 +216,12 @@ def operational_database() -> dict[str, Any]:
     if db.get("destinations") != FINAL_DESTINATIONS:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
         schema_updated = True
+    for account in db.get("users", []):
+        if account.get("role") != ROLE_DRIVER or account.get("driverId"):
+            continue
+        has_checked_in = any(item.get("userId") == account["id"] and item.get("operationDate") == operation_date() for item in db.get("attendance", []))
+        create_linked_driver(db, account, DRIVER_AVAILABLE if has_checked_in else DRIVER_LEAVE)
+        schema_updated = True
     for tour in db.get("tours", []):
         # Preserve active groups created before the old support-at-home option was removed.
         for allocation in tour.get("allocations", []):
@@ -316,6 +322,22 @@ def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool =
     if home_pickup:
         driver["homePickups"] += 1
     driver["lastActivity"] = timestamp()
+
+
+def create_linked_driver(db: dict[str, Any], user: dict[str, Any], status: str = DRIVER_LEAVE, active: bool | None = None) -> dict[str, Any]:
+    """Create the operational driver record required by a driver account."""
+    driver = {
+        "id": new_id("drv"),
+        "name": user["name"],
+        "active": user.get("active", True) if active is None else active,
+        "status": status,
+        "toursStarted": 0,
+        "homePickups": 0,
+        "lastActivity": timestamp(),
+    }
+    db["drivers"].append(driver)
+    user["driverId"] = driver["id"]
+    return driver
 
 
 def active_driver_assignment(db: dict[str, Any], driver_id: str) -> dict[str, Any] | None:
@@ -728,6 +750,8 @@ def create_user():
         if role in {ROLE_DRIVER, ROLE_HOSTESS}:
             new_user["checkInLocation"] = str(payload.get("checkInLocation", "")).strip() or "Prestige Praia do Forte"
         db["users"].append(new_user)
+        if role == ROLE_DRIVER and not driver_id:
+            create_linked_driver(db, new_user)
         log_activity(db, user, None, None, None, f"Usuário {name} criado com perfil {role}.")
         save_database(db)
         return jsonify(user=clean_user(new_user)), 201
@@ -762,6 +786,8 @@ def update_user(user_id: str):
         driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
         driver_id = validate_driver_link(db, driver_id, target["id"])
         target.update({"name": name, "username": username, "role": role, "active": active})
+        if role == ROLE_DRIVER and not driver_id:
+            driver_id = create_linked_driver(db, target, active=active)["id"]
         if driver_id:
             target["driverId"] = driver_id
         else:
@@ -848,7 +874,12 @@ def check_in():
         if user["role"] not in {ROLE_DRIVER, ROLE_HOSTESS}:
             raise APIError("O check-in é destinado a motoristas e hostess.", 403)
         existing = attendance_for(db, user["id"])
+        created_driver = None
+        if user["role"] == ROLE_DRIVER and not user.get("driverId"):
+            created_driver = create_linked_driver(db, user, DRIVER_AVAILABLE if existing else DRIVER_LEAVE)
         if existing:
+            if created_driver:
+                save_database(db)
             return jsonify(attendance=existing, alreadyCheckedIn=True)
         location = user.get("checkInLocation") or "Prestige Praia do Forte"
         record = {"id": new_id("checkin"), "userId": user["id"], "userName": user["name"], "role": user["role"], "location": location, "status": "TRABALHANDO", "operationDate": operation_date(), "checkInAt": timestamp()}
