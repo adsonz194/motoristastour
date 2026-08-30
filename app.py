@@ -76,6 +76,16 @@ FINAL_DESTINATIONS = [
     {"id": "dest_prestige_selection", "name": "Prestige Selection", "active": True},
 ]
 
+# IDs used only by the first prototype screen.  They are kept here so that a
+# one-time migration can remove them from an existing database without ever
+# touching records created by the team.
+DEMO_CONSULTANT_IDS = {"con_yasmin", "con_rafael", "con_lucas", "con_fernanda", "con_juliana"}
+DEMO_DRIVER_IDS = {"drv_carlos", "drv_joao", "drv_marcos", "drv_pedro", "drv_ricardo"}
+DEMO_TOUR_IDS = {"tour_yasmin", "tour_rafael", "tour_lucas", "tour_fernanda", "tour_juliana", "tour_marcela", "tour_bruno"}
+DEMO_TRANSFER_IDS = {"transfer_adriana", "transfer_gustavo"}
+DEMO_ACTIVITY_IDS = {"act_1", "act_2", "act_3"}
+DEMO_CART_IDS = {"cart_01", "cart_02", "cart_03", "cart_04", "cart_05"}
+
 # This is a one-way scrypt hash. The initial password is never stored in source code.
 INITIAL_ADMIN_HASH = (
     "c75658f843ab803ffbeeee35e0af7299:"
@@ -117,53 +127,21 @@ def initial_database() -> dict[str, Any]:
             "passwordHash": INITIAL_ADMIN_HASH,
             "createdAt": created,
         }],
-        "consultants": [
-            {"id": "con_yasmin", "name": "Yasmin", "active": True},
-            {"id": "con_rafael", "name": "Rafael", "active": True},
-            {"id": "con_lucas", "name": "Lucas", "active": True},
-            {"id": "con_fernanda", "name": "Fernanda", "active": True},
-            {"id": "con_juliana", "name": "Juliana", "active": True},
-        ],
-        "drivers": [
-            {"id": "drv_carlos", "name": "Carlos", "active": True, "status": DRIVER_IN_TOUR, "toursStarted": 5, "homePickups": 2, "lastActivity": created},
-            {"id": "drv_joao", "name": "João", "active": True, "status": DRIVER_IN_TOUR, "toursStarted": 4, "homePickups": 1, "lastActivity": created},
-            {"id": "drv_marcos", "name": "Marcos", "active": True, "status": DRIVER_AVAILABLE, "toursStarted": 3, "homePickups": 0, "lastActivity": created},
-            {"id": "drv_pedro", "name": "Pedro", "active": True, "status": DRIVER_HOME, "toursStarted": 2, "homePickups": 1, "lastActivity": created},
-            {"id": "drv_ricardo", "name": "Ricardo", "active": True, "status": DRIVER_GALLERY, "toursStarted": 3, "homePickups": 0, "lastActivity": created},
-        ],
+        "consultants": [],
+        "drivers": [],
         "carts": [
-            {"id": "cart_01", "name": "Carrinho 01", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
-            {"id": "cart_02", "name": "Carrinho 02", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
+            {"id": "cart_01", "name": "Carrinho 01", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "DISPONIVEL"},
+            {"id": "cart_02", "name": "Carrinho 02", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "DISPONIVEL"},
             {"id": "cart_03", "name": "Carrinho 03", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "DISPONIVEL"},
-            {"id": "cart_04", "name": "Carrinho 04", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
-            {"id": "cart_05", "name": "Carrinho 05", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
+            {"id": "cart_04", "name": "Carrinho 04", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "DISPONIVEL"},
+            {"id": "cart_05", "name": "Carrinho 05", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "DISPONIVEL"},
         ],
         "destinations": [dict(item) for item in FINAL_DESTINATIONS],
-        "tours": [
-            {
-                "id": "tour_yasmin", "groupName": "Família de Yasmin", "people": 8, "selfGuide": False, "consultantId": "con_yasmin", "wave": "WAVE_1", "scheduledTime": "09:00",
-                "status": STATE_IN_TOUR, "phase": "Golf", "createdAt": created, "updatedAt": created,
-                "allocations": [
-                    {"driverId": "drv_carlos", "cartId": "cart_01", "seats": 6, "arrived": True},
-                    {"driverId": "drv_joao", "cartId": "cart_02", "seats": 2, "arrived": True},
-                ],
-            },
-            {"id": "tour_rafael", "groupName": "Casal de Rafael", "people": 2, "selfGuide": True, "consultantId": "con_rafael", "wave": "WAVE_1", "scheduledTime": "09:00", "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_lucas", "groupName": "Família de Lucas", "people": 5, "selfGuide": False, "consultantId": "con_lucas", "wave": "WAVE_1", "scheduledTime": "09:00", "status": STATE_WAITING_HOME, "phase": "Casa", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_fernanda", "groupName": "Casal de Fernanda", "people": 2, "selfGuide": False, "consultantId": "con_fernanda", "wave": "WAVE_1", "scheduledTime": "09:00", "status": STATE_GALLERY, "phase": "Galeria", "createdAt": created, "updatedAt": created, "allocations": [{"driverId": "drv_ricardo", "cartId": "cart_05", "seats": 2, "arrived": True}]},
-            {"id": "tour_juliana", "groupName": "Família de Juliana", "people": 4, "selfGuide": True, "consultantId": "con_juliana", "wave": "WAVE_2", "scheduledTime": "11:00", "status": STATE_PRESENTATION, "phase": "Galeria", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_marcela", "groupName": "Família de Marcela", "people": 6, "selfGuide": False, "consultantId": "con_yasmin", "wave": "WAVE_2", "scheduledTime": "11:00", "status": STATE_WAITING_DESTINATION, "phase": "Galeria", "destinationId": "dest_prestige", "createdAt": created, "updatedAt": created, "allocations": []},
-            {"id": "tour_bruno", "groupName": "Casal de Bruno", "people": 2, "selfGuide": False, "consultantId": "con_rafael", "wave": "WAVE_2", "scheduledTime": "11:00", "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created, "allocations": []},
-        ],
-        "transfers": [
-            {"id": "transfer_adriana", "groupName": "Família de Adriana", "people": 4, "conciergeName": "Marina", "wave": "WAVE_1", "scheduledTime": "07:50", "tourStartTime": "09:00", "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created},
-            {"id": "transfer_gustavo", "groupName": "Casal de Gustavo", "people": 2, "conciergeName": "André", "wave": "WAVE_2", "scheduledTime": "09:50", "tourStartTime": "11:00", "status": TRANSFER_IN_PROGRESS, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": created, "updatedAt": created},
-        ],
+        "tours": [],
+        "transfers": [],
         "attendance": [],
         "activities": [
-            {"id": "act_1", "at": created, "userName": "Sistema", "message": "Painel operacional iniciado", "previous": None, "next": None},
-            {"id": "act_2", "at": created, "userName": "Sistema", "message": "Família de Yasmin está no roteiro do tour", "tourId": "tour_yasmin", "previous": STATE_AVAILABLE, "next": STATE_IN_TOUR},
-            {"id": "act_3", "at": created, "userName": "Sistema", "message": "Família de Marcela aguarda destino final", "tourId": "tour_marcela", "previous": STATE_PRESENTATION, "next": STATE_WAITING_DESTINATION},
+            {"id": new_id("act"), "at": created, "userName": "Sistema", "message": "Painel operacional iniciado sem dados de exemplo.", "previous": None, "next": None},
         ],
     }
 
@@ -284,9 +262,54 @@ def ensure_operational_day(db: dict[str, Any]) -> bool:
     return True
 
 
+def remove_demo_data(db: dict[str, Any]) -> bool:
+    """Remove only records that belonged to the old visual demonstration.
+
+    Real records use generated IDs, so this migration is deliberately keyed by
+    the fixed prototype IDs instead of names or roles.
+    """
+    changed = False
+    collection_rules = (
+        ("consultants", DEMO_CONSULTANT_IDS),
+        ("drivers", DEMO_DRIVER_IDS),
+        ("tours", DEMO_TOUR_IDS),
+        ("transfers", DEMO_TRANSFER_IDS),
+    )
+    for field, demo_ids in collection_rules:
+        original = db.get(field, [])
+        cleaned = [item for item in original if item.get("id") not in demo_ids]
+        if len(cleaned) != len(original):
+            db[field] = cleaned
+            changed = True
+
+    original_activities = db.get("activities", [])
+    cleaned_activities = [
+        activity for activity in original_activities
+        if activity.get("id") not in DEMO_ACTIVITY_IDS
+        and activity.get("tourId") not in DEMO_TOUR_IDS
+        and activity.get("transferId") not in DEMO_TRANSFER_IDS
+    ]
+    if len(cleaned_activities) != len(original_activities):
+        db["activities"] = cleaned_activities
+        changed = True
+
+    active_cart_ids = {
+        allocation.get("cartId")
+        for tour in db.get("tours", [])
+        if tour.get("status") not in {STATE_COMPLETE, STATE_FINAL_DESTINATION}
+        for allocation in tour.get("allocations", [])
+        if allocation.get("cartId")
+    }
+    for cart in db.get("carts", []):
+        if cart.get("id") in DEMO_CART_IDS and cart.get("id") not in active_cart_ids and cart.get("status") != "DISPONIVEL":
+            cart["status"] = "DISPONIVEL"
+            changed = True
+    return changed
+
+
 def operational_database() -> dict[str, Any]:
     db = load_database()
-    schema_updated = False
+    schema_updated = remove_demo_data(db)
     if "attendance" not in db:
         db["attendance"] = []
         schema_updated = True
