@@ -481,8 +481,8 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if allocation.get("homeDecision"):
             raise APIError("Este motorista já registrou sua situação na Casa.")
         decision = payload.get("homeDecision")
-        if decision not in {"DEIXOU_NA_CASA", "AGUARDOU_NA_CASA"}:
-            raise APIError("Informe se o motorista deixou o grupo ou permaneceu na Casa.")
+        if decision not in {"DEIXOU_NA_CASA", "AGUARDOU_NA_CASA", "APOIO_NA_CASA"}:
+            raise APIError("Informe se o motorista deixou o grupo, permaneceu ou deu apoio na Casa.")
         allocation["homeDecision"] = decision
         allocation["arrivedAtHome"] = timestamp()
         allocation["arrived"] = True
@@ -495,12 +495,14 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         recorded = sum(1 for item in allocations() if item.get("homeDecision"))
         if recorded < len(allocations()):
             tour["updatedAt"] = timestamp()
-            log_activity(db, user, tour, STATE_IN_TOUR, STATE_IN_TOUR, f"{find(db['drivers'], driver_id, 'Motorista')['name']} registrou: {'deixou o grupo na Casa' if decision == 'DEIXOU_NA_CASA' else 'aguardou na Casa'} ({recorded}/{len(allocations())} motoristas).")
+            decision_label = {"DEIXOU_NA_CASA": "deixou o grupo na Casa", "AGUARDOU_NA_CASA": "permaneceu na Casa", "APOIO_NA_CASA": "deu apoio à família na Casa"}[decision]
+            log_activity(db, user, tour, STATE_IN_TOUR, STATE_IN_TOUR, f"{find(db['drivers'], driver_id, 'Motorista')['name']} registrou: {decision_label} ({recorded}/{len(allocations())} motoristas).")
             return
-        staying_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
+        staying_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") in {"AGUARDOU_NA_CASA", "APOIO_NA_CASA"}]
+        support_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "APOIO_NA_CASA"]
         returned_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "DEIXOU_NA_CASA"]
         if staying_driver_names:
-            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa. Permaneceu: {', '.join(staying_driver_names)}. Retornou ao Prestige: {', '.join(returned_driver_names) or 'ninguém'}.")
+            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa. Permaneceu: {', '.join(staying_driver_names)}. Apoio: {', '.join(support_driver_names) or 'ninguém'}. Retornou ao Prestige: {', '.join(returned_driver_names) or 'ninguém'}.")
         else:
             change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando transporte na Casa; todos os motoristas retornaram ao Prestige.")
         return
@@ -533,7 +535,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] != STATE_HOME:
             raise APIError("O grupo precisa estar na Casa.")
         required_carts = tour.get("requiredCartCount", len(allocations()))
-        staying_allocations = [item for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
+        staying_allocations = [item for item in allocations() if item.get("homeDecision") in {"AGUARDOU_NA_CASA", "APOIO_NA_CASA"}]
         if len(staying_allocations) != required_carts:
             raise APIError("Este grupo precisa de todos os carrinhos que saíram juntos. Chame outro motorista para ir à Casa antes de seguir para a Galeria.")
         for allocation in staying_allocations:
@@ -547,7 +549,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] != STATE_HOME:
             raise APIError("O grupo precisa estar na Casa.")
         required_carts = tour.get("requiredCartCount", len(allocations()))
-        staying_allocations = [item for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
+        staying_allocations = [item for item in allocations() if item.get("homeDecision") in {"AGUARDOU_NA_CASA", "APOIO_NA_CASA"}]
         missing_drivers = required_carts - len(staying_allocations)
         if missing_drivers <= 0:
             raise APIError("Os motoristas necessários já estão na Casa. Registre a saída para a Galeria.")
