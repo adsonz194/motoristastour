@@ -32,6 +32,10 @@ Após entrar no painel, toque no sino no topo para permitir as notificações de
 
 No celular, para uma experiência de aplicativo e notificações nativas, abra o menu do navegador e use **Adicionar à tela inicial**. A permissão é individual por navegador/aparelho e pode ser retirada nas configurações do navegador. Cada perfil recebe apenas os totais aos quais já tem acesso no sistema.
 
+## Painel público dos consultores
+
+Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, sem usuário nem senha, somente os nomes e os status atuais dos motoristas. É uma página de leitura, atualizada a cada 30 segundos, sem dados de hóspedes, tours, usuários ou ações operacionais.
+
 ## Perfis
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.

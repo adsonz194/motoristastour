@@ -790,6 +790,24 @@ def auth_me():
         return jsonify(user=clean_user(get_current_user(operational_database())))
 
 
+@app.get("/api/public/driver-status")
+def public_driver_status():
+    """Read-only driver board intended for the consultants' shared screen."""
+    with DB_LOCK:
+        db = operational_database()
+        drivers = [
+            {
+                "name": driver["name"],
+                "status": driver.get("status", DRIVER_LEAVE),
+                "active": bool(driver.get("active", True)),
+                "lastActivity": driver.get("lastActivity"),
+            }
+            for driver in db.get("drivers", [])
+            if driver.get("active", True)
+        ]
+        return jsonify(operationDate=db["operationDate"], drivers=drivers)
+
+
 @app.get("/api/bootstrap")
 def bootstrap():
     with DB_LOCK:

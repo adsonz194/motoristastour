@@ -190,6 +190,7 @@ function Login({ onLogin }) {
       <label>Senha<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Sua senha" required /></label>
       {error && <div className="form-error">{error}</div>}
       <button className="button button-primary login-submit" disabled={loading}>{loading ? <LoaderCircle className="spin" size={18} /> : <LockKeyhole size={18} />} Entrar no painel</button>
+      <a className="public-panel-link" href="/consultores"><CarFront size={16} /> Painel público dos consultores</a>
     </form></section>
   </main>;
 }
@@ -539,6 +540,34 @@ function Modal({ title, onClose, children }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button onClick={onClose} aria-label="Fechar"><X size={21} /></button></div>{children}</section></div>;
 }
 
+function ConsultantDriverPanel() {
+  const [board, setBoard] = useState({ drivers: [], operationDate: '' });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const loadBoard = useCallback(async () => {
+    try {
+      const payload = await api('', '/api/public/driver-status');
+      setBoard(payload); setError('');
+    } catch (requestError) {
+      setError(requestError.message || 'Não foi possível atualizar o painel.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    loadBoard();
+    const timer = window.setInterval(loadBoard, 30000);
+    return () => window.clearInterval(timer);
+  }, [loadBoard]);
+  return <main className="consultant-public-page">
+    <header className="consultant-public-header"><Logo /><a href="/" className="public-login-link"><LockKeyhole size={16} /> Acesso da equipe</a></header>
+    <section className="consultant-public-hero"><span>PAINEL DOS CONSULTORES</span><h1>Status dos motoristas</h1><p>Consulta pública, sem login. Atualização automática a cada 30 segundos.</p></section>
+    <section className="consultant-public-summary"><CarFront size={28} /><div><strong>{board.drivers.length}</strong><span>motorista{board.drivers.length === 1 ? '' : 's'} ativo{board.drivers.length === 1 ? '' : 's'}</span></div><small>Operação: {board.operationDate || '—'}</small></section>
+    {error && <div className="consultant-public-error" role="alert">{error}</div>}
+    {loading ? <div className="public-loading"><LoaderCircle className="spin" size={30} /> Carregando status dos motoristas...</div> : <section className="consultant-driver-grid" aria-live="polite">{board.drivers.length ? board.drivers.map((driver) => <article className="consultant-driver-status" key={driver.name}><Avatar name={driver.name} color="photo" /><div><strong>{driver.name}</strong><span>Atualizado: {time(driver.lastActivity)}</span></div><StatusPill driver status={driver.status} /></article>) : <div className="empty-state">Nenhum motorista ativo cadastrado.</div>}</section>}
+  </main>;
+}
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('iberostar-tour-token') || '');
   const [user, setUser] = useState(null);
@@ -626,4 +655,8 @@ function App() {
   return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{!['HOSTESS', 'CONCIERGE'].includes(user.role) && <MobileNav page={page} setPage={setPage} user={user} />}</div>;
 }
 
-createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);
+function Root() {
+  return window.location.pathname.startsWith('/consultores') ? <ConsultantDriverPanel /> : <App />;
+}
+
+createRoot(document.getElementById('root')).render(<React.StrictMode><Root /></React.StrictMode>);
