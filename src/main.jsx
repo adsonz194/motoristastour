@@ -175,8 +175,10 @@ function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum gru
   const consultant = (tour) => data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
   const driverDetails = (tour) => {
     const names = (items) => items.map((item) => data.drivers.find((driver) => driver.id === item.driverId)?.name).filter(Boolean).join(', ') || '—';
-    if (tour.status !== 'NA_CASA') return { active: names(tour.allocations || []), returned: '' };
-    return { active: names((tour.allocations || []).filter((item) => item.homeDecision === 'AGUARDOU_NA_CASA')), returned: names((tour.allocations || []).filter((item) => item.homeDecision === 'DEIXOU_NA_CASA')) };
+    if (tour.status !== 'NA_CASA') return { active: names(tour.allocations || []), returned: '', cartsAtHome: (tour.allocations || []).length };
+    const staying = (tour.allocations || []).filter((item) => item.homeDecision === 'AGUARDOU_NA_CASA');
+    const returned = (tour.allocations || []).filter((item) => item.homeDecision === 'DEIXOU_NA_CASA');
+    return { active: names(staying), returned: names(returned), cartsAtHome: staying.length };
   };
   const actionFor = (tour) => {
     if (tour.status === 'DISPONIVEL') return 'start';
@@ -190,7 +192,7 @@ function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum gru
   if (!tours.length) return <div className="empty-state">{empty}</div>;
   return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour); const driverInfo = driverDetails(tour);
-    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Onda não definida'} · {tour.scheduledTime || '—'}</small>{tour.selfGuide && <small className="self-guide">Self Gean</small>}</td><td>{tour.people || '—'}</td><td>{tour.allocations?.length || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Onda não definida'} · {tour.scheduledTime || '—'}</small>{tour.selfGuide && <small className="self-guide">Self Gean</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Deixar</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
   })}</tbody></table></div>;
 }
 
