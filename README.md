@@ -29,7 +29,7 @@ O disco exige um plano compatível com armazenamento persistente e a aplicação
 ## Perfis
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
-- **Motorista:** acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a convites Waves, cadastros, relatórios ou configurações.
+- **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
 - **Hostess:** acessa somente a própria tela para registrar as quantidades de tours e Self Gean por onda.
 - **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado.
 
@@ -48,6 +48,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Cada motorista registra individualmente, ao chegar à Casa, se deixou o grupo e voltou ao Prestige ou se permaneceu aguardando. O painel mostra os nomes de quem permaneceu e de quem retornou. Enquanto houver motorista aguardando, o grupo fica na Casa; quando todos retornam, entra na fila de busca.
 - Em “Registrar Casa”, cada motorista informa apenas se permaneceu com o casal ou se deixou o grupo e retornou ao Prestige. Ao chamar o motorista que falta para a Casa, a lista prioriza quem já saiu com o mesmo grupo e retornou ao Prestige, por estar mais próximo.
 - Se o tour precisou de dois ou mais carrinhos e algum motorista retornou ao Prestige, quem permaneceu na Casa não pode seguir sozinho à Galeria. O sistema exige a chegada dos motoristas que faltam para completar os carrinhos necessários.
+- Quando a equipe que está com um casal na Casa precisar atender outra família, use **Trocar motoristas**. O casal entra na fila da Casa e o sistema exige a mesma quantidade de carrinhos original na nova busca; assim, por exemplo, dois novos motoristas precisam ser escolhidos para um casal que saiu com dois carrinhos.
 - Ao buscar um grupo na Casa, motoristas adicionais podem ser alocados ao mesmo grupo, ficando todos classificados como “Em tour” em conjunto.
 - Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
 - Ao chegar à Galeria, o grupo entra diretamente em “Aguardando destino”; não há etapa de apresentação. Os únicos destinos finais são Lobby Bahia, Lobby Selection, Prestige Praia e Prestige Selection. Após confirmar a chegada ao destino, o tour é encerrado.

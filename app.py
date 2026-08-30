@@ -520,14 +520,18 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
                 update_cart(db, allocation["cartId"], "DISPONIVEL")
         tour["allocations"] = []
         tour["phase"] = "Casa"
-        change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando transporte na Casa.")
+        change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando novos motoristas na Casa; a equipe anterior foi liberada para outra família.")
         return
 
     if action == "pickup-home":
         if tour["status"] != STATE_WAITING_HOME:
             raise APIError("O grupo não está aguardando na Casa.")
-        tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
-        tour["requiredCartCount"] = len(tour["allocations"])
+        pickup_allocations = normalized_allocations(db, payload.get("allocations"))
+        required_carts = tour.get("requiredCartCount", len(pickup_allocations))
+        if len(pickup_allocations) != required_carts:
+            raise APIError(f"Este grupo precisa de {required_carts} carrinho{'s' if required_carts != 1 else ''}. Selecione {required_carts} motorista{'s' if required_carts != 1 else ''} para a busca na Casa.")
+        tour["allocations"] = pickup_allocations
+        tour["requiredCartCount"] = required_carts
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, home_pickup=True)
             update_cart(db, allocation["cartId"], "EM_USO")
@@ -680,7 +684,7 @@ def bootstrap():
                 ],
             }
         elif user["role"] == ROLE_DRIVER:
-            # Drivers receive only the data required to run the transport stages.
+            # Drivers receive the operational dashboard, without users or management data.
             data = {
                 "operationDate": db["operationDate"],
                 "attendance": [current_attendance] if current_attendance else [],
@@ -688,6 +692,8 @@ def bootstrap():
                 "drivers": db.get("drivers", []),
                 "consultants": db.get("consultants", []),
                 "destinations": db.get("destinations", []),
+                "transfers": db.get("transfers", []),
+                "activities": db.get("activities", []),
             }
         return jsonify(
             user=clean_user(user),
