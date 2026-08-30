@@ -1176,6 +1176,16 @@ def assets(filename: str):
     return send_from_directory(STATIC_DIR / "assets", filename)
 
 
+@app.get("/service-worker.js")
+def service_worker():
+    return send_from_directory(STATIC_DIR, "service-worker.js", mimetype="application/javascript")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return send_from_directory(STATIC_DIR, "manifest.webmanifest", mimetype="application/manifest+json")
+
+
 @app.get("/<path:path>")
 def spa(path: str):
     # Let the single-page interface own its client-side URLs.

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   BarChart3, Bell, Building2, CalendarDays, CarFront, Check, ChevronRight, CircleUserRound,
@@ -89,6 +89,50 @@ function dateLabel() {
   return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
 }
 
+function notificationSummary(data = {}) {
+  const hasTours = Array.isArray(data.tours);
+  const hasTransfers = Array.isArray(data.transfers);
+  const tours = data.tours || [];
+  const transfers = data.transfers || [];
+  return {
+    hasTours,
+    hasTransfers,
+    tours: tours.filter((tour) => !tour.selfGuide && tour.status !== 'CONCLUIDO').length,
+    selfGean: tours.filter((tour) => tour.selfGuide && tour.status !== 'CONCLUIDO').length,
+    wavesGuests: transfers.filter((transfer) => transfer.status !== 'DESISTENCIA').reduce((sum, transfer) => sum + (Number(transfer.people) || 0), 0)
+  };
+}
+
+function notificationBody(summary) {
+  const parts = [];
+  if (summary.hasTours) parts.push(`Tours: ${summary.tours}`, `Self Gean: ${summary.selfGean}`);
+  if (summary.hasTransfers) parts.push(`Convidados Waves → Praia: ${summary.wavesGuests}`);
+  return parts.join(' • ') || 'Sem informações operacionais disponíveis.';
+}
+
+async function showOperationNotification(summary) {
+  if (!('Notification' in window) || window.Notification.permission !== 'granted') return false;
+  const options = {
+    body: notificationBody(summary),
+    tag: 'iberostar-tour-summary',
+    renotify: true,
+    data: { url: '/' }
+  };
+  try {
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration) {
+        await registration.showNotification('Iberostar Tour Interno', options);
+        return true;
+      }
+    }
+    new window.Notification('Iberostar Tour Interno', options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function api(token, path, options = {}) {
   return fetch(path, {
     ...options,
@@ -171,11 +215,12 @@ function MobileNav({ page, setPage, user }) {
   return <nav className="mobile-nav">{items.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : label.split(' ')[0]}</span></button>)}{!driver && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
 }
 
-function Topbar({ user, setMenuOpen }) {
+function Topbar({ user, setMenuOpen, notificationPermission, onNotifications }) {
   const [clock, setClock] = useState(time(new Date()));
   useEffect(() => { const timer = setInterval(() => setClock(time(new Date())), 30000); return () => clearInterval(timer); }, []);
   const role = user.role === 'ADMIN' ? 'Administrador' : user.role === 'MOTORISTA' ? 'Motorista' : user.role === 'HOSTESS' ? 'Hostess' : 'Concierge';
-  return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className="bell"><Bell size={20} /></button><div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
+  const notificationLabel = notificationPermission === 'granted' ? 'Notificações ativas. Toque para ver o resumo.' : notificationPermission === 'denied' ? 'Notificações bloqueadas no navegador.' : 'Ativar notificações do aparelho';
+  return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className={classNames('bell', notificationPermission === 'granted' && 'bell-enabled')} onClick={onNotifications} aria-label={notificationLabel} title={notificationLabel}><Bell size={20} /><span className="bell-status" aria-hidden="true" /></button><div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
 }
 
 function MetricCard({ icon: Icon, color, title, count, sub }) {
@@ -503,15 +548,58 @@ function App() {
   const [modal, setModal] = useState(null);
   const [notice, setNotice] = useState(null);
   const [loading, setLoading] = useState(Boolean(token));
+  const [notificationPermission, setNotificationPermission] = useState(() => 'Notification' in window ? window.Notification.permission : 'unsupported');
+  const previousNotificationSummary = useRef(null);
 
   const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const payload = await api(token, '/api/bootstrap');
     setUser(payload.user); setData(payload.data); setPage((current) => payload.user.role === 'CONCIERGE' ? 'transfers' : payload.user.role === 'HOSTESS' ? 'prestige' : current);
-  };
-  useEffect(() => { if (!token) { setLoading(false); return; } setLoading(true); refresh().catch(() => { localStorage.removeItem('iberostar-tour-token'); setToken(''); }).finally(() => setLoading(false)); }, [token]);
+  }, [token]);
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return undefined;
+    navigator.serviceWorker.register('/service-worker.js').catch(() => undefined);
+    return undefined;
+  }, []);
+  useEffect(() => { if (!token) { setLoading(false); return; } setLoading(true); refresh().catch(() => { localStorage.removeItem('iberostar-tour-token'); setToken(''); }).finally(() => setLoading(false)); }, [token, refresh]);
+  useEffect(() => {
+    if (!token) return undefined;
+    const timer = window.setInterval(() => { refresh().catch(() => undefined); }, 30000);
+    return () => window.clearInterval(timer);
+  }, [token, refresh]);
+  useEffect(() => {
+    if (!data) return;
+    const nextSummary = notificationSummary(data);
+    const previousSummary = previousNotificationSummary.current;
+    previousNotificationSummary.current = nextSummary;
+    if (!previousSummary || JSON.stringify(previousSummary) === JSON.stringify(nextSummary) || notificationPermission !== 'granted') return;
+    showOperationNotification(nextSummary);
+  }, [data, notificationPermission]);
+  async function requestNotifications() {
+    if (!('Notification' in window)) {
+      notify('Este navegador não oferece notificações do aparelho.', 'error');
+      return;
+    }
+    if (window.Notification.permission === 'denied') {
+      setNotificationPermission('denied');
+      notify('As notificações foram bloqueadas. Libere-as nas configurações do navegador para este site.', 'error');
+      return;
+    }
+    try {
+      const permission = await window.Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission !== 'granted') {
+        notify('A permissão de notificações não foi concedida.', 'error');
+        return;
+      }
+      await showOperationNotification(notificationSummary(data));
+      notify('Notificações ativadas neste aparelho.', 'success');
+    } catch {
+      notify('Não foi possível ativar as notificações neste navegador.', 'error');
+    }
+  }
   function login(nextToken, nextUser) { localStorage.setItem('iberostar-tour-token', nextToken); setUser(nextUser); setToken(nextToken); }
-  async function signOut() { try { await api(token, '/api/auth/logout', { method: 'POST' }); } catch { /* session may already be gone */ } localStorage.removeItem('iberostar-tour-token'); setToken(''); setUser(null); setData(null); }
+  async function signOut() { try { await api(token, '/api/auth/logout', { method: 'POST' }); } catch { /* session may already be gone */ } localStorage.removeItem('iberostar-tour-token'); previousNotificationSummary.current = null; setToken(''); setUser(null); setData(null); }
   const content = useMemo(() => {
     if (!data || !user) return null;
     const openAction = (tour, action) => setModal({ kind: 'action', tour, action });
@@ -535,7 +623,7 @@ function App() {
   }, [data, user, page, token]);
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
-  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{!['HOSTESS', 'CONCIERGE'].includes(user.role) && <MobileNav page={page} setPage={setPage} user={user} />}</div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{!['HOSTESS', 'CONCIERGE'].includes(user.role) && <MobileNav page={page} setPage={setPage} user={user} />}</div>;
 }
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);

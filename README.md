@@ -26,6 +26,12 @@ O arquivo `render.yaml` já está configurado para criar um Web Service Python g
 
 O Render não precisa de disco persistente: cada alteração é gravada no PostgreSQL do Neon. Mantenha uma instância do serviço enquanto o sistema usar o estado operacional em um único registro; para escalar a várias instâncias no futuro, a estrutura pode ser normalizada em tabelas por entidade.
 
+## Notificações no celular e computador
+
+Após entrar no painel, toque no sino no topo para permitir as notificações deste site naquele aparelho. O sistema envia um resumo com a quantidade de tours, Self Gean e convidados do Waves → Praia do Forte sempre que esses totais mudarem enquanto o painel estiver aberto ou em segundo plano; ele consulta as atualizações a cada 30 segundos.
+
+No celular, para uma experiência de aplicativo e notificações nativas, abra o menu do navegador e use **Adicionar à tela inicial**. A permissão é individual por navegador/aparelho e pode ser retirada nas configurações do navegador. Cada perfil recebe apenas os totais aos quais já tem acesso no sistema.
+
 ## Perfis
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.

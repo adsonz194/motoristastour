@@ -1,0 +1,9 @@
+{
+  "name": "Iberostar Tour Interno",
+  "short_name": "Tour Interno",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#071c34",
+  "theme_color": "#071c34",
+  "lang": "pt-BR"
+}
