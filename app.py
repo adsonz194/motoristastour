@@ -463,6 +463,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour.get("requiresDetails"):
             confirm_quantity_tour_start(tour)
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
+        tour["requiredCartCount"] = len(tour["allocations"])
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, tours=True)
             update_cart(db, allocation["cartId"], "EM_USO")
@@ -520,6 +521,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] != STATE_WAITING_HOME:
             raise APIError("O grupo não está aguardando na Casa.")
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
+        tour["requiredCartCount"] = len(tour["allocations"])
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, home_pickup=True)
             update_cart(db, allocation["cartId"], "EM_USO")
@@ -527,8 +529,43 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} foi buscado na Casa para seguir à Galeria.")
         return
 
+    if action == "depart-home":
+        if tour["status"] != STATE_HOME:
+            raise APIError("O grupo precisa estar na Casa.")
+        required_carts = tour.get("requiredCartCount", len(allocations()))
+        staying_allocations = [item for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
+        if len(staying_allocations) != required_carts:
+            raise APIError("Este grupo precisa de todos os carrinhos que saíram juntos. Chame outro motorista para ir à Casa antes de seguir para a Galeria.")
+        for allocation in staying_allocations:
+            update_driver(db, allocation["driverId"], DRIVER_IN_TOUR)
+        tour["allocations"] = staying_allocations
+        tour["phase"] = "Casa → Galeria"
+        change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} saiu da Casa para a Galeria com todos os carrinhos necessários.")
+        return
+
+    if action == "join-home":
+        if tour["status"] != STATE_HOME:
+            raise APIError("O grupo precisa estar na Casa.")
+        required_carts = tour.get("requiredCartCount", len(allocations()))
+        staying_allocations = [item for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
+        missing_drivers = required_carts - len(staying_allocations)
+        if missing_drivers <= 0:
+            raise APIError("Os motoristas necessários já estão na Casa. Registre a saída para a Galeria.")
+        incoming_allocations = normalized_allocations(db, payload.get("allocations"))
+        if len(incoming_allocations) != missing_drivers:
+            raise APIError(f"Este grupo precisa de exatamente {missing_drivers} motorista{'s' if missing_drivers > 1 else ''} adicional{'is' if missing_drivers > 1 else ''} para seguir à Galeria.")
+        for allocation in staying_allocations:
+            update_driver(db, allocation["driverId"], DRIVER_IN_TOUR)
+        for allocation in incoming_allocations:
+            update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, home_pickup=True)
+            update_cart(db, allocation["cartId"], "EM_USO")
+        tour["allocations"] = staying_allocations + incoming_allocations
+        tour["phase"] = "Casa → Galeria"
+        change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} recebeu o motorista necessário na Casa e saiu para a Galeria com {required_carts} carrinhos.")
+        return
+
     if action == "deliver-gallery":
-        if tour["status"] not in {STATE_IN_TOUR, STATE_HOME}:
+        if tour["status"] != STATE_IN_TOUR:
             raise APIError("O grupo precisa estar em deslocamento para ser entregue na Galeria.")
         for allocation in allocations():
             # The group remains in the Gallery, but its driver and cart immediately return to the available pool.

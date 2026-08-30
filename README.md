@@ -46,6 +46,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Iniciar tour soma uma saída para cada motorista alocado no Prestige.
 - Buscar na Casa não cria nova saída de tour.
 - Cada motorista registra individualmente, ao chegar à Casa, se deixou o grupo e voltou ao Prestige ou se permaneceu aguardando. O painel mostra os nomes de quem permaneceu e de quem retornou. Enquanto houver motorista aguardando, o grupo fica na Casa; quando todos retornam, entra na fila de busca.
+- Se o tour precisou de dois ou mais carrinhos e algum motorista retornou ao Prestige, quem permaneceu na Casa não pode seguir sozinho à Galeria. O sistema exige a chegada dos motoristas que faltam para completar os carrinhos necessários.
 - Ao buscar um grupo na Casa, motoristas adicionais podem ser alocados ao mesmo grupo, ficando todos classificados como “Em tour” em conjunto.
 - Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
 - Ao chegar à Galeria, o grupo entra diretamente em “Aguardando destino”; não há etapa de apresentação. Os únicos destinos finais são Lobby Bahia, Lobby Selection, Prestige Praia e Prestige Selection. Após confirmar a chegada ao destino, o tour é encerrado.
