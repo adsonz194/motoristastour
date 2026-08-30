@@ -60,6 +60,12 @@ TRANSFER_IN_PROGRESS = "EM_DESLOCAMENTO"
 TRANSFER_ARRIVED = "CHEGOU_PRESTIGE"
 TRANSFER_WITHDRAWN = "DESISTENCIA"
 OPERATION_TZ = ZoneInfo("America/Sao_Paulo")
+FINAL_DESTINATIONS = [
+    {"id": "dest_lobby_bahia", "name": "Lobby Bahia", "active": True},
+    {"id": "dest_lobby_selection", "name": "Lobby Selection", "active": True},
+    {"id": "dest_prestige", "name": "Prestige Praia", "active": True},
+    {"id": "dest_prestige_selection", "name": "Prestige Selection", "active": True},
+]
 
 # This is a one-way scrypt hash. The initial password is never stored in source code.
 INITIAL_ADMIN_HASH = (
@@ -123,12 +129,7 @@ def initial_database() -> dict[str, Any]:
             {"id": "cart_04", "name": "Carrinho 04", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
             {"id": "cart_05", "name": "Carrinho 05", "capacity": CART_PASSENGER_CAPACITY, "guestCapacity": CART_GUEST_CAPACITY, "status": "EM_USO"},
         ],
-        "destinations": [
-            {"id": "dest_prestige", "name": "Prestige Praia do Forte", "active": True},
-            {"id": "dest_waves", "name": "Prestige Waves Bahia", "active": True},
-            {"id": "dest_lobby", "name": "Lobby principal", "active": True},
-            {"id": "dest_villas", "name": "Villas", "active": True},
-        ],
+        "destinations": [dict(item) for item in FINAL_DESTINATIONS],
         "tours": [
             {
                 "id": "tour_yasmin", "groupName": "Família de Yasmin", "people": 8, "selfGuide": False, "consultantId": "con_yasmin", "wave": "WAVE_1", "scheduledTime": "09:00",
@@ -212,6 +213,25 @@ def operational_database() -> dict[str, Any]:
             cart["capacity"] = CART_PASSENGER_CAPACITY
             cart["guestCapacity"] = CART_GUEST_CAPACITY
             schema_updated = True
+    if db.get("destinations") != FINAL_DESTINATIONS:
+        db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
+        schema_updated = True
+    for tour in db.get("tours", []):
+        if tour.get("status") not in {STATE_GALLERY, STATE_PRESENTATION}:
+            continue
+        for allocation in tour.get("allocations", []):
+            driver = next((item for item in db["drivers"] if item["id"] == allocation.get("driverId")), None)
+            cart = next((item for item in db["carts"] if item["id"] == allocation.get("cartId")), None)
+            if driver:
+                driver["status"] = DRIVER_AVAILABLE
+                driver["lastActivity"] = timestamp()
+            if cart:
+                cart["status"] = "DISPONIVEL"
+        tour["allocations"] = []
+        tour["status"] = STATE_WAITING_DESTINATION
+        tour["phase"] = "Galeria"
+        tour["updatedAt"] = timestamp()
+        schema_updated = True
     if ensure_operational_day(db) or schema_updated:
         save_database(db)
     return db
@@ -476,8 +496,10 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
             tour["updatedAt"] = timestamp()
             log_activity(db, user, tour, STATE_IN_TOUR, STATE_IN_TOUR, f"{find(db['drivers'], driver_id, 'Motorista')['name']} registrou: {'deixou o grupo na Casa' if decision == 'DEIXOU_NA_CASA' else 'aguardou na Casa'} ({recorded}/{len(allocations())} motoristas).")
             return
-        if any(item.get("homeDecision") == "AGUARDOU_NA_CASA" for item in allocations()):
-            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa; os motoristas registraram suas situações.")
+        staying_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "AGUARDOU_NA_CASA"]
+        returned_driver_names = [find(db["drivers"], item["driverId"], "Motorista")["name"] for item in allocations() if item.get("homeDecision") == "DEIXOU_NA_CASA"]
+        if staying_driver_names:
+            change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} está na Casa. Permaneceu: {', '.join(staying_driver_names)}. Retornou ao Prestige: {', '.join(returned_driver_names) or 'ninguém'}.")
         else:
             change_tour_state(db, user, tour, STATE_WAITING_HOME, f"{tour['groupName']} ficou aguardando transporte na Casa; todos os motoristas retornaram ao Prestige.")
         return
@@ -514,38 +536,21 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
             update_cart(db, allocation["cartId"], "DISPONIVEL")
         tour["allocations"] = []
         tour["phase"] = "Galeria"
-        change_tour_state(db, user, tour, STATE_GALLERY, f"{tour['groupName']} foi entregue na Galeria; motorista liberado para retornar ao Prestige.")
-        return
-
-    if action == "presentation-started":
-        if tour["status"] != STATE_GALLERY:
-            raise APIError("O grupo precisa estar na Galeria.")
-        change_tour_state(db, user, tour, STATE_PRESENTATION, f"Apresentação iniciada para {tour['groupName']}.")
-        return
-
-    if action == "presentation-finished":
-        if tour["status"] not in {STATE_GALLERY, STATE_PRESENTATION}:
-            raise APIError("A apresentação ainda não está em andamento.")
-        destination_id = payload.get("destinationId")
-        if not destination_id:
-            raise APIError("Informe o destino final.")
-        find(db["destinations"], destination_id, "Destino")
-        for allocation in allocations():
-            update_driver(db, allocation["driverId"], DRIVER_AVAILABLE)
-            update_cart(db, allocation["cartId"], "DISPONIVEL")
-        tour["allocations"] = []
-        tour["destinationId"] = destination_id
-        tour["phase"] = "Galeria"
-        change_tour_state(db, user, tour, STATE_WAITING_DESTINATION, f"{tour['groupName']} concluiu a apresentação e aguarda destino.")
+        change_tour_state(db, user, tour, STATE_WAITING_DESTINATION, f"{tour['groupName']} chegou à Galeria e aguarda destino final; motorista liberado para retornar ao Prestige.")
         return
 
     if action == "assign-destination":
         if tour["status"] != STATE_WAITING_DESTINATION:
             raise APIError("O grupo não está aguardando destino.")
+        destination_id = payload.get("destinationId")
+        if not destination_id:
+            raise APIError("Selecione o destino final.")
+        find(db["destinations"], destination_id, "Destino")
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_DESTINATION)
             update_cart(db, allocation["cartId"], "EM_USO")
+        tour["destinationId"] = destination_id
         tour["phase"] = "Destino final"
         change_tour_state(db, user, tour, STATE_FINAL_DESTINATION, f"{tour['groupName']} saiu para o destino final.")
         return
