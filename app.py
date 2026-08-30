@@ -16,11 +16,20 @@ from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
+try:
+    import psycopg
+    from psycopg.types.json import Jsonb
+except ImportError:  # Allows local JSON-only development before dependencies are installed.
+    psycopg = None
+    Jsonb = None
+
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
 DATA_DIR = Path(os.getenv("TOUR_DATA_DIR", str(ROOT / "data")))
 DATABASE_PATH = DATA_DIR / "database.json"
+POSTGRES_URL = os.getenv("DATABASE_URL", "").strip()
+POSTGRES_STATE_KEY = "primary"
 DB_LOCK = threading.RLock()
 SESSIONS: dict[str, dict[str, Any]] = {}
 
@@ -159,22 +168,95 @@ def initial_database() -> dict[str, Any]:
     }
 
 
-def load_database() -> dict[str, Any]:
+def load_local_database() -> dict[str, Any] | None:
     if not DATABASE_PATH.exists():
-        db = initial_database()
-        save_database(db)
-        return db
+        return None
     try:
         return json.loads(DATABASE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise APIError("Não foi possível abrir o banco de dados local.", 500) from error
 
 
-def save_database(db: dict[str, Any]) -> None:
+def save_local_database(db: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     temporary = DATABASE_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(DATABASE_PATH)
+
+
+def postgres_connection():
+    if psycopg is None or Jsonb is None:
+        raise APIError("O driver PostgreSQL não está instalado no servidor.", 500)
+    try:
+        return psycopg.connect(POSTGRES_URL, connect_timeout=10)
+    except Exception as error:
+        raise APIError("Não foi possível conectar ao banco PostgreSQL. Verifique a variável DATABASE_URL.", 503) from error
+
+
+def ensure_postgres_schema(connection: Any) -> None:
+    """Create the persistent state tables once, without storing credentials in code."""
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS tour_control_state (
+            state_key TEXT PRIMARY KEY,
+            payload JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS tour_control_schema (
+            schema_version INTEGER PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    connection.execute("INSERT INTO tour_control_schema (schema_version) VALUES (1) ON CONFLICT DO NOTHING")
+
+
+def save_postgres_database(db: dict[str, Any], connection: Any | None = None) -> None:
+    owns_connection = connection is None
+    active_connection = connection or postgres_connection()
+    try:
+        with active_connection:
+            ensure_postgres_schema(active_connection)
+            active_connection.execute("""
+                INSERT INTO tour_control_state (state_key, payload, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (state_key) DO UPDATE
+                SET payload = EXCLUDED.payload, updated_at = CURRENT_TIMESTAMP
+            """, (POSTGRES_STATE_KEY, Jsonb(db)))
+    finally:
+        if owns_connection:
+            active_connection.close()
+
+
+def load_database() -> dict[str, Any]:
+    if not POSTGRES_URL:
+        db = load_local_database()
+        if db is not None:
+            return db
+        db = initial_database()
+        save_local_database(db)
+        return db
+
+    connection = postgres_connection()
+    try:
+        with connection:
+            ensure_postgres_schema(connection)
+            row = connection.execute("SELECT payload FROM tour_control_state WHERE state_key = %s", (POSTGRES_STATE_KEY,)).fetchone()
+            if row:
+                payload = row[0]
+                return json.loads(payload) if isinstance(payload, str) else payload
+            db = load_local_database() or initial_database()
+            connection.execute("INSERT INTO tour_control_state (state_key, payload) VALUES (%s, %s)", (POSTGRES_STATE_KEY, Jsonb(db)))
+            return db
+    finally:
+        connection.close()
+
+
+def save_database(db: dict[str, Any]) -> None:
+    if POSTGRES_URL:
+        save_postgres_database(db)
+        return
+    save_local_database(db)
 
 
 def reset_operational_data(db: dict[str, Any], message: str) -> None:

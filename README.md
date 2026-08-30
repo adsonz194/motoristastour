@@ -14,17 +14,17 @@ python -m venv .venv
 
 No macOS ou Linux, ative o ambiente virtual antes de executar os dois últimos comandos. Abra `http://localhost:4174`.
 
-Os dados são salvos em `data/database.json`, criado automaticamente na primeira execução. A pasta de dados não é versionada para impedir que acessos e dados operacionais sejam enviados ao GitHub.
+Em desenvolvimento, sem `DATABASE_URL`, os dados são salvos em `data/database.json`. Em produção, configure `DATABASE_URL` para usar PostgreSQL; o sistema cria automaticamente as tabelas `tour_control_state` e `tour_control_schema` e preserva todo o estado operacional no banco.
 
 ## Publicação no Render
 
-O arquivo `render.yaml` já está configurado para criar um Web Service Python com Gunicorn e um disco persistente para o banco local. No Render, selecione **New → Blueprint** e conecte este repositório. O serviço usará:
+O arquivo `render.yaml` já está configurado para criar um Web Service Python gratuito com Gunicorn e PostgreSQL externo. No Render, selecione **New → Blueprint** e conecte este repositório. O serviço usará:
 
 - Build: `pip install -r requirements.txt`
 - Start: `gunicorn --workers 1 --bind 0.0.0.0:$PORT app:app`
-- Disco persistente: `/opt/render/project/src/data`
+- Variável obrigatória: `DATABASE_URL` — cole a URL de conexão do Neon como segredo do Render
 
-O disco exige um plano compatível com armazenamento persistente e a aplicação está fixada em uma única instância, pois o banco JSON é local ao serviço. Para escalar para múltiplas instâncias, migre o armazenamento para PostgreSQL.
+O Render não precisa de disco persistente: cada alteração é gravada no PostgreSQL do Neon. Mantenha uma instância do serviço enquanto o sistema usar o estado operacional em um único registro; para escalar a várias instâncias no futuro, a estrutura pode ser normalizada em tabelas por entidade.
 
 ## Perfis
 
