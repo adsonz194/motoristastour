@@ -90,7 +90,6 @@ FINAL_DESTINATIONS = [
     {"id": "dest_lobby_bahia", "name": "Lobby Bahia", "active": True},
     {"id": "dest_lobby_selection", "name": "Lobby Selection", "active": True},
     {"id": "dest_prestige", "name": "Prestige Praia", "active": True},
-    {"id": "dest_prestige_selection", "name": "Prestige Selection", "active": True},
 ]
 
 # IDs used only by the first prototype screen.  They are kept here so that a
@@ -416,6 +415,12 @@ def operational_database() -> dict[str, Any]:
         elif driver.get("status") == DRIVER_HOSTESS_SUPPORT and not has_open_hostess_request:
             driver["status"] = DRIVER_AVAILABLE if driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
             driver["lastActivity"] = timestamp()
+            schema_updated = True
+    # Prestige Praia and Prestige Selection refer to the same destination.
+    # Keep historical tours valid while removing the duplicated option.
+    for tour in db.get("tours", []):
+        if tour.get("destinationId") == "dest_prestige_selection":
+            tour["destinationId"] = "dest_prestige"
             schema_updated = True
     if db.get("destinations") != FINAL_DESTINATIONS:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
