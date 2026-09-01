@@ -430,7 +430,7 @@ function SectionHeader({ title, description, action, actionText = 'Novo tour' })
 function OperationalPage({ page, data, user, onAction, onCreate }) {
   const settings = data.operationSettings || {};
   const options = {
-    prestige: { title: settings.departureLabel || 'Prestige Waves Bahia', description: settings.toursClosed ? 'Novas saídas de tour estão suspensas pelo fechamento configurado.' : 'Grupos disponíveis para iniciar o tour.', tours: data.tours.filter((tour) => tour.status === 'DISPONIVEL') },
+    prestige: { title: settings.departureLabel || 'Prestige Waves Bahia', description: settings.toursClosed ? 'Novas saídas de tour estão suspensas porque os dois hotéis estão fechados.' : 'Grupos disponíveis para iniciar o tour.', tours: data.tours.filter((tour) => tour.status === 'DISPONIVEL') },
     tours: { title: 'Tours em andamento', description: 'Acompanhe e avance os grupos por cada etapa operacional.', tours: data.tours.filter((tour) => !['DISPONIVEL', 'CONCLUIDO'].includes(tour.status)) },
     home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
     destinations: { title: 'Destinos finais', description: 'Grupos que chegaram à Galeria e aguardam ou seguem para o destino final.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }

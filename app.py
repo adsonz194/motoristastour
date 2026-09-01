@@ -158,13 +158,15 @@ def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dic
         ],
         "wavesTransfersClosed": HOTEL_WAVES_BAHIA in closed_hotels,
         "conciergePanelClosed": bool(active_closures),
-        "toursClosed": HOTEL_PRAIA_SELECTION in closed_hotels,
+        # Closing one hotel transfers the tour operation to the other
+        # configured Prestige. Tours stop only if both hotels are closed.
+        "toursClosed": HOTEL_WAVES_BAHIA in closed_hotels and HOTEL_PRAIA_SELECTION in closed_hotels,
     }
 
 
 def require_tours_open(db: dict[str, Any]) -> None:
     if active_operation_settings(db)["toursClosed"]:
-        raise APIError("Os tours estão suspensos durante o fechamento do Praia do Forte Selection.", 409)
+        raise APIError("Os tours estão suspensos porque os dois hotéis estão fechados no período.", 409)
 
 
 def require_waves_transfers_open(db: dict[str, Any]) -> None:
@@ -1102,8 +1104,8 @@ def create_tour():
         user = get_current_user(db)
         require_admin(user)
         if "quantity" in payload:
-            # Administrator and Hostess may always register the daily totals.
-            # A hotel closure blocks departure, not the operational counting.
+            # Administrator and Hostess may always register the daily totals,
+            # including when the departure moves to the other Prestige.
             tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
             save_database(db)
             return jsonify(tours=tours), 201
@@ -1134,8 +1136,8 @@ def register_hostess_tours():
         user = get_current_user(db)
         if user["role"] != ROLE_HOSTESS:
             raise APIError("Somente o perfil Hostess registra a quantidade de tours.", 403)
-        # Hostess records the daily totals even when a hotel is closed; the
-        # actual departure remains protected by the hotel-closure rule.
+        # Hostess records the daily totals even when a hotel is closed; tours
+        # continue from the other configured Prestige.
         tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
         save_database(db)
         return jsonify(tours=tours), 201
