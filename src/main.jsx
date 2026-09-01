@@ -200,7 +200,8 @@ function Login({ onLogin }) {
   </main>;
 }
 
-function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
+function Sidebar({ user, page, setPage, signOut, open, setOpen, operationSettings }) {
+  const departureLabel = operationSettings?.departureLabel || 'Prestige Waves Bahia';
   const nav = user.role === 'HOSTESS'
     ? NAV.filter((item) => item.id === 'dashboard')
     : user.role === 'CONCIERGE'
@@ -210,16 +211,17 @@ function Sidebar({ user, page, setPage, signOut, open, setOpen }) {
         : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
   return <aside className={classNames('sidebar', open && 'sidebar-open')}>
     <div className="sidebar-top"><Logo /><button className="sidebar-close" onClick={() => setOpen(false)} aria-label="Fechar menu"><X /></button></div>
-    <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{label}</span></button>)}</nav>
+    <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{id === 'prestige' ? departureLabel : label}</span></button>)}</nav>
     <button className="nav-item nav-exit" onClick={signOut}><LogOut size={19} /><span>Sair</span></button>
   </aside>;
 }
 
-function MobileNav({ page, setPage, user }) {
+function MobileNav({ page, setPage, user, operationSettings }) {
   const driver = user.role === 'MOTORISTA';
   const hostess = user.role === 'HOSTESS';
   const items = hostess ? NAV.filter((item) => item.id === 'dashboard') : driver ? NAV.filter((item) => ['dashboard', 'prestige', 'tours', 'home', 'gallery'].includes(item.id)) : NAV.slice(0, 4);
-  return <nav className={classNames('mobile-nav', hostess && 'mobile-nav-single')}>{items.map(({ id, label, icon: Icon }) => <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : label.split(' ')[0]}</span></button>)}{!driver && !hostess && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
+  const departureLabel = operationSettings?.departureLabel || 'Prestige Waves Bahia';
+  return <nav className={classNames('mobile-nav', hostess && 'mobile-nav-single')}>{items.map(({ id, label, icon: Icon }) => { const itemLabel = id === 'prestige' ? departureLabel : label; return <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : id === 'prestige' ? departureLabel.includes('Selection') ? 'Selection' : 'Bahia' : itemLabel.split(' ')[0]}</span></button>; })}{!driver && !hostess && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
 }
 
 function Topbar({ user, setMenuOpen, notificationPermission, onNotifications }) {
@@ -407,10 +409,11 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
 
 function HostessPrestigePage({ data, user, token, refresh, notify }) {
   const [open, setOpen] = useState(false);
+  const departureLabel = data.operationSettings?.departureLabel || 'Prestige Waves Bahia';
   const awaitingDriver = (data.tours || []).filter((tour) => tour.requiresDetails && tour.status === 'DISPONIVEL');
   const normalToursToday = (data.tours || []).filter((tour) => !tour.selfGuide).length;
   const selfGeanToday = (data.tours || []).filter((tour) => tour.selfGuide).length;
-  return <><CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} /><section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>Prestige Praia do Forte</h1><p>A Hostess registra separadamente as quantidades de tours, Self Gean e a onda.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidades de tours</button></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS NORMAIS</span><strong>{normalToursToday}</strong><small>{awaitingDriver.length} aguardando motorista</small></div></article><article><Flag size={35} /><div><span>SELF GEAN</span><strong>{selfGeanToday}</strong><small>registros Self Gean na operação</small></div></article></section><section className="panel hostess-note"><h2>Registro simplificado</h2><p>Nesta aba a Hostess não informa família, consultor, quantidade de hóspedes ou motoristas: somente as quantidades de tours e Self Gean, mais a onda.</p></section>{open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}</>;
+  return <><CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} /><section className="page-title"><div><span>CONTROLE OPERACIONAL</span><h1>{departureLabel}</h1><p>A Hostess registra separadamente as quantidades de tours, Self Gean e a onda.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidades de tours</button></section><section className="hostess-grid"><article><Route size={35} /><div><span>TOURS NORMAIS</span><strong>{normalToursToday}</strong><small>{awaitingDriver.length} aguardando motorista</small></div></article><article><Flag size={35} /><div><span>SELF GEAN</span><strong>{selfGeanToday}</strong><small>registros Self Gean na operação</small></div></article></section><section className="panel hostess-note"><h2>Registro simplificado</h2><p>Nesta aba a Hostess não informa família, consultor, quantidade de hóspedes ou motoristas: somente as quantidades de tours e Self Gean, mais a onda.</p></section>{open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}</>;
 }
 
 function Queue({ items, data, destinations = false }) {
@@ -508,7 +511,8 @@ function ReportsPage({ data }) {
   const active = data.tours.filter((tour) => tour.status !== 'CONCLUIDO');
   const selfGean = active.filter((tour) => tour.selfGuide);
   const availableDrivers = data.drivers.filter((driver) => driver.status === 'DISPONIVEL');
-  return <><SectionHeader title="Relatórios" description="Indicadores rápidos para a coordenação da operação." /><section className="report-grid"><MetricCard icon={Route} color="blue" title="Tours ativos" count={active.length} sub={`${active.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={Flag} color="orange" title="Grupos Self Gean" count={selfGean.length} sub={`${selfGean.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={CarFront} color="green" title="Motoristas disponíveis" count={availableDrivers.length} sub={`${data.drivers.length} cadastrados`} /><MetricCard icon={ShoppingCart} color="purple" title="Carrinhos em operação" count={data.carts.filter((cart) => cart.status !== 'DISPONIVEL').length} sub={`${data.carts.length} cadastrados`} /></section><section className="panel full-panel"><div className="panel-heading"><div><h2>Saídas por motorista</h2><p>Contagem de tours iniciados no Prestige Praia do Forte.</p></div></div><div className="bar-list">{data.drivers.map((driver) => <div key={driver.id}><span>{driver.name}</span><div><i style={{ width: `${Math.max(8, Math.round((driver.toursStarted / Math.max(...data.drivers.map((item) => item.toursStarted), 1)) * 100))}%` }} /></div><strong>{driver.toursStarted}</strong></div>)}</div></section></>;
+  const departureLabel = data.operationSettings?.departureLabel || 'Prestige Waves Bahia';
+  return <><SectionHeader title="Relatórios" description="Indicadores rápidos para a coordenação da operação." /><section className="report-grid"><MetricCard icon={Route} color="blue" title="Tours ativos" count={active.length} sub={`${active.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={Flag} color="orange" title="Grupos Self Gean" count={selfGean.length} sub={`${selfGean.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={CarFront} color="green" title="Motoristas disponíveis" count={availableDrivers.length} sub={`${data.drivers.length} cadastrados`} /><MetricCard icon={ShoppingCart} color="purple" title="Carrinhos em operação" count={data.carts.filter((cart) => cart.status !== 'DISPONIVEL').length} sub={`${data.carts.length} cadastrados`} /></section><section className="panel full-panel"><div className="panel-heading"><div><h2>Saídas por motorista</h2><p>Contagem de tours iniciados no {departureLabel}.</p></div></div><div className="bar-list">{data.drivers.map((driver) => <div key={driver.id}><span>{driver.name}</span><div><i style={{ width: `${Math.max(8, Math.round((driver.toursStarted / Math.max(...data.drivers.map((item) => item.toursStarted), 1)) * 100))}%` }} /></div><strong>{driver.toursStarted}</strong></div>)}</div></section></>;
 }
 
 function UserEditorModal({ account, drivers, onClose, token, refresh, notify }) {
@@ -738,7 +742,7 @@ function App() {
   }, [data, user, page, token]);
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
-  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{user.role !== 'CONCIERGE' && <MobileNav page={page} setPage={setPage} user={user} />}</div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} operationSettings={data.operationSettings} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{user.role !== 'CONCIERGE' && <MobileNav page={page} setPage={setPage} user={user} operationSettings={data.operationSettings} />}</div>;
 }
 
 function Root() {
