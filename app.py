@@ -469,6 +469,16 @@ def validate_driver_link(db: dict[str, Any], driver_id: Any, user_id: str | None
     return driver_id
 
 
+def remove_driver_for_role_change(db: dict[str, Any], driver_id: str, user_id: str) -> None:
+    """Remove the operational record when its account stops being a driver."""
+    assigned_tour = active_driver_assignment(db, driver_id)
+    if assigned_tour:
+        raise APIError(f"O motorista está vinculado ao tour de {assigned_tour['groupName']}. Libere o transporte antes de mudar o perfil.", 409)
+    if any(item.get("id") != user_id and item.get("role") == ROLE_DRIVER and item.get("driverId") == driver_id for item in db["users"]):
+        return
+    db["drivers"] = [item for item in db["drivers"] if item["id"] != driver_id]
+
+
 def attendance_for(db: dict[str, Any], user_id: str) -> dict[str, Any] | None:
     return next((item for item in db.setdefault("attendance", []) if item.get("userId") == user_id and item.get("operationDate") == operation_date()), None)
 
@@ -922,6 +932,8 @@ def update_user(user_id: str):
         current_user = get_current_user(db)
         require_admin(current_user)
         target = find(db["users"], user_id, "Usuário")
+        previous_role = target["role"]
+        previous_driver_id = target.get("driverId")
         name = str(payload.get("name", target["name"])).strip()
         username = str(payload.get("username", target["username"])).strip().lower()
         role = payload.get("role", target["role"])
@@ -942,6 +954,8 @@ def update_user(user_id: str):
             raise APIError("Mantenha ao menos um administrador ativo no sistema.")
         driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
         driver_id = validate_driver_link(db, driver_id, target["id"])
+        if previous_role == ROLE_DRIVER and role != ROLE_DRIVER and previous_driver_id:
+            remove_driver_for_role_change(db, previous_driver_id, target["id"])
         target.update({"name": name, "username": username, "role": role, "active": active})
         if role == ROLE_DRIVER and not driver_id:
             driver_id = create_linked_driver(db, target, active=active)["id"]
@@ -953,6 +967,8 @@ def update_user(user_id: str):
             target["checkInLocation"] = str(payload.get("checkInLocation", target.get("checkInLocation", ""))).strip() or "Prestige Praia do Forte"
         else:
             target.pop("checkInLocation", None)
+        if previous_role == ROLE_DRIVER and role != ROLE_DRIVER:
+            db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
         if password:
             target["passwordHash"] = generate_password_hash(password)
         log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.")
