@@ -54,8 +54,11 @@ DRIVER_IN_TOUR = "EM_TOUR"
 DRIVER_HOME = "CASA"
 DRIVER_GALLERY = "GALERIA"
 DRIVER_DESTINATION = "DESTINO_FINAL"
+DRIVER_HOSTESS_SUPPORT = "APOIO_HOSTESS"
 DRIVER_LEAVE = "FOLGA"
 DRIVER_MEDICAL = "ATESTADO"
+# APOIO_HOSTESS is an internal temporary reservation. It is set only when a
+# driver accepts an open Hostess call, never as a regular manual status.
 DRIVER_STATUSES = {DRIVER_AVAILABLE, DRIVER_IN_TOUR, DRIVER_HOME, DRIVER_GALLERY, DRIVER_DESTINATION, DRIVER_LEAVE, DRIVER_MEDICAL}
 CART_PASSENGER_CAPACITY = 5  # Passenger seats; the driver is not counted here.
 CART_GUEST_CAPACITY = 4  # One passenger seat is reserved for the consultant.
@@ -393,9 +396,24 @@ def operational_database() -> dict[str, Any]:
             cart["capacity"] = CART_PASSENGER_CAPACITY
             cart["guestCapacity"] = CART_GUEST_CAPACITY
             schema_updated = True
+    has_open_hostess_request = any(item.get("status") == HOSTESS_REQUEST_OPEN for item in db["hostessRequests"])
     for driver in db.get("drivers", []):
         if "hostessAvailable" not in driver:
             driver["hostessAvailable"] = False
+            schema_updated = True
+        # Earlier versions kept an accepted Hostess call as only a Boolean,
+        # which left the driver selectable for a tour. Convert it to the
+        # exclusive support state the first time this version loads the data.
+        if driver.get("hostessAvailable") and driver.get("status") == DRIVER_AVAILABLE and has_open_hostess_request:
+            driver["status"] = DRIVER_HOSTESS_SUPPORT
+            driver["lastActivity"] = timestamp()
+            schema_updated = True
+        elif driver.get("hostessAvailable") and (driver.get("status") != DRIVER_HOSTESS_SUPPORT or not has_open_hostess_request):
+            driver["hostessAvailable"] = False
+            schema_updated = True
+        elif driver.get("status") == DRIVER_HOSTESS_SUPPORT and not has_open_hostess_request:
+            driver["status"] = DRIVER_AVAILABLE if driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
+            driver["lastActivity"] = timestamp()
             schema_updated = True
     if db.get("destinations") != FINAL_DESTINATIONS:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
@@ -503,9 +521,9 @@ def log_activity(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any] 
 def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool = False, home_pickup: bool = False) -> None:
     driver = find(db["drivers"], driver_id, "Motorista")
     driver["status"] = status
-    # Availability for the Hostess is intentionally opt-in for each request.
-    # A driver who starts any operational movement must disappear from that list.
-    if status != DRIVER_AVAILABLE:
+    # Hostess support is exclusive. Any regular driver movement, including a
+    # return to DISPONIVEL, releases the temporary Hostess reservation.
+    if status != DRIVER_HOSTESS_SUPPORT:
         driver["hostessAvailable"] = False
     if tours:
         driver["toursStarted"] += 1
@@ -646,6 +664,8 @@ def normalized_allocations(db: dict[str, Any], raw_allocations: Any) -> list[dic
             raise APIError("Não repita motorista na mesma saída.")
         drivers.add(driver_id)
         driver = find(db["drivers"], driver_id, "Motorista")
+        if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
+            raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de usar este motorista.", 409)
         if not driver.get("active", True) or driver["status"] != DRIVER_AVAILABLE:
             raise APIError(f"{driver['name']} não está disponível.")
         if not driver_has_checked_in(db, driver_id):
@@ -986,7 +1006,7 @@ def bootstrap():
             user=clean_user(user),
             data=data,
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE},
-            driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
+            driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "APOIO_HOSTESS": DRIVER_HOSTESS_SUPPORT, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
             attendance=current_attendance,
             waves=TRANSFER_SCHEDULES,
             transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED, "DESISTENCIA": TRANSFER_WITHDRAWN},
@@ -1212,11 +1232,16 @@ def close_hostess_request(request_id: str):
         car_request["closedAt"] = timestamp()
         car_request["closedByName"] = user["name"]
         car_request["updatedAt"] = car_request["closedAt"]
-        # The list is an answer to the current call. Once no call remains,
-        # clear it so the next Hostess sees only fresh responses.
+        # An accepted call reserves the driver exclusively for this support.
+        # Once no Hostess call remains, return the reserved drivers to the
+        # regular pool and clear the response list for the next request.
         if not open_hostess_requests(db):
             for driver in db.get("drivers", []):
-                driver["hostessAvailable"] = False
+                if driver.get("status") == DRIVER_HOSTESS_SUPPORT:
+                    next_status = DRIVER_AVAILABLE if driver.get("active", True) and driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
+                    update_driver(db, driver["id"], next_status)
+                else:
+                    driver["hostessAvailable"] = False
         log_activity(db, user, None, HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_CLOSED, f"{user['name']} encerrou a solicitação de carro da Hostess.")
         save_database(db)
         return jsonify(request=car_request)
@@ -1241,9 +1266,17 @@ def driver_hostess_availability():
                 raise APIError("Não há solicitação de carro aberta pela Hostess no momento.", 409)
             if not driver.get("active", True) or driver.get("status") != DRIVER_AVAILABLE or not driver_has_checked_in(db, driver_id):
                 raise APIError("Você precisa estar disponível e com check-in feito para responder à Hostess.", 409)
-        driver["hostessAvailable"] = available
-        driver["lastActivity"] = timestamp()
-        action = "ficou disponível" if available else "saiu da lista de disponibilidade"
+            driver["status"] = DRIVER_HOSTESS_SUPPORT
+            driver["hostessAvailable"] = True
+            driver["lastActivity"] = timestamp()
+            action = "ficou reservado para o apoio da Hostess"
+        else:
+            if driver.get("status") == DRIVER_HOSTESS_SUPPORT:
+                update_driver(db, driver_id, DRIVER_AVAILABLE)
+            else:
+                driver["hostessAvailable"] = False
+                driver["lastActivity"] = timestamp()
+            action = "encerrou seu apoio à Hostess"
         log_activity(db, user, None, None, None, f"{driver['name']} {action} para a Hostess.")
         save_database(db)
         return jsonify(driver=driver)
@@ -1278,6 +1311,8 @@ def update_driver_record(driver_id: str):
         user = get_current_user(db)
         require_admin(user)
         driver = find(db["drivers"], driver_id, "Motorista")
+        if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
+            raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de alterar seu cadastro.", 409)
         name = str(payload.get("name", driver["name"])).strip()
         status = payload.get("status", driver["status"])
         active = bool(payload["active"]) if "active" in payload else driver.get("active", True)
@@ -1303,6 +1338,8 @@ def delete_driver(driver_id: str):
         user = get_current_user(db)
         require_admin(user)
         driver = find(db["drivers"], driver_id, "Motorista")
+        if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
+            raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de excluir.", 409)
         assigned_tour = active_driver_assignment(db, driver_id)
         if assigned_tour:
             raise APIError(f"{driver['name']} está vinculado ao tour de {assigned_tour['groupName']}. Libere-o antes de excluir.", 409)
