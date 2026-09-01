@@ -40,7 +40,7 @@ Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, s
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
 - **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
-- **Hostess:** vê somente o Painel Geral em modo de leitura e pode registrar as quantidades de tours e Self Gean por onda.
+- **Hostess:** vê somente o Painel Geral em modo de leitura; pode registrar as quantidades de tours e Self Gean por onda e solicitar um carro, sem informar hotel, destino ou motorista.
 - **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado; não acessa nenhuma função de motorista.
 
 O primeiro acesso administrativo usa o usuário e a senha definidos pela operação. A senha é armazenada somente como hash no banco local.
@@ -53,6 +53,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Ao iniciar um tour registrado por quantidade, informe o consultor que está saindo. O painel mostra a dupla de forma direta, por exemplo: **Tour 1 · Rhayane com Paulo**.
 - Tours são organizados por 1ª onda (09:00) e 2ª onda (11:00), sem horário obrigatório de encerramento.
 - Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª onda) ou 09:50 (2ª onda).
+- Em **Configurações → Hotéis e Prestige de saída**, o administrador escolhe o Prestige padrão de saída e cadastra um período de fechamento. Se o **Waves Bahia** estiver fechado, convites e traslados Waves ficam bloqueados; se o **Praia do Forte Selection** estiver fechado, novas saídas de tour ficam bloqueadas. Durante o período, a saída passa para o outro Prestige automaticamente, sem deploy. A solicitação de carro da Hostess continua disponível nos dois casos.
 - Cada Concierge vê apenas seus próprios convites. O painel exibe o total de famílias convidadas, pessoas convidadas e desistências; uma desistência só pode ser registrada antes do início do traslado.
 - Iniciar tour soma uma saída para cada motorista alocado no Prestige.
 - Buscar na Casa não cria nova saída de tour.
@@ -65,6 +66,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Ao chegar à Galeria, o grupo entra diretamente em “Aguardando destino”; não há etapa de apresentação. Os únicos destinos finais são Lobby Bahia, Lobby Selection, Prestige Praia e Prestige Selection. Após confirmar a chegada ao destino, o tour é encerrado.
 - A operação é zerada automaticamente somente ao mudar o dia em America/Sao_Paulo; um novo deploy do Render não apaga os dados armazenados no PostgreSQL. Administradores também podem zerá-la manualmente. Check-ins, cadastros e usuários são tratados corretamente para o novo dia.
 - Todo Motorista e Hostess inicia o dia como “Folga ou atestado” e confirma “Fazer check-in” ao entrar, vendo o local definido pelo administrador. Um motorista sem check-in não aparece como disponível e não pode ser alocado; ao confirmar presença, seu cadastro fica disponível quando não houver tour ativo.
+- A Hostess pode abrir uma solicitação simples de carro. Os motoristas com check-in, livres e disponíveis recebem o chamado no Painel Geral e tocam em **Estou disponível para a Hostess**; seus nomes aparecem imediatamente para a Hostess. Ao encerrar o pedido, a lista é limpa para o próximo chamado.
 - Ao criar uma conta com perfil Motorista sem selecionar um cadastro existente, o sistema cria e vincula automaticamente o motorista com o mesmo nome. Contas antigas sem vínculo também são corrigidas automaticamente.
 - Administradores podem criar, editar, desativar e excluir usuários, motoristas e consultores. A própria conta e o último administrador são protegidos contra perda de acesso; motoristas em tour ativo precisam ser liberados antes de excluir ou mudar a disponibilidade.
 - Toda transição gera histórico com data, responsável, estado anterior e novo estado.

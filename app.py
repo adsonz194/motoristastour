@@ -68,6 +68,20 @@ TRANSFER_SCHEDULED = "AGENDADO"
 TRANSFER_IN_PROGRESS = "EM_DESLOCAMENTO"
 TRANSFER_ARRIVED = "CHEGOU_PRESTIGE"
 TRANSFER_WITHDRAWN = "DESISTENCIA"
+HOSTESS_REQUEST_OPEN = "SOLICITADO"
+HOSTESS_REQUEST_CLOSED = "ENCERRADO"
+HOTEL_WAVES_BAHIA = "WAVES_BAHIA"
+HOTEL_PRAIA_SELECTION = "PRAIA_SELECTION"
+HOTELS = {
+    HOTEL_WAVES_BAHIA: "Waves Bahia",
+    HOTEL_PRAIA_SELECTION: "Praia do Forte Selection",
+}
+PRESTIGE_BAHIA = "BAHIA"
+PRESTIGE_SELECTION = "SELECTION"
+PRESTIGE_LOCATIONS = {
+    PRESTIGE_BAHIA: "Prestige Waves Bahia",
+    PRESTIGE_SELECTION: "Prestige Praia do Forte Selection",
+}
 OPERATION_TZ = ZoneInfo("America/Sao_Paulo")
 FINAL_DESTINATIONS = [
     {"id": "dest_lobby_bahia", "name": "Lobby Bahia", "active": True},
@@ -110,6 +124,50 @@ def operation_date() -> str:
     return datetime.now(OPERATION_TZ).date().isoformat()
 
 
+def valid_iso_date(value: Any, label: str) -> str:
+    """Return an ISO calendar date or a concise API validation error."""
+    value = str(value or "").strip()
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError as error:
+        raise APIError(f"Informe uma {label} válida.") from error
+
+
+def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dict[str, Any]:
+    """The operational restrictions for a date, derived from admin configuration."""
+    day = day or operation_date()
+    active_closures = [
+        item for item in db.get("hotelClosures", [])
+        if item.get("startDate", "") <= day <= item.get("endDate", "")
+    ]
+    active_closures.sort(key=lambda item: (item.get("startDate", ""), item.get("createdAt", "")), reverse=True)
+    departure = db.get("defaultDeparturePrestige", PRESTIGE_BAHIA)
+    if active_closures and active_closures[0].get("departurePrestige") in PRESTIGE_LOCATIONS:
+        departure = active_closures[0]["departurePrestige"]
+    closed_hotels = {item.get("hotel") for item in active_closures}
+    return {
+        "departurePrestige": departure,
+        "departureLabel": PRESTIGE_LOCATIONS[departure],
+        "closedHotels": sorted(hotel for hotel in closed_hotels if hotel in HOTELS),
+        "activeClosures": [
+            {"id": item["id"], "hotel": item["hotel"], "hotelLabel": HOTELS.get(item["hotel"], item["hotel"]), "startDate": item["startDate"], "endDate": item["endDate"]}
+            for item in active_closures
+        ],
+        "wavesTransfersClosed": HOTEL_WAVES_BAHIA in closed_hotels,
+        "toursClosed": HOTEL_PRAIA_SELECTION in closed_hotels,
+    }
+
+
+def require_tours_open(db: dict[str, Any]) -> None:
+    if active_operation_settings(db)["toursClosed"]:
+        raise APIError("Os tours estão suspensos durante o fechamento do Praia do Forte Selection.", 409)
+
+
+def require_waves_transfers_open(db: dict[str, Any]) -> None:
+    if active_operation_settings(db)["wavesTransfersClosed"]:
+        raise APIError("Os convites e traslados Waves estão suspensos durante o fechamento do Waves Bahia.", 409)
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(6)}"
 
@@ -139,6 +197,9 @@ def initial_database() -> dict[str, Any]:
         "destinations": [dict(item) for item in FINAL_DESTINATIONS],
         "tours": [],
         "transfers": [],
+        "hostessRequests": [],
+        "hotelClosures": [],
+        "defaultDeparturePrestige": PRESTIGE_BAHIA,
         "attendance": [],
         "activities": [
             {"id": new_id("act"), "at": created, "userName": "Sistema", "message": "Painel operacional iniciado sem dados de exemplo.", "previous": None, "next": None},
@@ -243,11 +304,13 @@ def reset_operational_data(db: dict[str, Any], message: str) -> None:
     db["operationDate"] = operation_date()
     db["tours"] = []
     db["transfers"] = []
+    db["hostessRequests"] = []
     db["attendance"] = []
     for driver in db["drivers"]:
         # A new day starts with everyone off duty. A driver becomes available
         # only after using their own account to check in for that day.
         driver["status"] = DRIVER_LEAVE
+        driver["hostessAvailable"] = False
         driver["toursStarted"] = 0
         driver["homePickups"] = 0
         driver["lastActivity"] = current_time
@@ -315,10 +378,23 @@ def operational_database() -> dict[str, Any]:
     if "attendance" not in db:
         db["attendance"] = []
         schema_updated = True
+    if "hostessRequests" not in db:
+        db["hostessRequests"] = []
+        schema_updated = True
+    if "hotelClosures" not in db:
+        db["hotelClosures"] = []
+        schema_updated = True
+    if db.get("defaultDeparturePrestige") not in PRESTIGE_LOCATIONS:
+        db["defaultDeparturePrestige"] = PRESTIGE_BAHIA
+        schema_updated = True
     for cart in db.get("carts", []):
         if cart.get("capacity") != CART_PASSENGER_CAPACITY or cart.get("guestCapacity") != CART_GUEST_CAPACITY:
             cart["capacity"] = CART_PASSENGER_CAPACITY
             cart["guestCapacity"] = CART_GUEST_CAPACITY
+            schema_updated = True
+    for driver in db.get("drivers", []):
+        if "hostessAvailable" not in driver:
+            driver["hostessAvailable"] = False
             schema_updated = True
     if db.get("destinations") != FINAL_DESTINATIONS:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
@@ -426,6 +502,10 @@ def log_activity(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any] 
 def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool = False, home_pickup: bool = False) -> None:
     driver = find(db["drivers"], driver_id, "Motorista")
     driver["status"] = status
+    # Availability for the Hostess is intentionally opt-in for each request.
+    # A driver who starts any operational movement must disappear from that list.
+    if status != DRIVER_AVAILABLE:
+        driver["hostessAvailable"] = False
     if tours:
         driver["toursStarted"] += 1
     if home_pickup:
@@ -442,6 +522,7 @@ def create_linked_driver(db: dict[str, Any], user: dict[str, Any], status: str =
         "status": status,
         "toursStarted": 0,
         "homePickups": 0,
+        "hostessAvailable": False,
         "lastActivity": timestamp(),
     }
     db["drivers"].append(driver)
@@ -483,6 +564,10 @@ def attendance_for(db: dict[str, Any], user_id: str) -> dict[str, Any] | None:
     return next((item for item in db.setdefault("attendance", []) if item.get("userId") == user_id and item.get("operationDate") == operation_date()), None)
 
 
+def open_hostess_requests(db: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in db.setdefault("hostessRequests", []) if item.get("status") == HOSTESS_REQUEST_OPEN]
+
+
 def driver_has_checked_in(db: dict[str, Any], driver_id: str) -> bool:
     linked_accounts = [item for item in db["users"] if item.get("driverId") == driver_id and item.get("active", True) and item["role"] == ROLE_DRIVER]
     return bool(linked_accounts) and any(attendance_for(db, account["id"]) for account in linked_accounts)
@@ -496,6 +581,7 @@ def enforce_driver_checkin(db: dict[str, Any]) -> bool:
             continue
         if not driver.get("active", True) or not driver_has_checked_in(db, driver["id"]):
             driver["status"] = DRIVER_LEAVE
+            driver["hostessAvailable"] = False
             driver["lastActivity"] = timestamp()
             changed = True
     return changed
@@ -532,6 +618,7 @@ def apply_transfer_action(db: dict[str, Any], user: dict[str, Any], transfer: di
         return
     require_admin(user)
     if action == "start":
+        require_waves_transfers_open(db)
         if transfer["status"] != TRANSFER_SCHEDULED:
             raise APIError("Apenas convites agendados podem iniciar o traslado.")
         change_transfer_state(db, user, transfer, TRANSFER_IN_PROGRESS, f"Traslado de {transfer['groupName']} saiu do Waves Bahia.")
@@ -592,6 +679,7 @@ def confirm_quantity_tour_start(tour: dict[str, Any], consultant_name: str) -> N
 
 def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_gean_quantity: Any = 0) -> list[dict[str, Any]]:
     """Register normal tours and Self Gean tours as separate operational slots."""
+    require_tours_open(db)
     try:
         quantity = int(quantity)
     except (TypeError, ValueError):
@@ -612,7 +700,7 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
         number = existing + offset + 1
         is_self_gean = offset >= quantity
         label = f"Self Gean {offset - quantity + 1}" if is_self_gean else f"Tour {number}"
-        tour = {"id": new_id("tour"), "groupName": label, "slotLabel": label, "people": 0, "selfGuide": is_self_gean, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
+        tour = {"id": new_id("tour"), "groupName": label, "slotLabel": label, "people": 0, "selfGuide": is_self_gean, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
         db["tours"].insert(0, tour)
         tours.append(tour)
     log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity != 1 else ''} e {self_gean_quantity} Self Gean registrado{'s' if total_quantity != 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}.")
@@ -626,6 +714,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
     if action == "start":
         if tour["status"] != STATE_AVAILABLE:
             raise APIError("Apenas grupos disponíveis podem iniciar tour.")
+        require_tours_open(db)
         if tour.get("requiresDetails"):
             consultant_name = str(payload.get("consultantName", "")).strip()
             if not consultant_name:
@@ -636,10 +725,10 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, tours=True)
             update_cart(db, allocation["cartId"], "EM_USO")
-        tour["phase"] = "Prestige Waves Bahia"
+        tour["phase"] = active_operation_settings(db)["departureLabel"]
         drivers_in_tour = ", ".join(find(db["drivers"], allocation["driverId"], "Motorista")["name"] for allocation in allocations())
         consultant_name = tour.get("consultantName") or next((item["name"] for item in db["consultants"] if item["id"] == tour.get("consultantId")), "Consultor não informado")
-        change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} iniciou: {consultant_name} com {drivers_in_tour}.")
+        change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} iniciou no {tour['phase']}: {consultant_name} com {drivers_in_tour}.")
         return
 
     if action == "arrived-home":
@@ -854,23 +943,27 @@ def bootstrap():
         user = get_current_user(db)
         current_attendance = attendance_for(db, user["id"])
         data = safe_database(db)
+        settings = active_operation_settings(db)
+        data["operationSettings"] = settings
         if user["role"] == ROLE_CONCIERGE:
             # Concierges receive only their own invitations; they cannot inspect the operation.
-            data = {"operationDate": db["operationDate"], "transfers": [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]}
+            data = {"operationDate": db["operationDate"], "operationSettings": settings, "transfers": [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]}
         elif user["role"] == ROLE_HOSTESS:
             # Hostesses see the General Panel but never operational controls.
             data = {
                 "operationDate": db["operationDate"],
+                "operationSettings": settings,
                 "attendance": [current_attendance] if current_attendance else [],
                 "tours": [
                     {"id": item["id"], "selfGuide": bool(item.get("selfGuide")), "status": item["status"], "requiresDetails": bool(item.get("requiresDetails"))}
                     for item in db.get("tours", [])
                 ],
                 "drivers": [
-                    {"id": item["id"], "name": item["name"], "status": item["status"], "active": bool(item.get("active", True)), "toursStarted": item.get("toursStarted", 0), "homePickups": item.get("homePickups", 0), "lastActivity": item.get("lastActivity")}
+                    {"id": item["id"], "name": item["name"], "status": item["status"], "active": bool(item.get("active", True)), "hostessAvailable": bool(item.get("hostessAvailable", False)), "toursStarted": item.get("toursStarted", 0), "homePickups": item.get("homePickups", 0), "lastActivity": item.get("lastActivity")}
                     for item in db.get("drivers", [])
                     if item.get("active", True)
                 ],
+                "hostessRequests": db.get("hostessRequests", []),
             }
         elif user["role"] == ROLE_DRIVER:
             # Drivers receive the operational dashboard, without users or management data.
@@ -882,6 +975,7 @@ def bootstrap():
                 "consultants": db.get("consultants", []),
                 "destinations": db.get("destinations", []),
                 "transfers": db.get("transfers", []),
+                "hostessRequests": db.get("hostessRequests", []),
                 "activities": db.get("activities", []),
             }
         return jsonify(
@@ -983,6 +1077,7 @@ def create_tour():
         db = operational_database()
         user = get_current_user(db)
         require_admin(user)
+        require_tours_open(db)
         if "quantity" in payload:
             tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)))
             save_database(db)
@@ -998,7 +1093,7 @@ def create_tour():
         wave = payload.get("wave", "WAVE_1")
         if wave not in TRANSFER_SCHEDULES:
             raise APIError("Selecione a 1ª ou a 2ª onda do tour.")
-        tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
+        tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
         db["tours"].insert(0, tour)
         log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
         save_database(db)
@@ -1069,6 +1164,83 @@ def check_in():
         return jsonify(attendance=record), 201
 
 
+@app.post("/api/hostess-requests")
+def create_hostess_request():
+    """A Hostess calls for one car without having to select a hotel or driver."""
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        if user["role"] not in {ROLE_HOSTESS, ROLE_ADMIN}:
+            raise APIError("Somente Hostess pode solicitar carro.", 403)
+        if user["role"] == ROLE_HOSTESS and not attendance_for(db, user["id"]):
+            raise APIError("Faça o check-in antes de solicitar um carro.", 409)
+        if any(item.get("requestedById") == user["id"] for item in open_hostess_requests(db)):
+            raise APIError("Você já possui uma solicitação de carro aberta.", 409)
+        car_request = {
+            "id": new_id("hostreq"),
+            "status": HOSTESS_REQUEST_OPEN,
+            "requestedById": user["id"],
+            "requestedByName": user["name"],
+            "createdAt": timestamp(),
+            "updatedAt": timestamp(),
+        }
+        db.setdefault("hostessRequests", []).insert(0, car_request)
+        log_activity(db, user, None, None, HOSTESS_REQUEST_OPEN, f"{user['name']} solicitou um carro para a Hostess.")
+        save_database(db)
+        return jsonify(request=car_request), 201
+
+
+@app.post("/api/hostess-requests/<request_id>/close")
+def close_hostess_request(request_id: str):
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
+        if user["role"] != ROLE_ADMIN and (user["role"] != ROLE_HOSTESS or car_request.get("requestedById") != user["id"]):
+            raise APIError("Apenas a Hostess que solicitou ou um administrador pode encerrar este pedido.", 403)
+        if car_request.get("status") != HOSTESS_REQUEST_OPEN:
+            raise APIError("Esta solicitação já foi encerrada.", 409)
+        car_request["status"] = HOSTESS_REQUEST_CLOSED
+        car_request["closedAt"] = timestamp()
+        car_request["closedByName"] = user["name"]
+        car_request["updatedAt"] = car_request["closedAt"]
+        # The list is an answer to the current call. Once no call remains,
+        # clear it so the next Hostess sees only fresh responses.
+        if not open_hostess_requests(db):
+            for driver in db.get("drivers", []):
+                driver["hostessAvailable"] = False
+        log_activity(db, user, None, HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_CLOSED, f"{user['name']} encerrou a solicitação de carro da Hostess.")
+        save_database(db)
+        return jsonify(request=car_request)
+
+
+@app.post("/api/drivers/hostess-availability")
+def driver_hostess_availability():
+    """Let a checked-in, free driver signal availability to every open Hostess call."""
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        if user["role"] != ROLE_DRIVER:
+            raise APIError("Somente motoristas podem informar disponibilidade para a Hostess.", 403)
+        driver_id = user.get("driverId")
+        if not driver_id:
+            raise APIError("Seu usuário não está vinculado a um cadastro de motorista.", 409)
+        driver = find(db["drivers"], driver_id, "Motorista")
+        available = bool(payload.get("available", True))
+        if available:
+            if not open_hostess_requests(db):
+                raise APIError("Não há solicitação de carro aberta pela Hostess no momento.", 409)
+            if not driver.get("active", True) or driver.get("status") != DRIVER_AVAILABLE or not driver_has_checked_in(db, driver_id):
+                raise APIError("Você precisa estar disponível e com check-in feito para responder à Hostess.", 409)
+        driver["hostessAvailable"] = available
+        driver["lastActivity"] = timestamp()
+        action = "ficou disponível" if available else "saiu da lista de disponibilidade"
+        log_activity(db, user, None, None, None, f"{driver['name']} {action} para a Hostess.")
+        save_database(db)
+        return jsonify(driver=driver)
+
+
 @app.post("/api/drivers")
 def create_driver():
     payload = request.get_json(silent=True) or {}
@@ -1083,7 +1255,7 @@ def create_driver():
         # A registered driver still needs a linked account and today's check-in
         # before becoming operationally available.
         initial_status = DRIVER_LEAVE if status == DRIVER_AVAILABLE else status
-        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "lastActivity": timestamp()}
+        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "hostessAvailable": False, "lastActivity": timestamp()}
         db["drivers"].append(driver)
         log_activity(db, user, None, None, None, f"Motorista {name} cadastrado.")
         save_database(db)
@@ -1109,6 +1281,8 @@ def update_driver_record(driver_id: str):
         if status == DRIVER_AVAILABLE and not driver_has_checked_in(db, driver_id):
             status = DRIVER_LEAVE
         driver.update({"name": name, "active": active, "status": status, "lastActivity": timestamp()})
+        if status != DRIVER_AVAILABLE or not active:
+            driver["hostessAvailable"] = False
         log_activity(db, user, None, None, None, f"Motorista {name} atualizado para {status}.")
         save_database(db)
         return jsonify(driver=driver)
@@ -1199,6 +1373,7 @@ def create_transfer():
         db = operational_database()
         user = get_current_user(db)
         require_transfer_access(user)
+        require_waves_transfers_open(db)
         group_name = str(payload.get("groupName", "")).strip()
         concierge_name = user["name"] if user["role"] == ROLE_CONCIERGE else str(payload.get("conciergeName", "")).strip()
         try:
@@ -1209,7 +1384,7 @@ def create_transfer():
         if not group_name or not concierge_name or not 1 <= people <= 48 or wave not in TRANSFER_SCHEDULES:
             raise APIError("Preencha grupo, pessoas, concierge e onda do convite.")
         schedule = TRANSFER_SCHEDULES[wave]
-        transfer = {"id": new_id("transfer"), "groupName": group_name, "people": people, "conciergeName": concierge_name, "conciergeUserId": user["id"] if user["role"] == ROLE_CONCIERGE else None, "wave": wave, "scheduledTime": schedule["transferTime"], "tourStartTime": schedule["tourTime"], "status": TRANSFER_SCHEDULED, "origin": "Prestige Waves Bahia", "destination": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp()}
+        transfer = {"id": new_id("transfer"), "groupName": group_name, "people": people, "conciergeName": concierge_name, "conciergeUserId": user["id"] if user["role"] == ROLE_CONCIERGE else None, "wave": wave, "scheduledTime": schedule["transferTime"], "tourStartTime": schedule["tourTime"], "status": TRANSFER_SCHEDULED, "origin": PRESTIGE_LOCATIONS[PRESTIGE_BAHIA], "destination": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp()}
         db.setdefault("transfers", []).insert(0, transfer)
         log_activity(db, user, None, None, TRANSFER_SCHEDULED, f"Convite de {group_name} agendado no Waves Bahia para {schedule['transferTime']}.", transfer=transfer)
         save_database(db)
@@ -1226,6 +1401,72 @@ def transfer_action(transfer_id: str):
         apply_transfer_action(db, user, transfer, payload.get("action", ""))
         save_database(db)
         return jsonify(transfer=transfer)
+
+
+@app.post("/api/operation/departure-prestige")
+def update_default_departure_prestige():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        departure = payload.get("departurePrestige")
+        if departure not in PRESTIGE_LOCATIONS:
+            raise APIError("Selecione Prestige Waves Bahia ou Prestige Praia do Forte Selection.")
+        db["defaultDeparturePrestige"] = departure
+        log_activity(db, user, None, None, None, f"Prestige de saída padrão alterado para {PRESTIGE_LOCATIONS[departure]}.")
+        save_database(db)
+        return jsonify(operationSettings=active_operation_settings(db))
+
+
+@app.post("/api/hotel-closures")
+def create_hotel_closure():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        hotel = payload.get("hotel")
+        departure = payload.get("departurePrestige")
+        start_date = valid_iso_date(payload.get("startDate"), "data inicial")
+        end_date = valid_iso_date(payload.get("endDate"), "data final")
+        if hotel not in HOTELS or departure not in PRESTIGE_LOCATIONS:
+            raise APIError("Selecione o hotel fechado e o Prestige de saída.")
+        if start_date > end_date:
+            raise APIError("A data final não pode ser anterior à data inicial.")
+        if hotel == HOTEL_WAVES_BAHIA and departure != PRESTIGE_SELECTION:
+            raise APIError("Com Waves Bahia fechado, selecione o Prestige Praia do Forte Selection como saída.")
+        if hotel == HOTEL_PRAIA_SELECTION and departure != PRESTIGE_BAHIA:
+            raise APIError("Com Praia do Forte Selection fechado, selecione o Prestige Waves Bahia como saída.")
+        for item in db.setdefault("hotelClosures", []):
+            if max(start_date, item.get("startDate", "")) <= min(end_date, item.get("endDate", "")):
+                raise APIError("Já existe um fechamento configurado para parte desse período. Remova-o ou escolha datas sem sobreposição.", 409)
+        closure = {
+            "id": new_id("closure"),
+            "hotel": hotel,
+            "startDate": start_date,
+            "endDate": end_date,
+            "departurePrestige": departure,
+            "createdAt": timestamp(),
+            "createdByName": user["name"],
+        }
+        db["hotelClosures"].append(closure)
+        log_activity(db, user, None, None, None, f"Fechamento de {HOTELS[hotel]} configurado de {start_date} até {end_date}; saída pelo {PRESTIGE_LOCATIONS[departure]}.")
+        save_database(db)
+        return jsonify(closure=closure, operationSettings=active_operation_settings(db)), 201
+
+
+@app.delete("/api/hotel-closures/<closure_id>")
+def delete_hotel_closure(closure_id: str):
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_admin(user)
+        closure = find(db.setdefault("hotelClosures", []), closure_id, "Fechamento")
+        db["hotelClosures"] = [item for item in db["hotelClosures"] if item["id"] != closure_id]
+        log_activity(db, user, None, None, None, f"Fechamento de {HOTELS.get(closure['hotel'], closure['hotel'])} removido.")
+        save_database(db)
+        return jsonify(ok=True, operationSettings=active_operation_settings(db))
 
 
 @app.post("/api/operation/reset")
