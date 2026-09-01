@@ -61,8 +61,8 @@ CART_PASSENGER_CAPACITY = 5  # Passenger seats; the driver is not counted here.
 CART_GUEST_CAPACITY = 4  # One passenger seat is reserved for the consultant.
 
 TRANSFER_SCHEDULES = {
-    "WAVE_1": {"label": "1ª onda", "tourTime": "09:00", "transferTime": "07:50"},
-    "WAVE_2": {"label": "2ª onda", "tourTime": "11:00", "transferTime": "09:50"},
+    "WAVE_1": {"label": "1ª Ola", "tourTime": "09:00", "transferTime": "07:50"},
+    "WAVE_2": {"label": "2ª Ola", "tourTime": "11:00", "transferTime": "09:50"},
 }
 TRANSFER_SCHEDULED = "AGENDADO"
 TRANSFER_IN_PROGRESS = "EM_DESLOCAMENTO"
@@ -154,6 +154,7 @@ def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dic
             for item in active_closures
         ],
         "wavesTransfersClosed": HOTEL_WAVES_BAHIA in closed_hotels,
+        "conciergePanelClosed": bool(active_closures),
         "toursClosed": HOTEL_PRAIA_SELECTION in closed_hotels,
     }
 
@@ -164,8 +165,8 @@ def require_tours_open(db: dict[str, Any]) -> None:
 
 
 def require_waves_transfers_open(db: dict[str, Any]) -> None:
-    if active_operation_settings(db)["wavesTransfersClosed"]:
-        raise APIError("Os convites e traslados Waves estão suspensos durante o fechamento do Waves Bahia.", 409)
+    if active_operation_settings(db)["conciergePanelClosed"]:
+        raise APIError("Os convites e traslados Waves estão suspensos enquanto houver hotel fechado no período.", 409)
 
 
 def new_id(prefix: str) -> str:
@@ -677,9 +678,10 @@ def confirm_quantity_tour_start(tour: dict[str, Any], consultant_name: str) -> N
     })
 
 
-def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_gean_quantity: Any = 0) -> list[dict[str, Any]]:
+def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_gean_quantity: Any = 0, allow_when_tours_closed: bool = False) -> list[dict[str, Any]]:
     """Register normal tours and Self Gean tours as separate operational slots."""
-    require_tours_open(db)
+    if not allow_when_tours_closed:
+        require_tours_open(db)
     try:
         quantity = int(quantity)
     except (TypeError, ValueError):
@@ -692,7 +694,7 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
     if quantity < 0 or self_gean_quantity < 0 or not 1 <= total_quantity <= 30:
         raise APIError("Informe as quantidades de tours e Self Gean. O total deve ficar entre 1 e 30.")
     if wave not in TRANSFER_SCHEDULES:
-        raise APIError("Selecione a 1ª ou a 2ª onda do tour.")
+        raise APIError("Selecione a 1ª ou a 2ª Ola do tour.")
     created_at = timestamp()
     existing = sum(1 for item in db["tours"] if item.get("requiresDetails"))
     tours = []
@@ -946,8 +948,10 @@ def bootstrap():
         settings = active_operation_settings(db)
         data["operationSettings"] = settings
         if user["role"] == ROLE_CONCIERGE:
-            # Concierges receive only their own invitations; they cannot inspect the operation.
-            data = {"operationDate": db["operationDate"], "operationSettings": settings, "transfers": [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]}
+            # When a hotel is closed there is no Waves route, therefore no
+            # invitation board is exposed to concierges for that period.
+            concierge_transfers = [] if settings["conciergePanelClosed"] else [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]
+            data = {"operationDate": db["operationDate"], "operationSettings": settings, "transfers": concierge_transfers}
         elif user["role"] == ROLE_HOSTESS:
             # Hostesses see the General Panel but never operational controls.
             data = {
@@ -1092,7 +1096,7 @@ def create_tour():
         find(db["consultants"], payload.get("consultantId"), "Consultor")
         wave = payload.get("wave", "WAVE_1")
         if wave not in TRANSFER_SCHEDULES:
-            raise APIError("Selecione a 1ª ou a 2ª onda do tour.")
+            raise APIError("Selecione a 1ª ou a 2ª Ola do tour.")
         tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
         db["tours"].insert(0, tour)
         log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
@@ -1108,7 +1112,9 @@ def register_hostess_tours():
         user = get_current_user(db)
         if user["role"] != ROLE_HOSTESS:
             raise APIError("Somente o perfil Hostess registra a quantidade de tours.", 403)
-        tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)))
+        # Hostess records the daily totals even when a hotel is closed; the
+        # actual departure remains protected by the hotel-closure rule.
+        tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
         save_database(db)
         return jsonify(tours=tours), 201
 
@@ -1382,7 +1388,7 @@ def create_transfer():
             people = 0
         wave = payload.get("wave", "")
         if not group_name or not concierge_name or not 1 <= people <= 48 or wave not in TRANSFER_SCHEDULES:
-            raise APIError("Preencha grupo, pessoas, concierge e onda do convite.")
+            raise APIError("Preencha grupo, pessoas, concierge e Ola do convite.")
         schedule = TRANSFER_SCHEDULES[wave]
         transfer = {"id": new_id("transfer"), "groupName": group_name, "people": people, "conciergeName": concierge_name, "conciergeUserId": user["id"] if user["role"] == ROLE_CONCIERGE else None, "wave": wave, "scheduledTime": schedule["transferTime"], "tourStartTime": schedule["tourTime"], "status": TRANSFER_SCHEDULED, "origin": PRESTIGE_LOCATIONS[PRESTIGE_BAHIA], "destination": "Prestige Praia do Forte", "createdAt": timestamp(), "updatedAt": timestamp()}
         db.setdefault("transfers", []).insert(0, transfer)
