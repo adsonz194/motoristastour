@@ -340,7 +340,7 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
     {checkIn}
     <OperationRestriction settings={settings} />
     {user.role === 'MOTORISTA' && <DriverHostessAvailability data={data} user={user} token={token} refresh={refresh} notify={notify} />}
-    <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria. Saída atual: {settings.departureLabel || 'Prestige Waves Bahia'}.</p></div>{admin && !settings.toursClosed && <button className="button button-primary" onClick={onCreate}><Plus size={18} /> Novo tour</button>}</section>
+    <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria. Saída atual: {settings.departureLabel || 'Prestige Waves Bahia'}.</p></div>{admin && <button className="button button-primary" onClick={onCreate}><Plus size={18} /> Quantidades de tours</button>}</section>
     <section className="metrics-grid">
       <MetricCard icon={Users} color="teal" title="Disponíveis no Prestige" count={metrics.available.length} sub={`${people(metrics.available)} pessoas`} />
       <MetricCard icon={CarFront} color="blue" title="Em tour" count={metrics.enTour.length} sub={`${people(metrics.enTour)} pessoas`} />
@@ -434,7 +434,7 @@ function OperationalPage({ page, data, user, onAction, onCreate }) {
     home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
     destinations: { title: 'Destinos finais', description: 'Grupos que chegaram à Galeria e aguardam ou seguem para o destino final.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
   }[page];
-  return <><OperationRestriction settings={settings} /><SectionHeader {...options} action={user.role === 'ADMIN' && page === 'prestige' && !settings.toursClosed ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
+  return <><OperationRestriction settings={settings} /><SectionHeader {...options} action={user.role === 'ADMIN' && page === 'prestige' ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
 }
 
 function TransfersPage({ data, user, onCreate, onAction }) {

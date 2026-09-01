@@ -1081,11 +1081,13 @@ def create_tour():
         db = operational_database()
         user = get_current_user(db)
         require_admin(user)
-        require_tours_open(db)
         if "quantity" in payload:
-            tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)))
+            # Administrator and Hostess may always register the daily totals.
+            # A hotel closure blocks departure, not the operational counting.
+            tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
             save_database(db)
             return jsonify(tours=tours), 201
+        require_tours_open(db)
         group_name = str(payload.get("groupName", "")).strip()
         try:
             people = int(payload.get("people", 0))
