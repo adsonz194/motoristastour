@@ -40,8 +40,8 @@ Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, s
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
 - **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
-- **Hostess:** acessa somente a própria tela para registrar as quantidades de tours e Self Gean por onda.
-- **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado.
+- **Hostess:** vê somente o Painel Geral em modo de leitura e pode registrar as quantidades de tours e Self Gean por onda.
+- **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado; não acessa nenhuma função de motorista.
 
 O primeiro acesso administrativo usa o usuário e a senha definidos pela operação. A senha é armazenada somente como hash no banco local.
 
@@ -50,6 +50,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Cada carrinho leva até 5 passageiros além do motorista. Ao selecionar um motorista, o sistema reserva automaticamente um carrinho disponível; não é necessário informar hóspedes nem escolher o carrinho.
 - Um tour pode ter mais de um carrinho e motorista, sem duplicar o atendimento. Para adicionar um carrinho, informe somente o motorista.
 - A Hostess registra separadamente a quantidade de tours e a quantidade de Self Gean, além da onda. Por exemplo: 3 tours e 2 Self Gean geram 5 registros. No início da saída, o motorista informa somente os motoristas que participarão; não há campos de família, casal, consultor ou quantidade de hóspedes.
+- Ao iniciar um tour registrado por quantidade, informe o consultor que está saindo. O painel mostra a dupla de forma direta, por exemplo: **Tour 1 · Rhayane com Paulo**.
 - Tours são organizados por 1ª onda (09:00) e 2ª onda (11:00), sem horário obrigatório de encerramento.
 - Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª onda) ou 09:50 (2ª onda).
 - Cada Concierge vê apenas seus próprios convites. O painel exibe o total de famílias convidadas, pessoas convidadas e desistências; uma desistência só pode ser registrada antes do início do traslado.
@@ -62,8 +63,8 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Ao buscar um grupo na Casa, motoristas adicionais podem ser alocados ao mesmo grupo, ficando todos classificados como “Em tour” em conjunto.
 - Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
 - Ao chegar à Galeria, o grupo entra diretamente em “Aguardando destino”; não há etapa de apresentação. Os únicos destinos finais são Lobby Bahia, Lobby Selection, Prestige Praia e Prestige Selection. Após confirmar a chegada ao destino, o tour é encerrado.
-- A operação é zerada automaticamente ao mudar o dia em America/Sao_Paulo; administradores também podem zerá-la manualmente. Check-ins, cadastros e usuários são tratados corretamente para o novo dia.
-- Todo Motorista e Hostess inicia o dia como “Folga ou atestado” e confirma “Fazer check-in” ao entrar, vendo o local definido pelo administrador. Um motorista vinculado não pode ser alocado em um tour antes do check-in; ao confirmar presença, seu cadastro fica disponível quando não houver tour ativo.
+- A operação é zerada automaticamente somente ao mudar o dia em America/Sao_Paulo; um novo deploy do Render não apaga os dados armazenados no PostgreSQL. Administradores também podem zerá-la manualmente. Check-ins, cadastros e usuários são tratados corretamente para o novo dia.
+- Todo Motorista e Hostess inicia o dia como “Folga ou atestado” e confirma “Fazer check-in” ao entrar, vendo o local definido pelo administrador. Um motorista sem check-in não aparece como disponível e não pode ser alocado; ao confirmar presença, seu cadastro fica disponível quando não houver tour ativo.
 - Ao criar uma conta com perfil Motorista sem selecionar um cadastro existente, o sistema cria e vincula automaticamente o motorista com o mesmo nome. Contas antigas sem vínculo também são corrigidas automaticamente.
 - Administradores podem criar, editar, desativar e excluir usuários, motoristas e consultores. A própria conta e o último administrador são protegidos contra perda de acesso; motoristas em tour ativo precisam ser liberados antes de excluir ou mudar a disponibilidade.
 - Toda transição gera histórico com data, responsável, estado anterior e novo estado.

@@ -245,7 +245,9 @@ def reset_operational_data(db: dict[str, Any], message: str) -> None:
     db["transfers"] = []
     db["attendance"] = []
     for driver in db["drivers"]:
-        driver["status"] = DRIVER_AVAILABLE
+        # A new day starts with everyone off duty. A driver becomes available
+        # only after using their own account to check in for that day.
+        driver["status"] = DRIVER_LEAVE
         driver["toursStarted"] = 0
         driver["homePickups"] = 0
         driver["lastActivity"] = current_time
@@ -347,6 +349,8 @@ def operational_database() -> dict[str, Any]:
         tour["status"] = STATE_WAITING_DESTINATION
         tour["phase"] = "Galeria"
         tour["updatedAt"] = timestamp()
+        schema_updated = True
+    if enforce_driver_checkin(db):
         schema_updated = True
     if ensure_operational_day(db) or schema_updated:
         save_database(db)
@@ -471,7 +475,20 @@ def attendance_for(db: dict[str, Any], user_id: str) -> dict[str, Any] | None:
 
 def driver_has_checked_in(db: dict[str, Any], driver_id: str) -> bool:
     linked_accounts = [item for item in db["users"] if item.get("driverId") == driver_id and item.get("active", True) and item["role"] == ROLE_DRIVER]
-    return not linked_accounts or any(attendance_for(db, account["id"]) for account in linked_accounts)
+    return bool(linked_accounts) and any(attendance_for(db, account["id"]) for account in linked_accounts)
+
+
+def enforce_driver_checkin(db: dict[str, Any]) -> bool:
+    """Never expose a driver as available before today's check-in."""
+    changed = False
+    for driver in db.get("drivers", []):
+        if driver.get("status") != DRIVER_AVAILABLE or active_driver_assignment(db, driver["id"]):
+            continue
+        if not driver.get("active", True) or not driver_has_checked_in(db, driver["id"]):
+            driver["status"] = DRIVER_LEAVE
+            driver["lastActivity"] = timestamp()
+            changed = True
+    return changed
 
 
 def update_cart(db: dict[str, Any], cart_id: str, status: str) -> None:
@@ -551,9 +568,16 @@ def normalized_allocations(db: dict[str, Any], raw_allocations: Any) -> list[dic
     return allocations
 
 
-def confirm_quantity_tour_start(tour: dict[str, Any]) -> None:
-    """A quantity-only tour needs only driver assignments to start."""
-    tour.update({"requiresDetails": False, "updatedAt": timestamp()})
+def confirm_quantity_tour_start(tour: dict[str, Any], consultant_name: str) -> None:
+    """Save the consultant paired with the driver for a quantity-only tour."""
+    label = tour.get("slotLabel") or str(tour.get("groupName", "Tour")).removesuffix(" aguardando motorista")
+    tour.update({
+        "groupName": label,
+        "slotLabel": label,
+        "consultantName": consultant_name,
+        "requiresDetails": False,
+        "updatedAt": timestamp(),
+    })
 
 
 def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_gean_quantity: Any = 0) -> list[dict[str, Any]]:
@@ -578,7 +602,7 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
         number = existing + offset + 1
         is_self_gean = offset >= quantity
         label = f"Self Gean {offset - quantity + 1}" if is_self_gean else f"Tour {number}"
-        tour = {"id": new_id("tour"), "groupName": f"{label} aguardando motorista", "people": 0, "selfGuide": is_self_gean, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
+        tour = {"id": new_id("tour"), "groupName": label, "slotLabel": label, "people": 0, "selfGuide": is_self_gean, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": "Prestige Praia do Forte", "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
         db["tours"].insert(0, tour)
         tours.append(tour)
     log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity != 1 else ''} e {self_gean_quantity} Self Gean registrado{'s' if total_quantity != 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}.")
@@ -593,14 +617,19 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         if tour["status"] != STATE_AVAILABLE:
             raise APIError("Apenas grupos disponíveis podem iniciar tour.")
         if tour.get("requiresDetails"):
-            confirm_quantity_tour_start(tour)
+            consultant_name = str(payload.get("consultantName", "")).strip()
+            if not consultant_name:
+                raise APIError("Informe o nome do consultor que está saindo no tour.")
+            confirm_quantity_tour_start(tour, consultant_name)
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
         tour["requiredCartCount"] = len(tour["allocations"])
         for allocation in allocations():
             update_driver(db, allocation["driverId"], DRIVER_IN_TOUR, tours=True)
             update_cart(db, allocation["cartId"], "EM_USO")
         tour["phase"] = "Prestige Waves Bahia"
-        change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} iniciou tour no Prestige.")
+        drivers_in_tour = ", ".join(find(db["drivers"], allocation["driverId"], "Motorista")["name"] for allocation in allocations())
+        consultant_name = tour.get("consultantName") or next((item["name"] for item in db["consultants"] if item["id"] == tour.get("consultantId")), "Consultor não informado")
+        change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} iniciou: {consultant_name} com {drivers_in_tour}.")
         return
 
     if action == "arrived-home":
@@ -819,13 +848,18 @@ def bootstrap():
             # Concierges receive only their own invitations; they cannot inspect the operation.
             data = {"operationDate": db["operationDate"], "transfers": [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]}
         elif user["role"] == ROLE_HOSTESS:
-            # Hostesses only need the registered quantities to do their daily entry.
+            # Hostesses see the General Panel but never operational controls.
             data = {
                 "operationDate": db["operationDate"],
                 "attendance": [current_attendance] if current_attendance else [],
                 "tours": [
                     {"id": item["id"], "selfGuide": bool(item.get("selfGuide")), "status": item["status"], "requiresDetails": bool(item.get("requiresDetails"))}
                     for item in db.get("tours", [])
+                ],
+                "drivers": [
+                    {"id": item["id"], "name": item["name"], "status": item["status"], "active": bool(item.get("active", True)), "toursStarted": item.get("toursStarted", 0), "homePickups": item.get("homePickups", 0), "lastActivity": item.get("lastActivity")}
+                    for item in db.get("drivers", [])
+                    if item.get("active", True)
                 ],
             }
         elif user["role"] == ROLE_DRIVER:
@@ -1030,7 +1064,10 @@ def create_driver():
         status = payload.get("status", DRIVER_AVAILABLE)
         if not name or status not in DRIVER_STATUSES:
             raise APIError("Informe o nome e uma disponibilidade válida.")
-        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": status, "toursStarted": 0, "homePickups": 0, "lastActivity": timestamp()}
+        # A registered driver still needs a linked account and today's check-in
+        # before becoming operationally available.
+        initial_status = DRIVER_LEAVE if status == DRIVER_AVAILABLE else status
+        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "lastActivity": timestamp()}
         db["drivers"].append(driver)
         log_activity(db, user, None, None, None, f"Motorista {name} cadastrado.")
         save_database(db)
@@ -1053,6 +1090,8 @@ def update_driver_record(driver_id: str):
         assigned_tour = active_driver_assignment(db, driver_id)
         if assigned_tour and (status != driver["status"] or active != driver.get("active", True)):
             raise APIError(f"{driver['name']} está vinculado ao tour de {assigned_tour['groupName']}. Finalize ou libere o transporte antes de mudar sua disponibilidade.", 409)
+        if status == DRIVER_AVAILABLE and not driver_has_checked_in(db, driver_id):
+            status = DRIVER_LEAVE
         driver.update({"name": name, "active": active, "status": status, "lastActivity": timestamp()})
         log_activity(db, user, None, None, None, f"Motorista {name} atualizado para {status}.")
         save_database(db)
