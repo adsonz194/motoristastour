@@ -90,6 +90,7 @@ FINAL_DESTINATIONS = [
     {"id": "dest_lobby_bahia", "name": "Lobby Bahia", "active": True},
     {"id": "dest_lobby_selection", "name": "Lobby Selection", "active": True},
     {"id": "dest_prestige", "name": "Prestige Praia", "active": True},
+    {"id": "dest_prestige_bahia", "name": "Prestige Bahia", "active": True},
 ]
 
 # IDs used only by the first prototype screen.  They are kept here so that a
