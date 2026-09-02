@@ -37,7 +37,7 @@ O Render não precisa de disco persistente: cada alteração é gravada no Postg
 
 ## Notificações no celular e computador
 
-Após configurar as três variáveis VAPID no Render, entre no painel e toque no sino no topo. Ele pede a permissão do navegador, registra uma assinatura exclusiva daquele dispositivo e envia uma notificação de teste. A assinatura permite que o servidor envie avisos mesmo com o navegador fechado, com os totais de tours, Self Gean e convidados Waves → Praia do Forte quando esses dados forem alterados. Os motoristas também recebem um chamado quando a Hostess solicita carro e um segundo aviso quando outro motorista assume esse apoio.
+Após configurar as três variáveis VAPID no Render, entre no painel e toque no sino no topo. Ele pede a permissão do navegador, registra uma assinatura exclusiva daquele dispositivo e envia uma notificação de teste. A assinatura permite que o servidor envie avisos mesmo com o navegador fechado, com os totais de tours, Self Gen e convidados Waves → Praia do Forte quando esses dados forem alterados. Os motoristas também recebem um chamado quando a Hostess solicita carro e um segundo aviso quando outro motorista assume esse apoio.
 
 Para testar, toque novamente no sino: ele envia outro aviso de teste para o aparelho atual. A permissão e a assinatura são individuais por navegador/aparelho, podem ser retiradas nas configurações do navegador e são removidas do sistema ao sair da conta. Cada perfil recebe somente os totais aos quais já tem acesso no sistema.
 
@@ -51,7 +51,7 @@ Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, s
 
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
 - **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
-- **Hostess:** vê somente o Painel Geral em modo de leitura; pode registrar as quantidades de tours e Self Gean por Ola e solicitar um carro, sem informar hotel, destino ou motorista. Esses totais continuam sendo registrados mesmo em período de fechamento.
+- **Hostess:** vê somente o Painel Geral em modo de leitura; pode registrar as quantidades de tours e Self Gen por Ola e solicitar um carro, sem informar hotel, destino ou motorista. Esses totais continuam sendo registrados mesmo em período de fechamento.
 - **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado; não acessa nenhuma função de motorista. Quando houver hotel fechado, o percurso Waves e esse painel ficam indisponíveis automaticamente.
 
 O primeiro acesso administrativo usa o usuário e a senha definidos pela operação. A senha é armazenada somente como hash no banco local.
@@ -60,11 +60,12 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 
 - Cada carrinho leva até 5 passageiros além do motorista. Ao selecionar um motorista, o sistema reserva automaticamente um carrinho disponível; não é necessário informar hóspedes nem escolher o carrinho.
 - Um tour pode ter mais de um carrinho e motorista, sem duplicar o atendimento. Para adicionar um carrinho, informe somente o motorista.
-- A Hostess registra separadamente a quantidade de tours e a quantidade de Self Gean, além da Ola. Por exemplo: 3 tours e 2 Self Gean geram 5 registros. Nesse registro inicial, não há campos de família, casal, consultor ou quantidade de hóspedes.
+- A Hostess registra separadamente a quantidade de tours e a quantidade de Self Gen, além da Ola. Por exemplo: 3 tours e 2 Self Gen geram 5 registros. Nesse registro inicial, não há campos de família, casal, consultor ou quantidade de hóspedes.
 - Ao iniciar um tour registrado por quantidade, o motorista seleciona o consultor em uma lista de consultores cadastrados e ativos, além dos motoristas que participarão. O painel mostra a dupla de forma direta, por exemplo: **Tour 1 · Rhayane com Paulo**. O nome selecionado fica registrado no tour, mesmo que o cadastro do consultor seja alterado depois.
 - Tours são organizados por 1ª Ola (09:00) e 2ª Ola (11:00), sem horário obrigatório de encerramento.
+- Antes da saída, o Administrador ou Motorista pode usar **Desistência**. O registro sai das quantidades ativas e das notificações de Tours/Self Gen, mas permanece no Histórico e não pode mais ser iniciado.
 - Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª Ola) ou 09:50 (2ª Ola).
-- Em **Configurações → Hotéis e Prestige de saída**, o administrador escolhe o Prestige padrão de saída e cadastra um período de fechamento. Ao fechar um dos hotéis, os tours continuam normalmente pelo outro Prestige configurado: Waves Bahia fechado transfere a saída para o Prestige Selection; Prestige Praia fechado transfere a saída para o Prestige Bahia. Em qualquer fechamento, não há percurso Waves e o painel do Concierge fica indisponível. A Hostess continua registrando as quantidades de tours e Self Gean, e a solicitação de carro continua disponível. Os tours só ficam suspensos se ambos os hotéis estiverem fechados ao mesmo tempo.
+- Em **Configurações → Hotéis e Prestige de saída**, o administrador escolhe o Prestige padrão de saída e cadastra um período de fechamento. Ao fechar um dos hotéis, os tours continuam normalmente pelo outro Prestige configurado: Waves Bahia fechado transfere a saída para o Prestige Selection; Prestige Praia fechado transfere a saída para o Prestige Bahia. Em qualquer fechamento, não há percurso Waves e o painel do Concierge fica indisponível. A Hostess continua registrando as quantidades de tours e Self Gen, e a solicitação de carro continua disponível. Os tours só ficam suspensos se ambos os hotéis estiverem fechados ao mesmo tempo.
 - Cada Concierge vê apenas seus próprios convites. O painel exibe o total de famílias convidadas, pessoas convidadas e desistências; uma desistência só pode ser registrada antes do início do traslado.
 - Iniciar tour soma uma saída para cada motorista alocado no Prestige.
 - Buscar na Casa não cria nova saída de tour.

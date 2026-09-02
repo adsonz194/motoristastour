@@ -58,6 +58,8 @@ STATE_PRESENTATION = "EM_APRESENTACAO"
 STATE_WAITING_DESTINATION = "AGUARDANDO_DESTINO"
 STATE_FINAL_DESTINATION = "EM_DESTINO_FINAL"
 STATE_COMPLETE = "CONCLUIDO"
+STATE_WITHDRAWN = "DESISTENCIA"
+TERMINAL_TOUR_STATES = {STATE_COMPLETE, STATE_WITHDRAWN}
 
 DRIVER_AVAILABLE = "DISPONIVEL"
 DRIVER_IN_TOUR = "EM_TOUR"
@@ -487,10 +489,10 @@ def notification_body_for_user(db: dict[str, Any], user: dict[str, Any], event_t
     if event_type == "TOURS":
         if role not in {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS}:
             return None
-        active_tours = [tour for tour in db.get("tours", []) if tour.get("status") != STATE_COMPLETE]
+        active_tours = [tour for tour in db.get("tours", []) if tour.get("status") not in TERMINAL_TOUR_STATES]
         tour_count = sum(1 for tour in active_tours if not tour.get("selfGuide"))
         self_gean_count = sum(1 for tour in active_tours if tour.get("selfGuide"))
-        return f"Tours: {tour_count} • Self Gean: {self_gean_count}"
+        return f"Tours: {tour_count} • Self Gen: {self_gean_count}"
     if event_type == "WAVES":
         if role == ROLE_HOSTESS:
             return None
@@ -650,7 +652,7 @@ def remove_demo_data(db: dict[str, Any]) -> bool:
     active_cart_ids = {
         allocation.get("cartId")
         for tour in db.get("tours", [])
-        if tour.get("status") not in {STATE_COMPLETE, STATE_FINAL_DESTINATION}
+        if tour.get("status") not in {STATE_COMPLETE, STATE_WITHDRAWN, STATE_FINAL_DESTINATION}
         for allocation in tour.get("allocations", [])
         if allocation.get("cartId")
     }
@@ -737,6 +739,14 @@ def operational_database() -> dict[str, Any]:
     # Prestige Praia and Prestige Selection refer to the same destination.
     # Keep historical tours valid while removing the duplicated option.
     for tour in db.get("tours", []):
+        # Correct the Self Gen display name on slots recorded before the
+        # terminology was updated, without changing the stored boolean/API.
+        if tour.get("selfGuide"):
+            for field in ("groupName", "slotLabel"):
+                value = str(tour.get(field, ""))
+                if value.startswith("Self Gean"):
+                    tour[field] = value.replace("Self Gean", "Self Gen", 1)
+                    schema_updated = True
         if tour.get("destinationId") == "dest_prestige_selection":
             tour["destinationId"] = "dest_prestige"
             schema_updated = True
@@ -916,7 +926,7 @@ def close_hostess_request_record(db: dict[str, Any], car_request: dict[str, Any]
 def active_driver_assignment(db: dict[str, Any], driver_id: str) -> dict[str, Any] | None:
     """Return a tour currently relying on a driver, if there is one."""
     for tour in db.get("tours", []):
-        if tour.get("status") == STATE_COMPLETE:
+        if tour.get("status") in TERMINAL_TOUR_STATES:
             continue
         if any(item.get("driverId") == driver_id for item in tour.get("allocations", [])):
             return tour
@@ -1115,7 +1125,7 @@ def confirm_quantity_tour_start(db: dict[str, Any], tour: dict[str, Any], consul
 
 
 def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_gean_quantity: Any = 0, allow_when_tours_closed: bool = False) -> list[dict[str, Any]]:
-    """Register normal tours and Self Gean tours as separate operational slots."""
+    """Register normal tours and Self Gen tours as separate operational slots."""
     if not allow_when_tours_closed:
         require_tours_open(db)
     try:
@@ -1128,7 +1138,7 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
         self_gean_quantity = -1
     total_quantity = quantity + self_gean_quantity
     if quantity < 0 or self_gean_quantity < 0 or not 1 <= total_quantity <= 30:
-        raise APIError("Informe as quantidades de tours e Self Gean. O total deve ficar entre 1 e 30.")
+        raise APIError("Informe as quantidades de tours e Self Gen. O total deve ficar entre 1 e 30.")
     if wave not in TRANSFER_SCHEDULES:
         raise APIError("Selecione a 1ª ou a 2ª Ola do tour.")
     created_at = timestamp()
@@ -1137,17 +1147,30 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
     for offset in range(total_quantity):
         number = existing + offset + 1
         is_self_gean = offset >= quantity
-        label = f"Self Gean {offset - quantity + 1}" if is_self_gean else f"Tour {number}"
+        label = f"Self Gen {offset - quantity + 1}" if is_self_gean else f"Tour {number}"
         tour = {"id": new_id("tour"), "groupName": label, "slotLabel": label, "people": 0, "selfGuide": is_self_gean, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
         db["tours"].insert(0, tour)
         tours.append(tour)
-    log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity != 1 else ''} e {self_gean_quantity} Self Gean registrado{'s' if total_quantity != 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}.")
+    log_activity(db, user, None, None, STATE_AVAILABLE, f"{quantity} tour{'s' if quantity != 1 else ''} e {self_gean_quantity} Self Gen registrado{'s' if total_quantity != 1 else ''} para a {TRANSFER_SCHEDULES[wave]['label']}.")
     return tours
 
 
 def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
     require_operational(user)
     allocations = lambda: tour.get("allocations", [])
+
+    if action == "withdraw":
+        if tour["status"] != STATE_AVAILABLE:
+            raise APIError("A desistência só pode ser registrada antes de iniciar o tour.", 409)
+        withdrawn_at = timestamp()
+        tour.update({
+            "phase": "Desistência",
+            "withdrawnAt": withdrawn_at,
+            "withdrawnById": user["id"],
+            "withdrawnByName": user["name"],
+        })
+        change_tour_state(db, user, tour, STATE_WITHDRAWN, f"{tour['groupName']} registrou desistência antes de iniciar o tour.")
+        return
 
     if action == "start":
         if tour["status"] != STATE_AVAILABLE:
@@ -1515,7 +1538,7 @@ def bootstrap():
         return jsonify(
             user=clean_user(user),
             data=data,
-            states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE},
+            states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE, "DESISTENCIA": STATE_WITHDRAWN},
             driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "APOIO_HOSTESS": DRIVER_HOSTESS_SUPPORT, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
             attendance=current_attendance,
             waves=TRANSFER_SCHEDULES,
@@ -1955,9 +1978,15 @@ def tour_action(tour_id: str):
         db = operational_database()
         user = get_current_user(db)
         tour = find(db["tours"], tour_id, "Tour")
-        apply_action(db, user, tour, payload.get("action", ""), payload)
+        action = payload.get("action", "")
+        apply_action(db, user, tour, action, payload)
         save_database(db)
-        return jsonify(tour=tour)
+        response = jsonify(tour=tour)
+    if action == "withdraw":
+        # A cancellation changes the operational tour/Self Gen total, so
+        # notify the same subscribed profiles as a quantity registration.
+        notify_operation_update(db, "TOURS")
+    return response
 
 
 @app.post("/api/transfers")
