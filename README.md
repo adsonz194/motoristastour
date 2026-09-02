@@ -37,7 +37,7 @@ O Render não precisa de disco persistente: cada alteração é gravada no Postg
 
 ## Notificações no celular e computador
 
-Após configurar as três variáveis VAPID no Render, entre no painel e toque no sino no topo. Ele pede a permissão do navegador, registra uma assinatura exclusiva daquele dispositivo e envia uma notificação de teste. A assinatura permite que o servidor envie avisos mesmo com o navegador fechado, com os totais de tours, Self Gean e convidados Waves → Praia do Forte quando esses dados forem alterados.
+Após configurar as três variáveis VAPID no Render, entre no painel e toque no sino no topo. Ele pede a permissão do navegador, registra uma assinatura exclusiva daquele dispositivo e envia uma notificação de teste. A assinatura permite que o servidor envie avisos mesmo com o navegador fechado, com os totais de tours, Self Gean e convidados Waves → Praia do Forte quando esses dados forem alterados. Os motoristas também recebem um chamado quando a Hostess solicita carro e um segundo aviso quando outro motorista assume esse apoio.
 
 Para testar, toque novamente no sino: ele envia outro aviso de teste para o aparelho atual. A permissão e a assinatura são individuais por navegador/aparelho, podem ser retiradas nas configurações do navegador e são removidas do sistema ao sair da conta. Cada perfil recebe somente os totais aos quais já tem acesso no sistema.
 

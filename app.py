@@ -555,6 +555,38 @@ def notify_operation_update(db: dict[str, Any], event_type: str, concierge_user_
     return send_push_messages(db, operation_push_messages(db, event_type, concierge_user_id))
 
 
+def hostess_push_messages(db: dict[str, Any], event_type: str, driver_name: str | None = None) -> list[tuple[dict[str, Any], dict[str, str]]]:
+    """Build driver-only push messages for the Hostess car-call workflow."""
+    if event_type == "REQUESTED":
+        payload = {
+            "title": "Solicitação de carro da Hostess",
+            "body": "Uma Hostess solicitou um carro. Se estiver livre e com check-in, informe disponibilidade.",
+            "tag": "iberostar-hostess-request",
+            "url": "/",
+        }
+    elif event_type == "ACCEPTED":
+        name = str(driver_name or "Um motorista").strip()
+        payload = {
+            "title": "Carro da Hostess já assumido",
+            "body": f"{name} já assumiu o apoio à Hostess e está disponível para buscá-la.",
+            "tag": "iberostar-hostess-request",
+            "url": "/",
+        }
+    else:
+        return []
+
+    users = {user["id"]: user for user in db.get("users", []) if user.get("active", True)}
+    return [
+        (record, payload)
+        for record in load_push_subscriptions(db)
+        if users.get(record.get("userId"), {}).get("role") == ROLE_DRIVER
+    ]
+
+
+def notify_hostess_car_update(db: dict[str, Any], event_type: str, driver_name: str | None = None) -> dict[str, int | bool]:
+    return send_push_messages(db, hostess_push_messages(db, event_type, driver_name))
+
+
 def reset_operational_data(db: dict[str, Any], message: str) -> None:
     """Keep people and system setup, but start a clean operational day."""
     current_time = timestamp()
@@ -1637,7 +1669,11 @@ def create_hostess_request():
         db.setdefault("hostessRequests", []).insert(0, car_request)
         log_activity(db, user, None, None, HOSTESS_REQUEST_OPEN, f"{user['name']} solicitou um carro para a Hostess.")
         save_database(db)
-        return jsonify(request=car_request), 201
+        response = jsonify(request=car_request), 201
+    # Send after persisting the request. This must not hold the operational
+    # lock while the remote push provider is contacted.
+    notify_hostess_car_update(db, "REQUESTED")
+    return response
 
 
 @app.post("/api/hostess-requests/<request_id>/close")
@@ -1701,7 +1737,14 @@ def driver_hostess_availability():
             action = "encerrou seu apoio à Hostess"
         log_activity(db, user, None, None, None, f"{driver['name']} {action} para a Hostess.")
         save_database(db)
-        return jsonify(driver=driver)
+        response = jsonify(driver=driver)
+        accepted_driver_name = driver["name"] if available else None
+    if accepted_driver_name:
+        # The current reservation is shared by every open Hostess request,
+        # so tell all drivers only that someone assumed the support—not that
+        # a particular Hostess request has been completed.
+        notify_hostess_car_update(db, "ACCEPTED", accepted_driver_name)
+    return response
 
 
 @app.post("/api/drivers")
