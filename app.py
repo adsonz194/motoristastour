@@ -567,6 +567,26 @@ def active_driver_assignment(db: dict[str, Any], driver_id: str) -> dict[str, An
     return None
 
 
+def public_driver_location(db: dict[str, Any], driver: dict[str, Any]) -> tuple[str, str]:
+    """Return a clear, non-sensitive location for the public consultant board."""
+    status = driver.get("status", DRIVER_LEAVE)
+    tour = active_driver_assignment(db, driver["id"])
+    if status == DRIVER_IN_TOUR:
+        if tour and tour.get("phase") == "Casa → Galeria":
+            return "A_CAMINHO_GALERIA", "A caminho da Galeria"
+        return DRIVER_IN_TOUR, "Em tour"
+    locations = {
+        DRIVER_AVAILABLE: "Disponível",
+        DRIVER_HOME: "Na Casa",
+        DRIVER_GALLERY: "Na Galeria",
+        DRIVER_DESTINATION: "A caminho do destino final",
+        DRIVER_HOSTESS_SUPPORT: "Em apoio à Hostess",
+        DRIVER_LEAVE: "Folga / atestado",
+        DRIVER_MEDICAL: "Atestado",
+    }
+    return status, locations.get(status, "Status não informado")
+
+
 def validate_driver_link(db: dict[str, Any], driver_id: Any, user_id: str | None = None) -> str | None:
     if not driver_id:
         return None
@@ -694,13 +714,22 @@ def normalized_allocations(db: dict[str, Any], raw_allocations: Any) -> list[dic
     return allocations
 
 
-def confirm_quantity_tour_start(tour: dict[str, Any], consultant_name: str) -> None:
-    """Save the consultant paired with the driver for a quantity-only tour."""
+def confirm_quantity_tour_start(db: dict[str, Any], tour: dict[str, Any], consultant_id: Any) -> None:
+    """Save a registered consultant paired with a quantity-only tour."""
+    consultant_id = str(consultant_id or "").strip()
+    if not consultant_id:
+        raise APIError("Selecione o consultor que está saindo no tour.")
+    consultant = find(db["consultants"], consultant_id, "Consultor")
+    if not consultant.get("active", True):
+        raise APIError("Esse consultor está inativo. Selecione outro consultor.", 409)
     label = tour.get("slotLabel") or str(tour.get("groupName", "Tour")).removesuffix(" aguardando motorista")
     tour.update({
         "groupName": label,
         "slotLabel": label,
-        "consultantName": consultant_name,
+        "consultantId": consultant["id"],
+        # Keep the name snapshot so historical tours remain readable if a
+        # consultant is later renamed or removed from the active list.
+        "consultantName": consultant["name"],
         "requiresDetails": False,
         "updatedAt": timestamp(),
     })
@@ -746,10 +775,7 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
             raise APIError("Apenas grupos disponíveis podem iniciar tour.")
         require_tours_open(db)
         if tour.get("requiresDetails"):
-            consultant_name = str(payload.get("consultantName", "")).strip()
-            if not consultant_name:
-                raise APIError("Informe o nome do consultor que está saindo no tour.")
-            confirm_quantity_tour_start(tour, consultant_name)
+            confirm_quantity_tour_start(db, tour, payload.get("consultantId"))
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
         tour["requiredCartCount"] = len(tour["allocations"])
         for allocation in allocations():
@@ -838,6 +864,22 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         change_tour_state(db, user, tour, STATE_IN_TOUR, f"{tour['groupName']} saiu da Casa para a Galeria com todos os carrinhos necessários.")
         return
 
+    if action == "correct-to-home":
+        # This is a deliberately narrow correction: it safely undoes an
+        # accidental "Seguir para Galeria" click before the group is delivered.
+        # The team and carts are still allocated, so nothing from another tour
+        # can be affected.
+        if tour["status"] != STATE_IN_TOUR or tour.get("phase") != "Casa → Galeria" or not allocations():
+            raise APIError("A correção para Casa só está disponível enquanto o grupo estiver a caminho da Galeria.", 409)
+        for allocation in allocations():
+            allocation["homeDecision"] = "AGUARDOU_NA_CASA"
+            allocation["arrived"] = True
+            allocation["arrivedAtHome"] = allocation.get("arrivedAtHome") or timestamp()
+            update_driver(db, allocation["driverId"], DRIVER_HOME)
+        tour["phase"] = "Casa"
+        change_tour_state(db, user, tour, STATE_HOME, f"{tour['groupName']} teve o status corrigido: a equipe permanece na Casa.")
+        return
+
     if action == "join-home":
         if tour["status"] != STATE_HOME:
             raise APIError("O grupo precisa estar na Casa.")
@@ -885,6 +927,19 @@ def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any],
         tour["destinationId"] = destination_id
         tour["phase"] = "Destino final"
         change_tour_state(db, user, tour, STATE_FINAL_DESTINATION, f"{tour['groupName']} saiu para o destino final.")
+        return
+
+    if action == "change-destination":
+        if tour["status"] != STATE_FINAL_DESTINATION:
+            raise APIError("O destino pode ser alterado somente enquanto o grupo estiver a caminho do destino final.", 409)
+        destination_id = payload.get("destinationId")
+        destination = find(db["destinations"], destination_id, "Destino")
+        if not destination.get("active", True):
+            raise APIError("Esse destino está inativo. Selecione outro destino.", 409)
+        previous_destination = next((item.get("name") for item in db["destinations"] if item.get("id") == tour.get("destinationId")), "destino anterior")
+        tour["destinationId"] = destination_id
+        tour["updatedAt"] = timestamp()
+        log_activity(db, user, tour, STATE_FINAL_DESTINATION, STATE_FINAL_DESTINATION, f"{tour['groupName']} teve o destino alterado de {previous_destination} para {destination['name']}.")
         return
 
     if action == "complete-destination":
@@ -953,16 +1008,18 @@ def public_driver_status():
     """Read-only driver board intended for the consultants' shared screen."""
     with DB_LOCK:
         db = operational_database()
-        drivers = [
-            {
+        drivers = []
+        for driver in db.get("drivers", []):
+            if not driver.get("active", True):
+                continue
+            display_status, location_label = public_driver_location(db, driver)
+            drivers.append({
                 "name": driver["name"],
-                "status": driver.get("status", DRIVER_LEAVE),
-                "active": bool(driver.get("active", True)),
+                "status": display_status,
+                "locationLabel": location_label,
+                "active": True,
                 "lastActivity": driver.get("lastActivity"),
-            }
-            for driver in db.get("drivers", [])
-            if driver.get("active", True)
-        ]
+            })
         return jsonify(operationDate=db["operationDate"], drivers=drivers)
 
 

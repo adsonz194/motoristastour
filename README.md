@@ -34,7 +34,7 @@ No celular, para uma experiência de aplicativo e notificações nativas, abra o
 
 ## Painel público dos consultores
 
-Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, sem usuário nem senha, somente os nomes e os status atuais dos motoristas. É uma página de leitura, atualizada a cada 30 segundos, sem dados de hóspedes, tours, usuários ou ações operacionais.
+Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, sem usuário nem senha, os nomes, status e a localização operacional atual dos motoristas, como **Disponível**, **Na Casa**, **Em tour** ou **A caminho da Galeria**. É uma página de leitura, atualizada a cada 30 segundos, sem dados de hóspedes, tours, usuários ou ações operacionais.
 
 ## Perfis
 
@@ -49,8 +49,8 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 
 - Cada carrinho leva até 5 passageiros além do motorista. Ao selecionar um motorista, o sistema reserva automaticamente um carrinho disponível; não é necessário informar hóspedes nem escolher o carrinho.
 - Um tour pode ter mais de um carrinho e motorista, sem duplicar o atendimento. Para adicionar um carrinho, informe somente o motorista.
-- A Hostess registra separadamente a quantidade de tours e a quantidade de Self Gean, além da Ola. Por exemplo: 3 tours e 2 Self Gean geram 5 registros. No início da saída, o motorista informa somente os motoristas que participarão; não há campos de família, casal, consultor ou quantidade de hóspedes.
-- Ao iniciar um tour registrado por quantidade, informe o consultor que está saindo. O painel mostra a dupla de forma direta, por exemplo: **Tour 1 · Rhayane com Paulo**.
+- A Hostess registra separadamente a quantidade de tours e a quantidade de Self Gean, além da Ola. Por exemplo: 3 tours e 2 Self Gean geram 5 registros. Nesse registro inicial, não há campos de família, casal, consultor ou quantidade de hóspedes.
+- Ao iniciar um tour registrado por quantidade, o motorista seleciona o consultor em uma lista de consultores cadastrados e ativos, além dos motoristas que participarão. O painel mostra a dupla de forma direta, por exemplo: **Tour 1 · Rhayane com Paulo**. O nome selecionado fica registrado no tour, mesmo que o cadastro do consultor seja alterado depois.
 - Tours são organizados por 1ª Ola (09:00) e 2ª Ola (11:00), sem horário obrigatório de encerramento.
 - Convites feitos por concierges fazem o trajeto Waves Bahia → Praia do Forte às 07:50 (1ª Ola) ou 09:50 (2ª Ola).
 - Em **Configurações → Hotéis e Prestige de saída**, o administrador escolhe o Prestige padrão de saída e cadastra um período de fechamento. Ao fechar um dos hotéis, os tours continuam normalmente pelo outro Prestige configurado: Waves Bahia fechado transfere a saída para o Prestige Selection; Prestige Praia fechado transfere a saída para o Prestige Bahia. Em qualquer fechamento, não há percurso Waves e o painel do Concierge fica indisponível. A Hostess continua registrando as quantidades de tours e Self Gean, e a solicitação de carro continua disponível. Os tours só ficam suspensos se ambos os hotéis estiverem fechados ao mesmo tempo.
@@ -62,8 +62,10 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Se o tour precisou de dois ou mais carrinhos e algum motorista retornou ao Prestige, quem permaneceu na Casa não pode seguir sozinho à Galeria. O sistema exige a chegada dos motoristas que faltam para completar os carrinhos necessários.
 - Quando a equipe que está com um casal na Casa precisar atender outra família, use **Trocar motoristas**. O casal entra na fila da Casa e o sistema exige a mesma quantidade de carrinhos original na nova busca; assim, por exemplo, dois novos motoristas precisam ser escolhidos para um casal que saiu com dois carrinhos.
 - Ao buscar um grupo na Casa, motoristas adicionais podem ser alocados ao mesmo grupo, ficando todos classificados como “Em tour” em conjunto.
+- Se o consultor ou grupo seguir diretamente para a Galeria, sem parar na Casa, use **Chegou direto à Galeria** enquanto o tour ainda estiver em percurso. O grupo entra em “Aguardando destino” e os motoristas e carrinhos são liberados normalmente.
+- Se **Seguir para Galeria** for marcado por engano e a equipe ainda estiver na Casa, use **Corrigir: ainda estou na Casa** antes de entregar o grupo na Galeria. A correção devolve com segurança o tour, os motoristas e os carrinhos para a Casa, sem apagar ou afetar outro tour.
 - Ao entregar o grupo na Galeria, motorista e carrinho voltam para a disponibilidade do Prestige.
-- Ao chegar à Galeria, o grupo entra diretamente em “Aguardando destino”; não há etapa de apresentação. Os únicos destinos finais são Lobby Bahia, Lobby Selection, Prestige Praia e Prestige Bahia. Após confirmar a chegada ao destino, o tour é encerrado.
+- Ao chegar à Galeria, o grupo entra diretamente em “Aguardando destino”; não há etapa de apresentação. Os únicos destinos finais são Lobby Bahia, Lobby Selection, Prestige Praia e Prestige Bahia. Enquanto o grupo estiver a caminho do destino final, use **Alterar destino** para corrigir o local escolhido sem trocar motoristas, carrinhos ou o status do tour. Após confirmar a chegada ao destino, o tour é encerrado.
 - A operação é zerada automaticamente somente ao mudar o dia em America/Sao_Paulo; um novo deploy do Render não apaga os dados armazenados no PostgreSQL. Administradores também podem zerá-la manualmente. Check-ins, cadastros e usuários são tratados corretamente para o novo dia.
 - Todo Motorista e Hostess inicia o dia como “Folga ou atestado” e confirma “Fazer check-in” ao entrar, vendo o local definido pelo administrador. Um motorista sem check-in não aparece como disponível e não pode ser alocado; ao confirmar presença, seu cadastro fica disponível quando não houver tour ativo.
 - A Hostess pode abrir uma solicitação simples de carro. Os motoristas com check-in, livres e disponíveis recebem o chamado no Painel Geral e tocam em **Estou disponível para a Hostess**; ao aceitar, ficam em **apoio à Hostess** e não podem ser usados em tour, Casa, Galeria ou destino até que o apoio seja encerrado. Ao encerrar o pedido, a lista é limpa e os motoristas reservados voltam a ficar disponíveis.
