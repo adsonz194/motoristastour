@@ -23,14 +23,25 @@ O arquivo `render.yaml` já está configurado para criar um Web Service Python g
 - Build: `pip install -r requirements.txt`
 - Start: `gunicorn --workers 1 --bind 0.0.0.0:$PORT app:app`
 - Variável obrigatória: `DATABASE_URL` — cole a URL de conexão do Neon como segredo do Render
+- Variáveis de Web Push: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` e `VAPID_SUBJECT` — configure-as como segredos do Render para ativar as notificações em segundo plano
+
+Gere o par de chaves VAPID uma única vez, no computador de administração, depois de instalar as dependências:
+
+```bash
+python generate_vapid_keys.py
+```
+
+Copie cada linha gerada para a variável correspondente no Render. Use um e-mail ou endereço válido no `VAPID_SUBJECT`, por exemplo `mailto:operacao@seu-dominio.com`. A `VAPID_PRIVATE_KEY` é secreta: nunca a coloque no GitHub, no código-fonte ou em uma captura de tela. Guarde o mesmo par de chaves; trocar as chaves invalida as assinaturas de notificação já feitas nos aparelhos.
 
 O Render não precisa de disco persistente: cada alteração é gravada no PostgreSQL do Neon. Mantenha uma instância do serviço enquanto o sistema usar o estado operacional em um único registro; para escalar a várias instâncias no futuro, a estrutura pode ser normalizada em tabelas por entidade.
 
 ## Notificações no celular e computador
 
-Após entrar no painel, toque no sino no topo para permitir as notificações deste site naquele aparelho. O sistema envia um resumo com a quantidade de tours, Self Gean e convidados do Waves → Praia do Forte sempre que esses totais mudarem enquanto o painel estiver aberto ou em segundo plano; ele consulta as atualizações a cada 30 segundos.
+Após configurar as três variáveis VAPID no Render, entre no painel e toque no sino no topo. Ele pede a permissão do navegador, registra uma assinatura exclusiva daquele dispositivo e envia uma notificação de teste. A assinatura permite que o servidor envie avisos mesmo com o navegador fechado, com os totais de tours, Self Gean e convidados Waves → Praia do Forte quando esses dados forem alterados.
 
-No celular, para uma experiência de aplicativo e notificações nativas, abra o menu do navegador e use **Adicionar à tela inicial**. A permissão é individual por navegador/aparelho e pode ser retirada nas configurações do navegador. Cada perfil recebe apenas os totais aos quais já tem acesso no sistema.
+Para testar, toque novamente no sino: ele envia outro aviso de teste para o aparelho atual. A permissão e a assinatura são individuais por navegador/aparelho, podem ser retiradas nas configurações do navegador e são removidas do sistema ao sair da conta. Cada perfil recebe somente os totais aos quais já tem acesso no sistema.
+
+No iPhone e iPad com iOS/iPadOS 16.4 ou mais recente, abra o menu Compartilhar do Safari e use **Adicionar à Tela de Início** antes de ativar o sino: Web Push no iOS funciona para o app instalado na Tela de Início. Em Android e computadores, use um navegador com suporte a notificações e permita os avisos do site.
 
 ## Painel público dos consultores
 

@@ -10,6 +10,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -23,6 +24,12 @@ except ImportError:  # Allows local JSON-only development before dependencies ar
     psycopg = None
     Jsonb = None
 
+try:
+    from pywebpush import WebPushException, webpush as send_web_push
+except ImportError:  # Keeps the app usable until the production dependency is installed.
+    WebPushException = None
+    send_web_push = None
+
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
@@ -30,6 +37,9 @@ DATA_DIR = Path(os.getenv("TOUR_DATA_DIR", str(ROOT / "data")))
 DATABASE_PATH = DATA_DIR / "database.json"
 POSTGRES_URL = os.getenv("DATABASE_URL", "").strip()
 POSTGRES_STATE_KEY = "primary"
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "").strip()
 DB_LOCK = threading.RLock()
 SESSIONS: dict[str, dict[str, Any]] = {}
 
@@ -102,6 +112,14 @@ DEMO_TOUR_IDS = {"tour_yasmin", "tour_rafael", "tour_lucas", "tour_fernanda", "t
 DEMO_TRANSFER_IDS = {"transfer_adriana", "transfer_gustavo"}
 DEMO_ACTIVITY_IDS = {"act_1", "act_2", "act_3"}
 DEMO_CART_IDS = {"cart_01", "cart_02", "cart_03", "cart_04", "cart_05"}
+PUSH_ENDPOINT_DOMAINS = {
+    "fcm.googleapis.com",
+    "push.services.mozilla.com",
+    "updates.push.services.mozilla.com",
+    "web.push.apple.com",
+    "push.apple.com",
+    "notify.windows.com",
+}
 
 # This is a one-way scrypt hash. The initial password is never stored in source code.
 INITIAL_ADMIN_HASH = (
@@ -204,6 +222,10 @@ def initial_database() -> dict[str, Any]:
         "tours": [],
         "transfers": [],
         "hostessRequests": [],
+        # Local development keeps push subscriptions here. Production keeps
+        # them in their own PostgreSQL table so device endpoints never enter
+        # the operational state blob.
+        "pushSubscriptions": [],
         "hotelClosures": [],
         "defaultDeparturePrestige": PRESTIGE_BAHIA,
         "attendance": [],
@@ -254,6 +276,16 @@ def ensure_postgres_schema(connection: Any) -> None:
         )
     """)
     connection.execute("INSERT INTO tour_control_schema (schema_version) VALUES (1) ON CONFLICT DO NOTHING")
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS tour_control_push_subscriptions (
+            endpoint TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            subscription JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    connection.execute("CREATE INDEX IF NOT EXISTS tour_control_push_subscriptions_user_idx ON tour_control_push_subscriptions (user_id)")
 
 
 def save_postgres_database(db: dict[str, Any], connection: Any | None = None) -> None:
@@ -302,6 +334,225 @@ def save_database(db: dict[str, Any]) -> None:
         save_postgres_database(db)
         return
     save_local_database(db)
+
+
+def push_is_configured() -> bool:
+    """Whether this deployment can send authenticated Web Push messages."""
+    return bool(send_web_push and VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and VAPID_SUBJECT)
+
+
+def normalize_push_subscription(value: Any) -> dict[str, Any]:
+    """Validate a browser PushSubscription before storing or contacting it."""
+    if not isinstance(value, dict):
+        raise APIError("Assinatura de notificação inválida.")
+    endpoint = str(value.get("endpoint", "")).strip()
+    keys = value.get("keys")
+    if not isinstance(keys, dict):
+        raise APIError("Chaves da assinatura de notificação inválidas.")
+    p256dh = str(keys.get("p256dh", "")).strip()
+    auth = str(keys.get("auth", "")).strip()
+    parsed = urlparse(endpoint)
+    host = (parsed.hostname or "").lower()
+    trusted_host = host in PUSH_ENDPOINT_DOMAINS or any(host.endswith(f".{domain}") for domain in PUSH_ENDPOINT_DOMAINS)
+    if (
+        parsed.scheme != "https"
+        or not parsed.path
+        or parsed.username
+        or parsed.password
+        or not trusted_host
+        or len(endpoint) > 4096
+        or not p256dh
+        or len(p256dh) > 256
+        or not auth
+        or len(auth) > 128
+    ):
+        raise APIError("O navegador forneceu uma assinatura push inválida.")
+    return {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+
+
+def save_push_subscription(db: dict[str, Any], user_id: str, subscription: dict[str, Any]) -> None:
+    """Persist one browser/device subscription without exposing it to bootstrap."""
+    endpoint = subscription["endpoint"]
+    if POSTGRES_URL:
+        connection = None
+        try:
+            connection = postgres_connection()
+            with connection:
+                ensure_postgres_schema(connection)
+                connection.execute("""
+                    INSERT INTO tour_control_push_subscriptions (endpoint, user_id, subscription)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (endpoint) DO UPDATE
+                    SET user_id = EXCLUDED.user_id,
+                        subscription = EXCLUDED.subscription,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (endpoint, user_id, Jsonb(subscription)))
+        finally:
+            if connection is not None:
+                connection.close()
+        return
+
+    subscriptions = db.setdefault("pushSubscriptions", [])
+    existing = next((item for item in subscriptions if item.get("endpoint") == endpoint), None)
+    if existing:
+        existing.update({"userId": user_id, "subscription": subscription, "updatedAt": timestamp()})
+        return
+    subscriptions.append({"endpoint": endpoint, "userId": user_id, "subscription": subscription, "createdAt": timestamp(), "updatedAt": timestamp()})
+
+
+def delete_push_subscription(db: dict[str, Any], user_id: str, endpoint: str) -> None:
+    if POSTGRES_URL:
+        connection = None
+        try:
+            connection = postgres_connection()
+            with connection:
+                ensure_postgres_schema(connection)
+                connection.execute("DELETE FROM tour_control_push_subscriptions WHERE endpoint = %s AND user_id = %s", (endpoint, user_id))
+        finally:
+            if connection is not None:
+                connection.close()
+        return
+    db["pushSubscriptions"] = [
+        item for item in db.setdefault("pushSubscriptions", [])
+        if not (item.get("endpoint") == endpoint and item.get("userId") == user_id)
+    ]
+
+
+def delete_user_push_subscriptions(db: dict[str, Any], user_id: str) -> None:
+    if POSTGRES_URL:
+        connection = None
+        try:
+            connection = postgres_connection()
+            with connection:
+                ensure_postgres_schema(connection)
+                connection.execute("DELETE FROM tour_control_push_subscriptions WHERE user_id = %s", (user_id,))
+        finally:
+            if connection is not None:
+                connection.close()
+        return
+    db["pushSubscriptions"] = [item for item in db.setdefault("pushSubscriptions", []) if item.get("userId") != user_id]
+
+
+def load_push_subscriptions(db: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read device subscriptions; a notification failure never blocks operations."""
+    if not POSTGRES_URL:
+        return [dict(item) for item in db.setdefault("pushSubscriptions", []) if item.get("subscription")]
+
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            rows = connection.execute("SELECT endpoint, user_id, subscription FROM tour_control_push_subscriptions").fetchall()
+        subscriptions = []
+        for endpoint, user_id, subscription in rows:
+            parsed_subscription = json.loads(subscription) if isinstance(subscription, str) else subscription
+            if isinstance(parsed_subscription, dict):
+                subscriptions.append({"endpoint": endpoint, "userId": user_id, "subscription": parsed_subscription})
+        return subscriptions
+    except Exception:
+        return []
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def delete_invalid_push_subscriptions(db: dict[str, Any], endpoints: set[str]) -> None:
+    if not endpoints:
+        return
+    try:
+        if POSTGRES_URL:
+            connection = None
+            try:
+                connection = postgres_connection()
+                with connection:
+                    ensure_postgres_schema(connection)
+                    for endpoint in endpoints:
+                        connection.execute("DELETE FROM tour_control_push_subscriptions WHERE endpoint = %s", (endpoint,))
+            finally:
+                if connection is not None:
+                    connection.close()
+            return
+        before = len(db.setdefault("pushSubscriptions", []))
+        db["pushSubscriptions"] = [item for item in db["pushSubscriptions"] if item.get("endpoint") not in endpoints]
+        if len(db["pushSubscriptions"]) != before:
+            save_database(db)
+    except Exception:
+        # Stale endpoint cleanup is best effort and must not interrupt tours.
+        return
+
+
+def notification_body_for_user(db: dict[str, Any], user: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> str | None:
+    role = user.get("role")
+    if event_type == "TOURS":
+        if role not in {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS}:
+            return None
+        active_tours = [tour for tour in db.get("tours", []) if tour.get("status") != STATE_COMPLETE]
+        tour_count = sum(1 for tour in active_tours if not tour.get("selfGuide"))
+        self_gean_count = sum(1 for tour in active_tours if tour.get("selfGuide"))
+        return f"Tours: {tour_count} • Self Gean: {self_gean_count}"
+    if event_type == "WAVES":
+        if role == ROLE_HOSTESS:
+            return None
+        transfers = [transfer for transfer in db.get("transfers", []) if transfer.get("status") != TRANSFER_WITHDRAWN]
+        if role == ROLE_CONCIERGE:
+            if not concierge_user_id or user["id"] != concierge_user_id:
+                return None
+            transfers = [transfer for transfer in transfers if transfer.get("conciergeUserId") == user["id"]]
+        elif role not in {ROLE_ADMIN, ROLE_DRIVER}:
+            return None
+        people = sum(int(transfer.get("people", 0) or 0) for transfer in transfers)
+        return f"Convidados Waves → Praia: {people}"
+    return None
+
+
+def operation_push_messages(db: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> list[tuple[dict[str, Any], dict[str, str]]]:
+    users = {user["id"]: user for user in db.get("users", []) if user.get("active", True)}
+    title = "Atualização de tours" if event_type == "TOURS" else "Atualização dos convites Waves"
+    tag = "iberostar-tour-totals" if event_type == "TOURS" else "iberostar-waves-totals"
+    messages = []
+    for record in load_push_subscriptions(db):
+        user = users.get(record.get("userId"))
+        if not user:
+            continue
+        body = notification_body_for_user(db, user, event_type, concierge_user_id)
+        if body:
+            messages.append((record, {"title": title, "body": body, "tag": tag, "url": "/"}))
+    return messages
+
+
+def send_push_messages(db: dict[str, Any], messages: list[tuple[dict[str, Any], dict[str, str]]]) -> dict[str, int | bool]:
+    """Send visible notifications after data is stored; failures never undo work."""
+    if not push_is_configured():
+        return {"attempted": 0, "delivered": 0, "disabled": True}
+    stale_endpoints: set[str] = set()
+    delivered = 0
+    for record, payload in messages:
+        endpoint = str(record.get("endpoint", ""))
+        subscription = record.get("subscription")
+        if not endpoint or not isinstance(subscription, dict):
+            continue
+        try:
+            send_web_push(
+                subscription_info=subscription,
+                data=json.dumps(payload, ensure_ascii=False),
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_SUBJECT},
+                ttl=3600,
+                timeout=5,
+            )
+            delivered += 1
+        except Exception as error:
+            response = getattr(error, "response", None)
+            status_code = getattr(response, "status_code", None)
+            if WebPushException is not None and isinstance(error, WebPushException) and status_code in {404, 410}:
+                stale_endpoints.add(endpoint)
+    delete_invalid_push_subscriptions(db, stale_endpoints)
+    return {"attempted": len(messages), "delivered": delivered, "disabled": False}
+
+
+def notify_operation_update(db: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> dict[str, int | bool]:
+    return send_push_messages(db, operation_push_messages(db, event_type, concierge_user_id))
 
 
 def reset_operational_data(db: dict[str, Any], message: str) -> None:
@@ -387,6 +638,11 @@ def operational_database() -> dict[str, Any]:
     if "hostessRequests" not in db:
         db["hostessRequests"] = []
         schema_updated = True
+    if "pushSubscriptions" not in db:
+        # Used only by local JSON development. Neon subscriptions are stored
+        # separately by endpoint in tour_control_push_subscriptions.
+        db["pushSubscriptions"] = []
+        schema_updated = True
     if "hotelClosures" not in db:
         db["hotelClosures"] = []
         schema_updated = True
@@ -467,6 +723,9 @@ def clean_user(user: dict[str, Any]) -> dict[str, Any]:
 def safe_database(db: dict[str, Any]) -> dict[str, Any]:
     result = dict(db)
     result["users"] = [clean_user(user) for user in db["users"]]
+    # Push endpoints and encryption keys are device credentials. They must
+    # never be included in the operational bootstrap response.
+    result.pop("pushSubscriptions", None)
     return result
 
 
@@ -1026,6 +1285,68 @@ def auth_me():
         return jsonify(user=clean_user(get_current_user(operational_database())))
 
 
+@app.get("/api/push/config")
+def push_config():
+    with DB_LOCK:
+        db = operational_database()
+        get_current_user(db)
+        enabled = push_is_configured()
+        return jsonify(enabled=enabled, publicKey=VAPID_PUBLIC_KEY if enabled else None)
+
+
+@app.put("/api/push/subscription")
+def subscribe_push():
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        if not push_is_configured():
+            raise APIError("As notificações push ainda não foram configuradas no servidor.", 503)
+        subscription = normalize_push_subscription(payload.get("subscription"))
+        save_push_subscription(db, user["id"], subscription)
+        if not POSTGRES_URL:
+            save_database(db)
+        return jsonify(ok=True)
+
+
+@app.delete("/api/push/subscription")
+def unsubscribe_push():
+    payload = request.get_json(silent=True) or {}
+    endpoint = str(payload.get("endpoint", "")).strip()
+    if not endpoint or len(endpoint) > 4096:
+        raise APIError("Informe a assinatura de notificação a remover.")
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        delete_push_subscription(db, user["id"], endpoint)
+        if not POSTGRES_URL:
+            save_database(db)
+        return jsonify(ok=True)
+
+
+@app.post("/api/push/test")
+def test_push():
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        if not push_is_configured():
+            raise APIError("As notificações push ainda não foram configuradas no servidor.", 503)
+        messages = [
+            (record, {
+                "title": "Iberostar Tour Interno",
+                "body": "Notificações push ativadas neste aparelho.",
+                "tag": "iberostar-tour-push-test",
+                "url": "/",
+            })
+            for record in load_push_subscriptions(db)
+            if record.get("userId") == user["id"]
+        ]
+    if not messages:
+        raise APIError("Não foi encontrada uma assinatura push para este aparelho.", 409)
+    result = send_push_messages(db, messages)
+    return jsonify(ok=True, **result)
+
+
 @app.get("/api/public/driver-status")
 def public_driver_status():
     """Read-only driver board intended for the consultants' shared screen."""
@@ -1181,6 +1502,9 @@ def update_user(user_id: str):
             db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
         if password:
             target["passwordHash"] = generate_password_hash(password)
+        if not active:
+            # An inactive account must no longer receive operational pushes.
+            delete_user_push_subscriptions(db, target["id"])
         log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.")
         save_database(db)
         return jsonify(user=clean_user(target))
@@ -1198,24 +1522,27 @@ def create_tour():
             # including when the departure moves to the other Prestige.
             tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
             save_database(db)
-            return jsonify(tours=tours), 201
-        require_tours_open(db)
-        group_name = str(payload.get("groupName", "")).strip()
-        try:
-            people = int(payload.get("people", 0))
-        except (ValueError, TypeError):
-            people = 0
-        if not group_name or not 1 <= people <= 48:
-            raise APIError("Informe o grupo e uma quantidade de pessoas entre 1 e 48.")
-        find(db["consultants"], payload.get("consultantId"), "Consultor")
-        wave = payload.get("wave", "WAVE_1")
-        if wave not in TRANSFER_SCHEDULES:
-            raise APIError("Selecione a 1ª ou a 2ª Ola do tour.")
-        tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
-        db["tours"].insert(0, tour)
-        log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
-        save_database(db)
-        return jsonify(tour=tour), 201
+            response = jsonify(tours=tours), 201
+        else:
+            require_tours_open(db)
+            group_name = str(payload.get("groupName", "")).strip()
+            try:
+                people = int(payload.get("people", 0))
+            except (ValueError, TypeError):
+                people = 0
+            if not group_name or not 1 <= people <= 48:
+                raise APIError("Informe o grupo e uma quantidade de pessoas entre 1 e 48.")
+            find(db["consultants"], payload.get("consultantId"), "Consultor")
+            wave = payload.get("wave", "WAVE_1")
+            if wave not in TRANSFER_SCHEDULES:
+                raise APIError("Selecione a 1ª ou a 2ª Ola do tour.")
+            tour = {"id": new_id("tour"), "groupName": group_name, "people": people, "selfGuide": bool(payload.get("selfGuide")), "consultantId": payload["consultantId"], "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "createdAt": timestamp(), "updatedAt": timestamp(), "allocations": []}
+            db["tours"].insert(0, tour)
+            log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
+            save_database(db)
+            response = jsonify(tour=tour), 201
+    notify_operation_update(db, "TOURS")
+    return response
 
 
 @app.post("/api/tours/hostess")
@@ -1230,7 +1557,9 @@ def register_hostess_tours():
         # continue from the other configured Prestige.
         tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
         save_database(db)
-        return jsonify(tours=tours), 201
+        response = jsonify(tours=tours), 201
+    notify_operation_update(db, "TOURS")
+    return response
 
 
 @app.delete("/api/users/<user_id>")
@@ -1250,6 +1579,7 @@ def delete_user(user_id: str):
             if session["userId"] == target["id"]:
                 SESSIONS.pop(token, None)
         db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
+        delete_user_push_subscriptions(db, target["id"])
         save_database(db)
         return jsonify(ok=True)
 
@@ -1525,7 +1855,9 @@ def create_transfer():
         db.setdefault("transfers", []).insert(0, transfer)
         log_activity(db, user, None, None, TRANSFER_SCHEDULED, f"Convite de {group_name} agendado no Waves Bahia para {schedule['transferTime']}.", transfer=transfer)
         save_database(db)
-        return jsonify(transfer=transfer), 201
+        response = jsonify(transfer=transfer), 201
+    notify_operation_update(db, "WAVES", transfer.get("conciergeUserId"))
+    return response
 
 
 @app.post("/api/transfers/<transfer_id>/action")
@@ -1535,9 +1867,14 @@ def transfer_action(transfer_id: str):
         db = operational_database()
         user = get_current_user(db)
         transfer = find(db.setdefault("transfers", []), transfer_id, "Convite")
-        apply_transfer_action(db, user, transfer, payload.get("action", ""))
+        action = payload.get("action", "")
+        apply_transfer_action(db, user, transfer, action)
         save_database(db)
-        return jsonify(transfer=transfer)
+        response = jsonify(transfer=transfer)
+        concierge_user_id = transfer.get("conciergeUserId")
+    if action == "withdraw":
+        notify_operation_update(db, "WAVES", concierge_user_id)
+    return response
 
 
 @app.post("/api/operation/departure-prestige")

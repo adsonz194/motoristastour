@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   BarChart3, Bell, Building2, CalendarDays, CarFront, Check, ChevronRight, CircleUserRound,
@@ -93,53 +93,11 @@ function dateLabel() {
   return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
 }
 
-function notificationSummary(data = {}) {
-  const hasTours = Array.isArray(data.tours);
-  const hasTransfers = Array.isArray(data.transfers);
-  const hasHostessRequests = Array.isArray(data.hostessRequests);
-  const tours = data.tours || [];
-  const transfers = data.transfers || [];
-  const hostessRequests = data.hostessRequests || [];
-  return {
-    hasTours,
-    hasTransfers,
-    hasHostessRequests,
-    tours: tours.filter((tour) => !tour.selfGuide && tour.status !== 'CONCLUIDO').length,
-    selfGean: tours.filter((tour) => tour.selfGuide && tour.status !== 'CONCLUIDO').length,
-    wavesGuests: transfers.filter((transfer) => transfer.status !== 'DESISTENCIA').reduce((sum, transfer) => sum + (Number(transfer.people) || 0), 0),
-    hostessRequests: hostessRequests.filter((item) => item.status === 'SOLICITADO').length
-  };
-}
-
-function notificationBody(summary) {
-  const parts = [];
-  if (summary.hasTours) parts.push(`Tours: ${summary.tours}`, `Self Gean: ${summary.selfGean}`);
-  if (summary.hasTransfers) parts.push(`Convidados Waves → Praia: ${summary.wavesGuests}`);
-  if (summary.hasHostessRequests && summary.hostessRequests) parts.push(`Hostess solicitando carro: ${summary.hostessRequests}`);
-  return parts.join(' • ') || 'Sem informações operacionais disponíveis.';
-}
-
-async function showOperationNotification(summary) {
-  if (!('Notification' in window) || window.Notification.permission !== 'granted') return false;
-  const options = {
-    body: notificationBody(summary),
-    tag: 'iberostar-tour-summary',
-    renotify: true,
-    data: { url: '/' }
-  };
-  try {
-    if ('serviceWorker' in navigator) {
-      const registration = await navigator.serviceWorker.getRegistration();
-      if (registration) {
-        await registration.showNotification('Iberostar Tour Interno', options);
-        return true;
-      }
-    }
-    new window.Notification('Iberostar Tour Interno', options);
-    return true;
-  } catch {
-    return false;
-  }
+function urlBase64ToUint8Array(value) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, '+').replace(/_/g, '/');
+  const raw = window.atob(base64);
+  return Uint8Array.from(raw, (character) => character.charCodeAt(0));
 }
 
 function api(token, path, options = {}) {
@@ -232,7 +190,7 @@ function Topbar({ user, setMenuOpen, notificationPermission, onNotifications }) 
   const [clock, setClock] = useState(time(new Date()));
   useEffect(() => { const timer = setInterval(() => setClock(time(new Date())), 30000); return () => clearInterval(timer); }, []);
   const role = user.role === 'ADMIN' ? 'Administrador' : user.role === 'MOTORISTA' ? 'Motorista' : user.role === 'HOSTESS' ? 'Hostess' : 'Concierge';
-  const notificationLabel = notificationPermission === 'granted' ? 'Notificações ativas. Toque para ver o resumo.' : notificationPermission === 'denied' ? 'Notificações bloqueadas no navegador.' : 'Ativar notificações do aparelho';
+  const notificationLabel = notificationPermission === 'granted' ? 'Notificações push ativas. Toque para enviar um teste.' : notificationPermission === 'denied' ? 'Notificações bloqueadas no navegador.' : 'Ativar notificações push neste aparelho';
   return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className={classNames('bell', notificationPermission === 'granted' && 'bell-enabled')} onClick={onNotifications} aria-label={notificationLabel} title={notificationLabel}><Bell size={20} /><span className="bell-status" aria-hidden="true" /></button><div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
 }
 
@@ -682,7 +640,6 @@ function App() {
   const [notice, setNotice] = useState(null);
   const [loading, setLoading] = useState(Boolean(token));
   const [notificationPermission, setNotificationPermission] = useState(() => 'Notification' in window ? window.Notification.permission : 'unsupported');
-  const previousNotificationSummary = useRef(null);
 
   const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
   const refresh = useCallback(async () => {
@@ -700,17 +657,31 @@ function App() {
     const timer = window.setInterval(() => { refresh().catch(() => undefined); }, 30000);
     return () => window.clearInterval(timer);
   }, [token, refresh]);
+  const registerPushSubscription = useCallback(async ({ requestPermission = false, sendTest = false } = {}) => {
+    if (!token || !('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return { supported: false };
+    let permission = window.Notification.permission;
+    if (requestPermission && permission === 'default') permission = await window.Notification.requestPermission();
+    setNotificationPermission(permission);
+    if (permission !== 'granted') return { supported: true, configured: true, permission };
+    const config = await api(token, '/api/push/config');
+    if (!config.enabled || !config.publicKey) return { supported: true, configured: false, permission };
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      if (!requestPermission) return { supported: true, configured: true, permission, subscribed: false };
+      subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(config.publicKey) });
+    }
+    await api(token, '/api/push/subscription', { method: 'PUT', body: JSON.stringify({ subscription: subscription.toJSON() }) });
+    if (sendTest) await api(token, '/api/push/test', { method: 'POST' });
+    return { supported: true, configured: true, permission, subscribed: true };
+  }, [token]);
   useEffect(() => {
-    if (!data) return;
-    const nextSummary = notificationSummary(data);
-    const previousSummary = previousNotificationSummary.current;
-    previousNotificationSummary.current = nextSummary;
-    if (!previousSummary || JSON.stringify(previousSummary) === JSON.stringify(nextSummary) || notificationPermission !== 'granted') return;
-    showOperationNotification(nextSummary);
-  }, [data, notificationPermission]);
+    if (!token || !('Notification' in window) || window.Notification.permission !== 'granted') return;
+    registerPushSubscription().catch(() => undefined);
+  }, [token, registerPushSubscription]);
   async function requestNotifications() {
-    if (!('Notification' in window)) {
-      notify('Este navegador não oferece notificações do aparelho.', 'error');
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      notify('Este navegador não oferece notificações push neste aparelho.', 'error');
       return;
     }
     if (window.Notification.permission === 'denied') {
@@ -719,20 +690,33 @@ function App() {
       return;
     }
     try {
-      const permission = await window.Notification.requestPermission();
-      setNotificationPermission(permission);
-      if (permission !== 'granted') {
+      const result = await registerPushSubscription({ requestPermission: true, sendTest: true });
+      if (!result.configured) {
+        notify('O servidor ainda precisa das chaves VAPID para ativar o push.', 'error');
+        return;
+      }
+      if (result.permission !== 'granted') {
         notify('A permissão de notificações não foi concedida.', 'error');
         return;
       }
-      await showOperationNotification(notificationSummary(data));
-      notify('Notificações ativadas neste aparelho.', 'success');
-    } catch {
-      notify('Não foi possível ativar as notificações neste navegador.', 'error');
+      notify('Notificações push ativadas. Você receberá avisos mesmo com o navegador fechado.', 'success');
+    } catch (error) {
+      notify(error.message || 'Não foi possível ativar as notificações push neste navegador.', 'error');
     }
   }
   function login(nextToken, nextUser) { localStorage.setItem('iberostar-tour-token', nextToken); setUser(nextUser); setToken(nextToken); }
-  async function signOut() { try { await api(token, '/api/auth/logout', { method: 'POST' }); } catch { /* session may already be gone */ } localStorage.removeItem('iberostar-tour-token'); previousNotificationSummary.current = null; setToken(''); setUser(null); setData(null); }
+  async function signOut() {
+    try {
+      const registration = await navigator.serviceWorker?.getRegistration();
+      const subscription = await registration?.pushManager.getSubscription();
+      if (subscription) {
+        await api(token, '/api/push/subscription', { method: 'DELETE', body: JSON.stringify({ endpoint: subscription.endpoint }) });
+        await subscription.unsubscribe();
+      }
+    } catch { /* The user can still safely sign out if the device is offline. */ }
+    try { await api(token, '/api/auth/logout', { method: 'POST' }); } catch { /* session may already be gone */ }
+    localStorage.removeItem('iberostar-tour-token'); setToken(''); setUser(null); setData(null);
+  }
   const content = useMemo(() => {
     if (!data || !user) return null;
     const openAction = (tour, action) => setModal({ kind: 'action', tour, action });
