@@ -1001,6 +1001,10 @@ def bootstrap():
             # Drivers receive the operational dashboard, without users or management data.
             data = {
                 "operationDate": db["operationDate"],
+                # The departure Prestige is shared operational context. Without
+                # it, drivers fell back to the Bahia label even after an
+                # administrator selected Prestige Selection.
+                "operationSettings": settings,
                 "attendance": [current_attendance] if current_attendance else [],
                 "tours": db.get("tours", []),
                 "drivers": db.get("drivers", []),
