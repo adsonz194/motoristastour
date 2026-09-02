@@ -567,19 +567,42 @@ def active_driver_assignment(db: dict[str, Any], driver_id: str) -> dict[str, An
     return None
 
 
+def public_final_destination_name(db: dict[str, Any], driver_id: str) -> str | None:
+    """Get the current final destination without exposing any tour details."""
+    final_destination_tours = [
+        tour for tour in db.get("tours", [])
+        if tour.get("status") == STATE_FINAL_DESTINATION
+        and any(item.get("driverId") == driver_id for item in tour.get("allocations", []))
+    ]
+    tour = max(final_destination_tours, key=lambda item: str(item.get("updatedAt", "")), default=None)
+    if not tour:
+        return None
+    destination = next((item for item in db.get("destinations", []) if item.get("id") == tour.get("destinationId")), None)
+    return destination.get("name") if destination else None
+
+
 def public_driver_location(db: dict[str, Any], driver: dict[str, Any]) -> tuple[str, str]:
     """Return a clear, non-sensitive location for the public consultant board."""
     status = driver.get("status", DRIVER_LEAVE)
-    tour = active_driver_assignment(db, driver["id"])
     if status == DRIVER_IN_TOUR:
+        tours_in_progress = [
+            item for item in db.get("tours", [])
+            if item.get("status") == STATE_IN_TOUR
+            and any(allocation.get("driverId") == driver["id"] for allocation in item.get("allocations", []))
+        ]
+        tour = max(tours_in_progress, key=lambda item: str(item.get("updatedAt", "")), default=None)
         if tour and tour.get("phase") == "Casa → Galeria":
             return "A_CAMINHO_GALERIA", "A caminho da Galeria"
         return DRIVER_IN_TOUR, "Em tour"
+    if status == DRIVER_DESTINATION:
+        destination_name = public_final_destination_name(db, driver["id"])
+        if destination_name:
+            return DRIVER_DESTINATION, f"A caminho de {destination_name}"
+        return DRIVER_DESTINATION, "A caminho do destino final"
     locations = {
         DRIVER_AVAILABLE: "Disponível",
         DRIVER_HOME: "Na Casa",
         DRIVER_GALLERY: "Na Galeria",
-        DRIVER_DESTINATION: "A caminho do destino final",
         DRIVER_HOSTESS_SUPPORT: "Em apoio à Hostess",
         DRIVER_LEAVE: "Folga / atestado",
         DRIVER_MEDICAL: "Atestado",
