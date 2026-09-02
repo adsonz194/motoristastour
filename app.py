@@ -670,6 +670,15 @@ def operational_database() -> dict[str, Any]:
     if "hostessRequests" not in db:
         db["hostessRequests"] = []
         schema_updated = True
+    for car_request in db["hostessRequests"]:
+        for field, default in (
+            ("assignedDriverId", None),
+            ("assignedDriverName", None),
+            ("acceptedAt", None),
+        ):
+            if field not in car_request:
+                car_request[field] = default
+                schema_updated = True
     if "pushSubscriptions" not in db:
         # Used only by local JSON development. Neon subscriptions are stored
         # separately by endpoint in tour_control_push_subscriptions.
@@ -691,6 +700,9 @@ def operational_database() -> dict[str, Any]:
         if "hostessAvailable" not in driver:
             driver["hostessAvailable"] = False
             schema_updated = True
+        if "hostessRequestId" not in driver:
+            driver["hostessRequestId"] = None
+            schema_updated = True
         # Earlier versions kept an accepted Hostess call as only a Boolean,
         # which left the driver selectable for a tour. Convert it to the
         # exclusive support state the first time this version loads the data.
@@ -703,7 +715,24 @@ def operational_database() -> dict[str, Any]:
             schema_updated = True
         elif driver.get("status") == DRIVER_HOSTESS_SUPPORT and not has_open_hostess_request:
             driver["status"] = DRIVER_AVAILABLE if driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
+            driver["hostessRequestId"] = None
             driver["lastActivity"] = timestamp()
+            schema_updated = True
+    # Older operational records reserved drivers globally, before each car
+    # call had an assigned driver. Associate that state only when there is a
+    # single unambiguous open call and a single driver in Hostess support.
+    open_hostess_calls = open_hostess_requests(db)
+    hostess_support_drivers = [item for item in db.get("drivers", []) if item.get("status") == DRIVER_HOSTESS_SUPPORT]
+    if len(open_hostess_calls) == 1 and len(hostess_support_drivers) == 1:
+        car_request = open_hostess_calls[0]
+        driver = hostess_support_drivers[0]
+        if not car_request.get("assignedDriverId") and not driver.get("hostessRequestId"):
+            car_request.update({
+                "assignedDriverId": driver["id"],
+                "assignedDriverName": driver["name"],
+                "acceptedAt": car_request.get("updatedAt") or timestamp(),
+            })
+            driver["hostessRequestId"] = car_request["id"]
             schema_updated = True
     # Prestige Praia and Prestige Selection refer to the same destination.
     # Keep historical tours valid while removing the duplicated option.
@@ -824,6 +853,7 @@ def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool =
     # return to DISPONIVEL, releases the temporary Hostess reservation.
     if status != DRIVER_HOSTESS_SUPPORT:
         driver["hostessAvailable"] = False
+        driver["hostessRequestId"] = None
     if tours:
         driver["toursStarted"] += 1
     if home_pickup:
@@ -841,10 +871,45 @@ def create_linked_driver(db: dict[str, Any], user: dict[str, Any], status: str =
         "toursStarted": 0,
         "homePickups": 0,
         "hostessAvailable": False,
+        "hostessRequestId": None,
         "lastActivity": timestamp(),
     }
     db["drivers"].append(driver)
     user["driverId"] = driver["id"]
+    return driver
+
+
+def hostess_request_for_driver(db: dict[str, Any], driver: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the one open Hostess request explicitly assigned to this driver."""
+    request_id = driver.get("hostessRequestId")
+    if request_id:
+        request = next((item for item in open_hostess_requests(db) if item.get("id") == request_id), None)
+        if request:
+            return request
+    return next((item for item in open_hostess_requests(db) if item.get("assignedDriverId") == driver["id"]), None)
+
+
+def release_hostess_driver(db: dict[str, Any], driver: dict[str, Any]) -> None:
+    """Return a driver reserved for a completed Hostess call to the right pool."""
+    next_status = DRIVER_AVAILABLE if driver.get("active", True) and driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
+    update_driver(db, driver["id"], next_status)
+
+
+def close_hostess_request_record(db: dict[str, Any], car_request: dict[str, Any], user: dict[str, Any], reason: str) -> dict[str, Any] | None:
+    """Close one call and release only the driver assigned to that call."""
+    closed_at = timestamp()
+    car_request.update({
+        "status": HOSTESS_REQUEST_CLOSED,
+        "closedAt": closed_at,
+        "closedById": user["id"],
+        "closedByName": user["name"],
+        "closedReason": reason,
+        "updatedAt": closed_at,
+    })
+    driver_id = car_request.get("assignedDriverId")
+    driver = next((item for item in db.get("drivers", []) if item.get("id") == driver_id), None)
+    if driver:
+        release_hostess_driver(db, driver)
     return driver
 
 
@@ -1663,6 +1728,9 @@ def create_hostess_request():
             "status": HOSTESS_REQUEST_OPEN,
             "requestedById": user["id"],
             "requestedByName": user["name"],
+            "assignedDriverId": None,
+            "assignedDriverName": None,
+            "acceptedAt": None,
             "createdAt": timestamp(),
             "updatedAt": timestamp(),
         }
@@ -1686,20 +1754,7 @@ def close_hostess_request(request_id: str):
             raise APIError("Apenas a Hostess que solicitou ou um administrador pode encerrar este pedido.", 403)
         if car_request.get("status") != HOSTESS_REQUEST_OPEN:
             raise APIError("Esta solicitação já foi encerrada.", 409)
-        car_request["status"] = HOSTESS_REQUEST_CLOSED
-        car_request["closedAt"] = timestamp()
-        car_request["closedByName"] = user["name"]
-        car_request["updatedAt"] = car_request["closedAt"]
-        # An accepted call reserves the driver exclusively for this support.
-        # Once no Hostess call remains, return the reserved drivers to the
-        # regular pool and clear the response list for the next request.
-        if not open_hostess_requests(db):
-            for driver in db.get("drivers", []):
-                if driver.get("status") == DRIVER_HOSTESS_SUPPORT:
-                    next_status = DRIVER_AVAILABLE if driver.get("active", True) and driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
-                    update_driver(db, driver["id"], next_status)
-                else:
-                    driver["hostessAvailable"] = False
+        close_hostess_request_record(db, car_request, user, "HOSTESS_ENCERROU_SOLICITACAO")
         log_activity(db, user, None, HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_CLOSED, f"{user['name']} encerrou a solicitação de carro da Hostess.")
         save_database(db)
         return jsonify(request=car_request)
@@ -1707,7 +1762,7 @@ def close_hostess_request(request_id: str):
 
 @app.post("/api/drivers/hostess-availability")
 def driver_hostess_availability():
-    """Let a checked-in, free driver signal availability to every open Hostess call."""
+    """Assign a checked-in, free driver to one Hostess car request."""
     payload = request.get_json(silent=True) or {}
     with DB_LOCK:
         db = operational_database()
@@ -1720,29 +1775,58 @@ def driver_hostess_availability():
         driver = find(db["drivers"], driver_id, "Motorista")
         available = bool(payload.get("available", True))
         if available:
-            if not open_hostess_requests(db):
+            open_requests = open_hostess_requests(db)
+            if not open_requests:
                 raise APIError("Não há solicitação de carro aberta pela Hostess no momento.", 409)
             if not driver.get("active", True) or driver.get("status") != DRIVER_AVAILABLE or not driver_has_checked_in(db, driver_id):
                 raise APIError("Você precisa estar disponível e com check-in feito para responder à Hostess.", 409)
+            request_id = str(payload.get("requestId", "")).strip()
+            unassigned_requests = [item for item in open_requests if not item.get("assignedDriverId")]
+            if not request_id and len(unassigned_requests) == 1:
+                # Compatibility for a browser that was open during deployment.
+                car_request = unassigned_requests[0]
+            elif request_id:
+                car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
+                if car_request.get("status") != HOSTESS_REQUEST_OPEN:
+                    raise APIError("Esta solicitação já foi encerrada.", 409)
+                if car_request.get("assignedDriverId"):
+                    raise APIError("Esta solicitação já possui um motorista em apoio.", 409)
+            else:
+                raise APIError("Selecione qual solicitação da Hostess você vai atender.", 409)
             driver["status"] = DRIVER_HOSTESS_SUPPORT
             driver["hostessAvailable"] = True
+            driver["hostessRequestId"] = car_request["id"]
             driver["lastActivity"] = timestamp()
-            action = "ficou reservado para o apoio da Hostess"
+            car_request.update({
+                "assignedDriverId": driver["id"],
+                "assignedDriverName": driver["name"],
+                "acceptedAt": driver["lastActivity"],
+                "updatedAt": driver["lastActivity"],
+            })
+            action = f"assumiu a solicitação de carro de {car_request.get('requestedByName', 'uma Hostess')}"
+            closed_request = None
         else:
-            if driver.get("status") == DRIVER_HOSTESS_SUPPORT:
-                update_driver(db, driver_id, DRIVER_AVAILABLE)
+            car_request = hostess_request_for_driver(db, driver)
+            if driver.get("status") != DRIVER_HOSTESS_SUPPORT or not driver.get("hostessAvailable"):
+                raise APIError("Você não está atendendo uma solicitação da Hostess.", 409)
+            if not car_request:
+                # This can only occur for an old, ambiguous record created
+                # before calls were linked to individual drivers. Free the
+                # driver without guessing which Hostess request to close.
+                release_hostess_driver(db, driver)
+                action = "encerrou um apoio antigo da Hostess"
+                closed_request = None
             else:
-                driver["hostessAvailable"] = False
-                driver["lastActivity"] = timestamp()
-            action = "encerrou seu apoio à Hostess"
+                close_hostess_request_record(db, car_request, user, "MOTORISTA_ENCERROU_APOIO")
+                action = f"encerrou o apoio e a solicitação de {car_request.get('requestedByName', 'uma Hostess')}"
+                closed_request = car_request
         log_activity(db, user, None, None, None, f"{driver['name']} {action} para a Hostess.")
         save_database(db)
-        response = jsonify(driver=driver)
+        response = jsonify(driver=driver, request=closed_request)
         accepted_driver_name = driver["name"] if available else None
     if accepted_driver_name:
-        # The current reservation is shared by every open Hostess request,
-        # so tell all drivers only that someone assumed the support—not that
-        # a particular Hostess request has been completed.
+        # Each reservation belongs to one call, but all drivers need to know
+        # that this person is no longer free for tours or another Hostess call.
         notify_hostess_car_update(db, "ACCEPTED", accepted_driver_name)
     return response
 
@@ -1761,7 +1845,7 @@ def create_driver():
         # A registered driver still needs a linked account and today's check-in
         # before becoming operationally available.
         initial_status = DRIVER_LEAVE if status == DRIVER_AVAILABLE else status
-        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "hostessAvailable": False, "lastActivity": timestamp()}
+        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "hostessAvailable": False, "hostessRequestId": None, "lastActivity": timestamp()}
         db["drivers"].append(driver)
         log_activity(db, user, None, None, None, f"Motorista {name} cadastrado.")
         save_database(db)

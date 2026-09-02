@@ -258,14 +258,26 @@ function DriverHostessAvailability({ data, user, token, refresh, notify }) {
   const driver = (data.drivers || []).find((item) => item.id === user.driverId);
   const checkedIn = (data.attendance || []).some((item) => item.userId === user.id);
   const [saving, setSaving] = useState(false);
+  const [requestId, setRequestId] = useState('');
+  const unassignedRequests = requests.filter((item) => !item.assignedDriverId);
+  const assignedRequest = requests.find((item) => item.id === driver?.hostessRequestId || item.assignedDriverId === driver?.id);
+  const availableRequestIds = unassignedRequests.map((item) => item.id).join('|');
+  useEffect(() => {
+    setRequestId((current) => unassignedRequests.some((item) => item.id === current) ? current : (unassignedRequests[0]?.id || ''));
+  }, [availableRequestIds]);
   if (!requests.length) return null;
-  const canAnswer = checkedIn && driver?.active && driver?.status === 'DISPONIVEL' && !driver?.hostessAvailable;
+  const canAnswer = checkedIn && driver?.active && driver?.status === 'DISPONIVEL' && !driver?.hostessAvailable && Boolean(requestId);
   const available = Boolean(driver?.hostessAvailable);
   async function setAvailability(nextAvailability) {
     setSaving(true);
-    try { await api(token, '/api/drivers/hostess-availability', { method: 'POST', body: JSON.stringify({ available: nextAvailability }) }); await refresh(); notify(nextAvailability ? 'Você ficou reservado para atender a Hostess.' : 'Seu apoio à Hostess foi encerrado.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+    try {
+      const result = await api(token, '/api/drivers/hostess-availability', { method: 'POST', body: JSON.stringify(nextAvailability ? { available: true, requestId } : { available: false }) });
+      await refresh();
+      notify(nextAvailability ? 'Você assumiu a solicitação da Hostess.' : result.request ? 'Seu apoio foi encerrado e a solicitação foi fechada.' : 'Seu apoio foi encerrado.', 'success');
+    } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <section className="hostess-call driver-hostess-call"><div><span>CHAMADO DA HOSTESS</span><h2>{requests.length === 1 ? 'A Hostess solicitou um carro' : `${requests.length} solicitações de carro da Hostess`}</h2><p>{available ? 'Você está reservado para este apoio. Enquanto a solicitação estiver aberta, não poderá ser usado em tours ou outras etapas.' : canAnswer ? 'Você está livre. Confirme para a Hostess saber que pode chamar você.' : 'Fique disponível e faça check-in para responder a este chamado.'}</p></div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar meu apoio</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Estou disponível para a Hostess</button>}</section>;
+  const requestLabel = (item) => `${item.requestedByName || 'Hostess'} · solicitado às ${time(item.createdAt)}`;
+  return <section className="hostess-call driver-hostess-call"><div><span>CHAMADO DA HOSTESS</span><h2>{requests.length === 1 ? 'A Hostess solicitou um carro' : `${requests.length} solicitações de carro da Hostess`}</h2><p>{available ? `Você está atendendo ${assignedRequest?.requestedByName || 'esta solicitação'}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para a Hostess saber quem irá buscá-la.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}</p>{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>;
 }
 
 function Flow({ counts }) {
@@ -352,6 +364,7 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
   const ownRequest = requests.find((item) => item.status === 'SOLICITADO' && item.requestedById === user.id);
   const openRequests = requests.filter((item) => item.status === 'SOLICITADO');
   const hostessDrivers = drivers.filter((driver) => driver.hostessAvailable && driver.status === 'APOIO_HOSTESS');
+  const assignedDriverName = ownRequest?.assignedDriverName;
   async function requestCar() {
     setRequestSaving(true);
     try { await api(token, '/api/hostess-requests', { method: 'POST' }); await refresh(); notify('Solicitação de carro enviada aos motoristas.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setRequestSaving(false); }
@@ -364,7 +377,7 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
     <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />
     <OperationRestriction settings={settings} />
     <section className="page-title hostess-title"><div><span>PAINEL GERAL · HOSTESS</span><h1>Painel Geral</h1><p>Visualização da operação. Você registra quantidades e pode solicitar carro.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidades de tours</button></section>
-    <section className="hostess-call"><div><span>SOLICITAÇÃO DE CARRO</span><h2>{ownRequest ? 'Carro solicitado' : 'Precisa de um carro?'}</h2><p>{ownRequest ? 'Os motoristas disponíveis aparecem abaixo. Ao receber o carro, encerre o pedido.' : openRequests.length ? 'Há outro pedido em aberto. Você pode fazer o seu próprio pedido de carro.' : 'Toque no botão para avisar os motoristas livres. Não é necessário informar hotel, destino ou motorista.'}</p></div>{ownRequest ? <button className="button button-secondary" onClick={closeRequest} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} Encerrar solicitação</button> : <button className="button button-primary" onClick={requestCar} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} <CarFront size={18} /> Solicitar carro</button>}</section>
+    <section className="hostess-call"><div><span>SOLICITAÇÃO DE CARRO</span><h2>{ownRequest ? assignedDriverName ? `${assignedDriverName} está em apoio` : 'Carro solicitado' : 'Precisa de um carro?'}</h2><p>{ownRequest ? assignedDriverName ? 'O motorista encerra este chamado ao finalizar o apoio. Se necessário, você também pode encerrá-lo agora.' : 'Aguarde um motorista assumir este chamado. Não é necessário informar hotel, destino ou motorista.' : openRequests.length ? 'Há outro pedido em aberto. Você pode fazer o seu próprio pedido de carro.' : 'Toque no botão para avisar os motoristas livres. Não é necessário informar hotel, destino ou motorista.'}</p></div>{ownRequest ? <button className="button button-secondary" onClick={closeRequest} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} Encerrar solicitação</button> : <button className="button button-primary" onClick={requestCar} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={18} />} <CarFront size={18} /> Solicitar carro</button>}</section>
     <section className="available-hostess-drivers"><div><h2>Motoristas em apoio à Hostess</h2><p>{openRequests.length ? 'Os motoristas desta lista estão reservados exclusivamente para este apoio.' : 'Abra uma solicitação para os motoristas responderem.'}</p></div><div>{hostessDrivers.length ? hostessDrivers.map((driver) => <span className="hostess-driver" key={driver.id}><Check size={15} /> {driver.name}</span>) : <span className="hostess-empty">Nenhum motorista assumiu o apoio ainda.</span>}</div></section>
     <section className="metrics-grid hostess-general-metrics"><MetricCard icon={Route} color="teal" title="Tours normais" count={normalTours.length} sub={`${awaitingDriver.length} aguardando motorista`} /><MetricCard icon={Flag} color="purple" title="Self Gean" count={totalSelfGuide.length} sub="registros do dia" /><MetricCard icon={CarFront} color="blue" title="Em tour" count={enTour.length} sub="grupos em deslocamento" /><MetricCard icon={Check} color="green" title="Motoristas disponíveis" count={availableDrivers} sub={`${drivers.length} motoristas ativos`} /></section>
     <section className="panel drivers-panel"><div className="panel-heading"><div><h2>Status dos motoristas</h2><p>Somente visualização para a Hostess.</p></div></div><div className="driver-grid">{drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</div></section>
