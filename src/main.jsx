@@ -480,6 +480,39 @@ function CheckInCard({ data, user, token, refresh, notify }) {
   return <section className={classNames('checkin-card', attendance && 'checked-in')}><div><span>{attendance ? 'CHECK-IN CONFIRMADO' : 'SITUAÇÃO DE HOJE'}</span><h2>{attendance ? 'Você está trabalhando' : 'Folga ou atestado'}</h2><p>Local de check-in: <strong>{location}</strong>{attendance ? ` · confirmado às ${time(attendance.checkInAt)}.` : '.'}</p></div>{attendance ? <span className="checkin-done"><Check size={18} /> Em serviço</span> : <button className="button button-primary" onClick={checkIn} disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Fazer check-in</button>}</section>;
 }
 
+function recentAuditActor(activity) {
+  const audit = activity?.audit || {};
+  const auditType = String(audit.type || '').toUpperCase();
+  const isAuditedChange = ['ROUTE_CHANGE', 'DESTINATION_CHANGE', 'DRIVER_CHANGE'].includes(auditType)
+    || /^Auditoria de rota:/i.test(String(activity?.message || ''));
+  if (!isAuditedChange) return null;
+
+  // New route audits include an immutable actor snapshot.  Some records that
+  // were already saved before that change only have userName, so keep it as a
+  // read-only fallback: the team can still identify who made the change in
+  // the dashboard instead of seeing an anonymous audit line.
+  const name = auditText(firstAuditValue(activity, 'actorName', 'userName') || firstAuditValue(audit, 'actorName', 'userName'), '');
+  if (!name) return null;
+
+  return {
+    name,
+    username: auditText(firstAuditValue(activity, 'actorUsername', 'username') || firstAuditValue(audit, 'actorUsername', 'username'), ''),
+    role: auditText(firstAuditValue(activity, 'actorRole') || firstAuditValue(audit, 'actorRole'), '')
+  };
+}
+
+function RecentActivityItem({ activity }) {
+  const actor = recentAuditActor(activity);
+  return <div className={classNames('activity', actor && 'activity-audited')}>
+    <span className="activity-icon"><FileClock size={15} /></span>
+    <div className="activity-copy">
+      <p className="activity-message">{activity.message || 'Movimentação registrada.'}</p>
+      {actor && <p className="activity-actor"><span>Alterado por:</span> <strong>{actor.name}</strong>{actor.username && <span> · @{actor.username}</span>}{actor.role && <span> · {roleLabel(actor.role)}</span>}</p>}
+    </div>
+    <time className="activity-time" dateTime={activity.at}>{time(activity.at)}</time>
+  </div>;
+}
+
 function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onCreateTransfer, onTransferAction, setPage }) {
   const canManageTourQuantities = can(user, 'MANAGE_TOUR_QUANTITIES');
   const canManageTransfers = can(user, 'MANAGE_TRANSFERS');
@@ -515,7 +548,7 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
       <div className="panel gallery-panel"><div className="panel-heading"><div><h2>Na Galeria</h2><p>{galleryTours.length} grupos aguardando destino</p></div>{canAccessPage(user, 'gallery') && <button className="text-button" onClick={() => setPage('gallery')}>Ver todos</button>}</div><div className="gallery-list">{galleryTours.length ? galleryTours.map((tour) => { const name = consultantName(tour); return <div className="gallery-row" key={tour.id}><Avatar name={name} color="purple" /><div><strong>{tour.groupName}</strong><span>{name !== 'Sem consultor' && `Consultor: ${name} · `}{tour.people || '—'} pessoas · aguardando destino</span></div><StatusPill status={tour.status} /></div>; }) : <div className="empty-state">Galeria sem grupos no momento.</div>}</div></div></section>
     <section className="dashboard-columns bottom-columns"><div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando na Casa</h2><p>Fila de transporte prioritária</p></div>{canAccessPage(user, 'home') && <button className="text-button" onClick={() => setPage('home')}>Ver todos</button>}</div><Queue items={houseTours} data={data} /></div>
       <div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando destino final</h2><p>Chegaram à Galeria</p></div>{canAccessPage(user, 'destinations') && <button className="text-button" onClick={() => setPage('destinations')}>Ver todos</button>}</div><Queue items={destTours} data={data} destinations /></div>
-      <div className="panel activity-panel"><div className="panel-heading"><div><h2>Atividade recente</h2><p>Rastreabilidade da operação</p></div></div><div className="activity-list">{data.activities.slice(0, 4).map((activity) => <div className="activity" key={activity.id}><span className="activity-icon"><FileClock size={15} /></span><p>{activity.message}<small>{time(activity.at)}</small></p></div>)}</div></div></section>
+      <div className="panel activity-panel"><div className="panel-heading"><div><h2>Atividade recente</h2><p>Rastreabilidade da operação</p></div></div><div className="activity-list">{(data.activities || []).slice(0, 4).map((activity) => <RecentActivityItem activity={activity} key={activity.id} />)}</div></div></section>
     <section className="panel drivers-panel"><div className="panel-heading"><div><h2>Status dos motoristas</h2><p>Disponibilidade, saídas e buscas na Casa</p></div>{canAccessPage(user, 'drivers') && <button className="text-button" onClick={() => setPage('drivers')}>Ver todos</button>}</div><div className="driver-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</div></section>
   </>;
 }

@@ -1878,7 +1878,7 @@ def dashboard_readonly_data(db: dict[str, Any], settings: dict[str, Any]) -> dic
         "hostessAvailable", "lastActivity",
     }
     activity_fields = {
-        "id", "at", "userName", "actorName", "actorRole", "tourId", "transferId",
+        "id", "at", "userName", "actorName", "actorUsername", "actorRole", "tourId", "transferId",
         "message", "previous", "next", "audit",
     }
     return {

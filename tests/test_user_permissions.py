@@ -132,12 +132,31 @@ class UserPermissionsApiTest(unittest.TestCase):
         return self.client.open(path, method=method, headers=headers, **kwargs)
 
     def test_dashboard_only_permission_allows_bootstrap_but_blocks_writes(self) -> None:
+        self.database["activities"] = [{
+            "id": "act_route_1",
+            "at": "2026-09-03T12:03:00+00:00",
+            "userName": "Outro Motorista",
+            "actorUserId": "user_outsider",
+            "actorName": "Outro Motorista",
+            "actorUsername": "outro.motorista",
+            "actorRole": tour_app.ROLE_DRIVER,
+            "tourId": "tour_1",
+            "message": "Auditoria de rota: Tour 1 mudou de Na Casa para A caminho da Galeria.",
+            "previous": tour_app.STATE_HOME,
+            "next": tour_app.STATE_IN_TOUR,
+            "audit": {"type": "ROUTE_CHANGE"},
+        }]
         bootstrap = self._request("token-viewer", "GET", "/api/bootstrap")
         self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
         payload = bootstrap.get_json()
         self.assertEqual(payload["user"]["permissions"], [tour_app.PERMISSION_VIEW_DASHBOARD])
         self.assertIn("tours", payload["data"])
         self.assertIn("drivers", payload["data"])
+        dashboard_activity = payload["data"]["activities"][0]
+        self.assertEqual(dashboard_activity["actorName"], "Outro Motorista")
+        self.assertEqual(dashboard_activity["actorUsername"], "outro.motorista")
+        self.assertEqual(dashboard_activity["actorRole"], tour_app.ROLE_DRIVER)
+        self.assertNotIn("actorUserId", dashboard_activity)
         catalog_keys = {item["key"] for item in payload["permissionsCatalog"]}
         self.assertIn(tour_app.PERMISSION_VIEW_DASHBOARD, catalog_keys)
 
