@@ -95,6 +95,29 @@ function dateLabel() {
   return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
 }
 
+function activityDateLabel(value) {
+  const parsed = new Date(value);
+  if (!value || Number.isNaN(parsed.getTime())) return 'Data não informada';
+  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(parsed);
+}
+
+function firstAuditValue(audit, ...keys) {
+  return keys.map((key) => audit?.[key]).find((value) => value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0));
+}
+
+function auditText(value, fallback = 'Não informado') {
+  const items = Array.isArray(value) ? value : [value];
+  const text = items.map((item) => {
+    if (item && typeof item === 'object') return item.name || item.label || item.username || '';
+    return item;
+  }).filter(Boolean).join(', ');
+  return text || fallback;
+}
+
+function roleLabel(role) {
+  return ({ ADMIN: 'Administrador', MOTORISTA: 'Motorista', HOSTESS: 'Hostess', CONCIERGE: 'Concierge' })[role] || role || '';
+}
+
 function urlBase64ToUint8Array(value) {
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
   const base64 = `${value}${padding}`.replace(/-/g, '+').replace(/_/g, '/');
@@ -200,7 +223,7 @@ function MetricCard({ icon: Icon, color, title, count, sub }) {
   return <article className="metric-card"><div className={classNames('metric-icon', `metric-${color}`)}><Icon size={29} /></div><div className="metric-copy"><small>{title}</small><div><strong>{count}</strong><span>{sub}</span></div></div></article>;
 }
 
-function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum grupo nesta etapa.' }) {
+function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenhum grupo nesta etapa.' }) {
   const toursClosed = Boolean(data.operationSettings?.toursClosed);
   const consultant = (tour) => tour.consultantName || data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
   const driverDetails = (tour) => {
@@ -223,15 +246,26 @@ function TourTable({ tours, data, onAction, compact = false, empty = 'Nenhum gru
     if (tour.status === 'EM_DESTINO_FINAL') return 'complete-destination';
     return null;
   };
+  const driverCanOperate = (tour, action) => {
+    if (user?.role !== 'MOTORISTA') return true;
+    const ownDriverId = user.driverId;
+    if (!ownDriverId) return false;
+    const ownAllocation = (tour.allocations || []).find((allocation) => allocation.driverId === ownDriverId);
+    if (['DISPONIVEL', 'AGUARDANDO_CASA', 'AGUARDANDO_DESTINO'].includes(tour.status)) return true;
+    if (tour.status === 'NA_CASA') return ownAllocation?.homeDecision === 'AGUARDOU_NA_CASA';
+    if (action === 'arrived-home') return Boolean(ownAllocation && !ownAllocation.homeDecision);
+    return Boolean(ownAllocation);
+  };
   if (!tours.length) return <div className="empty-state">{empty}</div>;
   return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour); const driverInfo = driverDetails(tour);
+    const canOperate = driverCanOperate(tour, action);
     const team = consultantName !== 'Sem consultor' && driverInfo.active !== '—' ? `${consultantName} com ${driverInfo.active}` : '';
     const isOnInitialRoute = tour.status === 'EM_TOUR' && tour.phase !== 'Casa → Galeria' && !(tour.allocations || []).some((allocation) => allocation.homeDecision);
     const canCorrectToHome = tour.status === 'EM_TOUR' && tour.phase === 'Casa → Galeria';
     const canChangeDestination = tour.status === 'EM_DESTINO_FINAL';
     const canWithdraw = tour.status === 'DISPONIVEL';
-    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Ola não definida'} · {tour.scheduledTime || '—'}</small>{consultantName !== 'Sem consultor' && <small className="mobile-consultant">Consultor: {consultantName}</small>}{team && <small className="tour-team">{team}</small>}{tour.selfGuide && <small className="self-guide">Self Gen</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{isOnInitialRoute && <button className="mini-action secondary" onClick={() => onAction(tour, 'deliver-gallery')}>Chegou direto à Galeria</button>}{canCorrectToHome && <button className="mini-action secondary" onClick={() => onAction(tour, 'correct-to-home')}>{actionMeta['correct-to-home'].label}</button>}{tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Trocar motoristas</button>}{canChangeDestination && <button className="mini-action secondary" onClick={() => onAction(tour, 'change-destination')}>{actionMeta['change-destination'].label}</button>}{canWithdraw && <button className="mini-action danger-mini" onClick={() => onAction(tour, 'withdraw')}>Desistência</button>}{action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Ola não definida'} · {tour.scheduledTime || '—'}</small>{consultantName !== 'Sem consultor' && <small className="mobile-consultant">Consultor: {consultantName}</small>}{team && <small className="tour-team">{team}</small>}{tour.selfGuide && <small className="self-guide">Self Gen</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{canOperate && isOnInitialRoute && <button className="mini-action secondary" onClick={() => onAction(tour, 'deliver-gallery')}>Chegou direto à Galeria</button>}{canOperate && canCorrectToHome && <button className="mini-action secondary" onClick={() => onAction(tour, 'correct-to-home')}>{actionMeta['correct-to-home'].label}</button>}{canOperate && tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Trocar motoristas</button>}{canOperate && canChangeDestination && <button className="mini-action secondary" onClick={() => onAction(tour, 'change-destination')}>{actionMeta['change-destination'].label}</button>}{canOperate && canWithdraw && <button className="mini-action danger-mini" onClick={() => onAction(tour, 'withdraw')}>Desistência</button>}{canOperate && action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -331,7 +365,7 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
     </section>
     <Flow counts={metrics} />
     <section className="panel transfers-dashboard"><div className="panel-heading"><div><h2>Convites: Waves Bahia → Praia do Forte</h2><p>{settings.conciergePanelClosed ? 'Percurso Waves suspenso pelo fechamento de hotel.' : '07:50 para a 1ª Ola (09:00) · 09:50 para a 2ª Ola (11:00)'}</p></div>{admin && <div className="heading-actions">{!settings.conciergePanelClosed && <button className="text-button" onClick={onCreateTransfer}>Novo convite</button>}<button className="text-button" onClick={() => setPage('transfers')}>Ver todos</button></div>}</div><TransferTable transfers={transfers.slice(0, 3)} onAction={onTransferAction} user={user} settings={settings} /></section>
-    <section className="dashboard-columns main-columns"><div className="panel"><div className="panel-heading"><div><h2>Tours em andamento</h2><p>Grupos em deslocamento e em etapas ativas</p></div><button className="text-button" onClick={() => setPage('tours')}>Ver todos</button></div><TourTable tours={activeTours} data={data} onAction={onAction} compact /></div>
+    <section className="dashboard-columns main-columns"><div className="panel"><div className="panel-heading"><div><h2>Tours em andamento</h2><p>Grupos em deslocamento e em etapas ativas</p></div><button className="text-button" onClick={() => setPage('tours')}>Ver todos</button></div><TourTable tours={activeTours} data={data} user={user} onAction={onAction} compact /></div>
       <div className="panel gallery-panel"><div className="panel-heading"><div><h2>Na Galeria</h2><p>{galleryTours.length} grupos aguardando destino</p></div><button className="text-button" onClick={() => setPage('gallery')}>Ver todos</button></div><div className="gallery-list">{galleryTours.length ? galleryTours.map((tour) => { const name = consultantName(tour); return <div className="gallery-row" key={tour.id}><Avatar name={name} color="purple" /><div><strong>{tour.groupName}</strong><span>{name !== 'Sem consultor' && `Consultor: ${name} · `}{tour.people || '—'} pessoas · aguardando destino</span></div><StatusPill status={tour.status} /></div>; }) : <div className="empty-state">Galeria sem grupos no momento.</div>}</div></div></section>
     <section className="dashboard-columns bottom-columns"><div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando na Casa</h2><p>Fila de transporte prioritária</p></div><button className="text-button" onClick={() => setPage('home')}>Ver todos</button></div><Queue items={houseTours} data={data} /></div>
       <div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando destino final</h2><p>Chegaram à Galeria</p></div><button className="text-button" onClick={() => setPage('destinations')}>Ver todos</button></div><Queue items={destTours} data={data} destinations /></div>
@@ -421,7 +455,7 @@ function OperationalPage({ page, data, user, onAction, onCreate }) {
     home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
     destinations: { title: 'Destinos finais', description: 'Grupos que chegaram à Galeria e aguardam ou seguem para o destino final.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
   }[page];
-  return <><OperationRestriction settings={settings} /><SectionHeader {...options} action={user.role === 'ADMIN' && page === 'prestige' ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} onAction={onAction} /></section></>;
+  return <><OperationRestriction settings={settings} /><SectionHeader {...options} action={user.role === 'ADMIN' && page === 'prestige' ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} user={user} onAction={onAction} /></section></>;
 }
 
 function TransfersPage({ data, user, onCreate, onAction }) {
@@ -440,9 +474,9 @@ function ConciergeClosedPage({ data }) {
   return <section className="restricted"><Route size={35} /><h1>Sem percurso Waves no período</h1><p>{closedHotels ? `${closedHotels} está fechado. O painel do Concierge volta automaticamente quando o período terminar.` : 'O painel do Concierge está indisponível enquanto não houver percurso Waves.'}</p></section>;
 }
 
-function GalleryPage({ data, onAction }) {
+function GalleryPage({ data, user, onAction }) {
   const tours = data.tours.filter((tour) => tour.status === 'AGUARDANDO_DESTINO');
-  return <><SectionHeader title="Galeria" description="Ao chegar à Galeria, o grupo aguarda diretamente o destino final. Não há etapa de apresentação." /><section className="gallery-summary"><article><Image /><div><small>GRUPOS NA GALERIA</small><strong>{tours.length}</strong></div></article><article><Users /><div><small>AGUARDANDO DESTINO</small><strong>{tours.length}</strong></div></article></section><section className="panel full-panel"><TourTable tours={tours} data={data} onAction={onAction} empty="Nenhum grupo aguardando destino na Galeria." /></section></>;
+  return <><SectionHeader title="Galeria" description="Ao chegar à Galeria, o grupo aguarda diretamente o destino final. Não há etapa de apresentação." /><section className="gallery-summary"><article><Image /><div><small>GRUPOS NA GALERIA</small><strong>{tours.length}</strong></div></article><article><Users /><div><small>AGUARDANDO DESTINO</small><strong>{tours.length}</strong></div></article></section><section className="panel full-panel"><TourTable tours={tours} data={data} user={user} onAction={onAction} empty="Nenhum grupo aguardando destino na Galeria." /></section></>;
 }
 
 function DriverEditorModal({ driver, onClose, token, refresh, notify }) {
@@ -497,7 +531,27 @@ function CartsPage({ data }) {
 }
 
 function HistoryPage({ data }) {
-  return <><SectionHeader title="Histórico e auditoria" description="Todas as movimentações relevantes da operação são registradas aqui." /><section className="panel full-panel"><div className="history-list">{data.activities.map((activity) => <article key={activity.id}><span className="history-mark"><FileClock size={18} /></span><div><h3>{activity.message}</h3><p>{activity.userName} · {new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(activity.at))}</p>{activity.previous && <div className="history-state"><StatusPill status={activity.previous} /><ChevronRight size={14} /><StatusPill status={activity.next} /></div>}</div></article>)}</div></section></>;
+  const activities = data.activities || [];
+  return <><SectionHeader title="Histórico e auditoria" description="Todas as movimentações relevantes da operação são registradas aqui." /><section className="panel full-panel"><div className="history-list">{activities.length === 0 ? <div className="empty-state">Nenhuma movimentação registrada nesta operação.</div> : activities.map((activity) => {
+    const audit = activity.audit || {};
+    const auditType = String(audit.type || '').toUpperCase();
+    const routeChange = auditType === 'ROUTE_CHANGE';
+    const driverChange = auditType === 'DRIVER_CHANGE';
+    const audited = routeChange || driverChange;
+    const actorName = firstAuditValue(activity, 'actorName', 'userName') || firstAuditValue(audit, 'actorName', 'userName') || 'Sistema';
+    const actorUsername = firstAuditValue(activity, 'actorUsername', 'username') || firstAuditValue(audit, 'actorUsername', 'username');
+    const actorRole = firstAuditValue(activity, 'actorRole') || firstAuditValue(audit, 'actorRole');
+    const tourName = auditText(firstAuditValue(audit, 'tourName', 'groupName') || firstAuditValue(activity, 'tourName', 'groupName'), 'Tour não informado');
+    const consultantName = auditText(firstAuditValue(audit, 'consultantName') || firstAuditValue(activity, 'consultantName'), 'Sem consultor informado');
+    const affectedDrivers = auditText(firstAuditValue(audit, 'driverNames', 'affectedDrivers', 'drivers'), 'Nenhum motorista informado');
+    const previousRoute = auditText(firstAuditValue(audit, 'from', 'previousRoute', 'before', 'previous', 'previousStatus'), 'Não informado');
+    const nextRoute = auditText(firstAuditValue(audit, 'to', 'nextRoute', 'after', 'next', 'nextStatus'), 'Não informado');
+    const driverName = auditText(firstAuditValue(audit, 'driverName', 'affectedDriverName'), 'Motorista não informado');
+    const previousDriverName = auditText(firstAuditValue(audit, 'previousName'), '');
+    const driverLabel = previousDriverName && previousDriverName !== driverName ? `${previousDriverName} → ${driverName}` : driverName;
+    const title = routeChange ? 'Alteração de rota registrada' : driverChange ? 'Alteração de motorista registrada' : (activity.message || 'Movimentação registrada');
+    return <article className={classNames('history-entry', routeChange && 'history-entry-route-audit', driverChange && 'history-entry-driver-audit')} key={activity.id}><span className="history-mark"><FileClock size={18} /></span><div className="history-copy">{audited && <span className={classNames('history-audit-type', routeChange ? 'history-audit-route-type' : 'history-audit-driver-type')}>{routeChange ? 'ALTERAÇÃO DE ROTA' : 'ALTERAÇÃO MANUAL DE MOTORISTA'}</span>}<h3>{title}</h3>{audited && activity.message && <p className="history-message">{activity.message}</p>}{routeChange && <div className="history-audit-details"><dl className="history-audit-grid"><div><dt>Quem alterou</dt><dd>{actorName}<small>{actorUsername ? `Conta: @${actorUsername}` : 'Conta não informada'}{actorRole && ` · ${roleLabel(actorRole)}`}</small></dd></div><div><dt>Tour</dt><dd>{tourName}<small>Consultor: {consultantName}</small></dd></div><div className="history-audit-wide"><dt>Rota alterada</dt><dd className="history-audit-route"><span>{previousRoute}</span><ChevronRight size={15} /><span>{nextRoute}</span></dd></div><div className="history-audit-wide"><dt>Motoristas afetados</dt><dd>{affectedDrivers}</dd></div></dl></div>}{driverChange && <div className="history-audit-details"><dl className="history-audit-grid"><div><dt>Quem alterou</dt><dd>{actorName}<small>{actorUsername ? `Conta: @${actorUsername}` : 'Conta não informada'}{actorRole && ` · ${roleLabel(actorRole)}`}</small></dd></div><div><dt>Motorista alterado</dt><dd>{driverLabel}</dd></div><div className="history-audit-wide"><dt>Alteração</dt><dd className="history-audit-route"><span>{previousRoute}</span><ChevronRight size={15} /><span>{nextRoute}</span></dd></div></dl></div>}<p className="history-meta">{audited ? `Registrado em ${activityDateLabel(activity.at)}` : `${activity.userName || 'Sistema'} · ${activityDateLabel(activity.at)}`}</p>{!audited && activity.previous && <div className="history-state"><StatusPill status={activity.previous} /><ChevronRight size={14} /><StatusPill status={activity.next} /></div>}</div></article>;
+  })}</div></section></>;
 }
 
 function ReportsPage({ data }) {
@@ -752,7 +806,7 @@ function App() {
     if (activePage === 'dashboard') return <Dashboard data={data} user={user} token={token} refresh={refresh} notify={notify} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
     if (['prestige', 'tours', 'home', 'destinations'].includes(activePage)) return <OperationalPage page={activePage} data={data} user={user} onAction={openAction} onCreate={openCreate} />;
     if (activePage === 'transfers') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
-    if (activePage === 'gallery') return <GalleryPage data={data} onAction={openAction} />;
+    if (activePage === 'gallery') return <GalleryPage data={data} user={user} onAction={openAction} />;
     if (activePage === 'drivers') return <DriversPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (activePage === 'consultants') return <ConsultantsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (activePage === 'carts') return <CartsPage data={data} />;

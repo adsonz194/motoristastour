@@ -60,6 +60,21 @@ STATE_FINAL_DESTINATION = "EM_DESTINO_FINAL"
 STATE_COMPLETE = "CONCLUIDO"
 STATE_WITHDRAWN = "DESISTENCIA"
 TERMINAL_TOUR_STATES = {STATE_COMPLETE, STATE_WITHDRAWN}
+MAX_OPERATION_ACTIVITIES = 1000
+ROUTE_AUDIT_ACTIONS = {
+    "start",
+    "withdraw",
+    "arrived-home",
+    "return-prestige",
+    "pickup-home",
+    "depart-home",
+    "correct-to-home",
+    "join-home",
+    "deliver-gallery",
+    "assign-destination",
+    "change-destination",
+    "complete-destination",
+}
 
 DRIVER_AVAILABLE = "DISPONIVEL"
 DRIVER_IN_TOUR = "EM_TOUR"
@@ -72,6 +87,16 @@ DRIVER_MEDICAL = "ATESTADO"
 # APOIO_HOSTESS is an internal temporary reservation. It is set only when a
 # driver accepts an open Hostess call, never as a regular manual status.
 DRIVER_STATUSES = {DRIVER_AVAILABLE, DRIVER_IN_TOUR, DRIVER_HOME, DRIVER_GALLERY, DRIVER_DESTINATION, DRIVER_LEAVE, DRIVER_MEDICAL}
+DRIVER_STATUS_LABELS = {
+    DRIVER_AVAILABLE: "Disponível",
+    DRIVER_IN_TOUR: "Em tour",
+    DRIVER_HOME: "Na Casa",
+    DRIVER_GALLERY: "Na Galeria",
+    DRIVER_DESTINATION: "No destino final",
+    DRIVER_HOSTESS_SUPPORT: "Em apoio à Hostess",
+    DRIVER_LEAVE: "Folga",
+    DRIVER_MEDICAL: "Atestado",
+}
 CART_PASSENGER_CAPACITY = 5  # Passenger seats; the driver is not counted here.
 CART_GUEST_CAPACITY = 4  # One passenger seat is reserved for the consultant.
 
@@ -850,10 +875,145 @@ def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
     return user
 
 
-def log_activity(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any] | None, previous: str | None, next_state: str | None, message: str, transfer: dict[str, Any] | None = None) -> None:
-    activity = {"id": new_id("act"), "at": timestamp(), "userName": user["name"], "tourId": tour["id"] if tour else None, "transferId": transfer["id"] if transfer else None, "message": message, "previous": previous, "next": next_state}
+def log_activity(
+    db: dict[str, Any],
+    user: dict[str, Any],
+    tour: dict[str, Any] | None,
+    previous: str | None,
+    next_state: str | None,
+    message: str,
+    transfer: dict[str, Any] | None = None,
+    audit: dict[str, Any] | None = None,
+) -> None:
+    """Record a human-readable operation event and its accountable actor.
+
+    Older records only had ``userName``.  Keeping that field preserves the
+    existing UI, while the immutable actor snapshot below makes new route
+    changes attributable even if a user's display name is later edited.
+    """
+    activity = {
+        "id": new_id("act"),
+        "at": timestamp(),
+        "userName": user.get("name", "Sistema"),
+        "actorUserId": user.get("id"),
+        "actorName": user.get("name", "Sistema"),
+        "actorUsername": user.get("username"),
+        "actorRole": user.get("role"),
+        "tourId": tour["id"] if tour else None,
+        "transferId": transfer["id"] if transfer else None,
+        "message": message,
+        "previous": previous,
+        "next": next_state,
+    }
+    if audit:
+        activity["audit"] = audit
     db["activities"].insert(0, activity)
-    del db["activities"][250:]
+    # A busy day can generate more than the old 250 generic events once every
+    # route change is auditable. Retain the entire shift's trace without
+    # letting the single operational state document grow indefinitely.
+    del db["activities"][MAX_OPERATION_ACTIVITIES:]
+
+
+def tour_consultant_name(db: dict[str, Any], tour: dict[str, Any]) -> str | None:
+    """Return the consultant snapshot, including on legacy tour records."""
+    name = str(tour.get("consultantName") or "").strip()
+    if name:
+        return name
+    consultant = next((item for item in db.get("consultants", []) if item.get("id") == tour.get("consultantId")), None)
+    return consultant.get("name") if consultant else None
+
+
+def tour_driver_names(db: dict[str, Any], tour: dict[str, Any]) -> list[str]:
+    """Return allocated drivers in a stable order, ignoring removed records."""
+    drivers_by_id = {item.get("id"): item.get("name") for item in db.get("drivers", [])}
+    names: list[str] = []
+    for allocation in tour.get("allocations", []):
+        name = drivers_by_id.get(allocation.get("driverId"))
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def final_destination_name(db: dict[str, Any], destination_id: Any) -> str | None:
+    destination = next((item for item in db.get("destinations", []) if item.get("id") == destination_id), None)
+    return destination.get("name") if destination else None
+
+
+def driver_availability_label(status: Any, active: bool) -> str:
+    if not active:
+        return "Cadastro inativo"
+    return DRIVER_STATUS_LABELS.get(str(status), str(status or "Status não informado"))
+
+
+def route_label_for_tour(db: dict[str, Any], tour: dict[str, Any]) -> str:
+    """Describe a tour's physical route in language useful to the team."""
+    state = tour.get("status")
+    phase = str(tour.get("phase") or "").strip()
+    if state == STATE_AVAILABLE:
+        return "Disponível no Prestige"
+    if state == STATE_IN_TOUR:
+        if phase == "Casa → Galeria":
+            return "Casa → Galeria"
+        if phase == "Casa":
+            return "Casa (registro em andamento)"
+        return f"Em tour{f' · {phase}' if phase else ''}"
+    if state == STATE_HOME:
+        return "Casa"
+    if state == STATE_WAITING_HOME:
+        return "Casa · aguardando novos motoristas"
+    if state in {STATE_GALLERY, STATE_PRESENTATION, STATE_WAITING_DESTINATION}:
+        return "Galeria · aguardando destino final" if state == STATE_WAITING_DESTINATION else "Galeria"
+    if state == STATE_FINAL_DESTINATION:
+        destination = final_destination_name(db, tour.get("destinationId"))
+        return f"A caminho de {destination}" if destination else "A caminho do destino final"
+    if state == STATE_COMPLETE:
+        return "Destino final concluído"
+    if state == STATE_WITHDRAWN:
+        return "Desistência antes da saída"
+    return phase or str(state or "Rota não informada")
+
+
+def tour_route_snapshot(db: dict[str, Any], tour: dict[str, Any]) -> dict[str, Any]:
+    """Capture the route before/after a request without retaining mutable data."""
+    return {
+        "state": tour.get("status"),
+        "phase": tour.get("phase"),
+        "destinationId": tour.get("destinationId"),
+        "destinationName": final_destination_name(db, tour.get("destinationId")),
+        "routeLabel": route_label_for_tour(db, tour),
+        "consultantName": tour_consultant_name(db, tour),
+        "driverNames": tour_driver_names(db, tour),
+    }
+
+
+def log_tour_route_change(
+    db: dict[str, Any],
+    user: dict[str, Any],
+    tour: dict[str, Any],
+    action: str,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> None:
+    """Create an explicit accountable record for every route-affecting action."""
+    driver_names = list(dict.fromkeys([*before.get("driverNames", []), *after.get("driverNames", [])]))
+    consultant_name = after.get("consultantName") or before.get("consultantName")
+    log_activity(
+        db,
+        user,
+        tour,
+        before.get("state"),
+        after.get("state"),
+        f"Auditoria de rota: {tour.get('groupName', 'Tour')} mudou de {before['routeLabel']} para {after['routeLabel']}.",
+        audit={
+            "type": "ROUTE_CHANGE",
+            "action": action,
+            "tourName": tour.get("groupName", "Tour"),
+            "consultantName": consultant_name,
+            "from": before["routeLabel"],
+            "to": after["routeLabel"],
+            "driverNames": driver_names,
+        },
+    )
 
 
 def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool = False, home_pickup: bool = False) -> None:
@@ -1155,8 +1315,71 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
     return tours
 
 
+def requested_driver_ids(payload: dict[str, Any]) -> set[str]:
+    """Return the driver IDs selected in an action payload, without trusting it."""
+    allocations = payload.get("allocations")
+    if not isinstance(allocations, list):
+        return set()
+    return {
+        str(item.get("driverId"))
+        for item in allocations
+        if isinstance(item, dict) and item.get("driverId")
+    }
+
+
+def require_tour_action_access(user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
+    """Keep drivers from advancing a tour operated by somebody else.
+
+    Administrators may correct any record.  A driver can start or pick up a
+    group only when selecting themself, and can change an active route only
+    when allocated to it.  At Casa the driver must actually be the person who
+    stayed with the family; a driver who already returned to the Prestige
+    cannot move the couple from afar.
+    """
+    if user.get("role") == ROLE_ADMIN:
+        return
+    driver_id = str(user.get("driverId") or "").strip()
+    if not driver_id:
+        raise APIError("Sua conta de motorista não está vinculada a um cadastro operacional.", 403)
+
+    allocation_ids = {
+        str(item.get("driverId"))
+        for item in tour.get("allocations", [])
+        if item.get("driverId")
+    }
+    selected_ids = requested_driver_ids(payload)
+
+    if action == "arrived-home":
+        if str(payload.get("driverId") or "") != driver_id:
+            raise APIError("Cada motorista só pode registrar a própria situação na Casa.", 403)
+        return
+
+    # At the first allocation / pickup / destination call there is no active
+    # driver to match yet. Require the logged-in driver to be in the team.
+    if action in {"start", "pickup-home", "assign-destination"}:
+        if driver_id not in selected_ids:
+            raise APIError("Você só pode assumir um tour quando o seu nome estiver selecionado como motorista.", 403)
+        return
+
+    # These actions physically move a couple that is still at Casa. Only a
+    # driver who remained there may make that decision.
+    if action in {"return-prestige", "depart-home", "join-home"}:
+        driver_at_home = {
+            str(item.get("driverId"))
+            for item in tour.get("allocations", [])
+            if item.get("driverId") and item.get("homeDecision") == "AGUARDOU_NA_CASA"
+        }
+        if driver_id not in driver_at_home:
+            raise APIError("Somente o motorista que está na Casa com a família pode alterar esta rota.", 403)
+        return
+
+    if action in {"correct-to-home", "deliver-gallery", "change-destination", "complete-destination"} and driver_id not in allocation_ids:
+        raise APIError("Somente um motorista vinculado a este tour pode alterar a rota.", 403)
+
+
 def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
     require_operational(user)
+    require_tour_action_access(user, tour, action, payload)
     allocations = lambda: tour.get("allocations", [])
 
     if action == "withdraw":
@@ -1885,6 +2108,9 @@ def update_driver_record(driver_id: str):
         driver = find(db["drivers"], driver_id, "Motorista")
         if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
             raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de alterar seu cadastro.", 409)
+        previous_name = driver["name"]
+        previous_status = driver["status"]
+        previous_active = driver.get("active", True)
         name = str(payload.get("name", driver["name"])).strip()
         status = payload.get("status", driver["status"])
         active = bool(payload["active"]) if "active" in payload else driver.get("active", True)
@@ -1898,7 +2124,25 @@ def update_driver_record(driver_id: str):
         driver.update({"name": name, "active": active, "status": status, "lastActivity": timestamp()})
         if status != DRIVER_AVAILABLE or not active:
             driver["hostessAvailable"] = False
-        log_activity(db, user, None, None, None, f"Motorista {name} atualizado para {status}.")
+        changed = (name, status, active) != (previous_name, previous_status, previous_active)
+        audit = None
+        if changed:
+            audit = {
+                "type": "DRIVER_CHANGE",
+                "driverName": name,
+                "previousName": previous_name,
+                "from": driver_availability_label(previous_status, previous_active),
+                "to": driver_availability_label(status, active),
+            }
+        log_activity(
+            db,
+            user,
+            None,
+            previous_status if changed else None,
+            status if changed else None,
+            f"Motorista {name} atualizado para {driver_availability_label(status, active)}.",
+            audit=audit,
+        )
         save_database(db)
         return jsonify(driver=driver)
 
@@ -1979,7 +2223,14 @@ def tour_action(tour_id: str):
         user = get_current_user(db)
         tour = find(db["tours"], tour_id, "Tour")
         action = payload.get("action", "")
+        before_route = tour_route_snapshot(db, tour)
         apply_action(db, user, tour, action, payload)
+        after_route = tour_route_snapshot(db, tour)
+        if action in ROUTE_AUDIT_ACTIONS and (
+            before_route["routeLabel"] != after_route["routeLabel"]
+            or before_route["destinationId"] != after_route["destinationId"]
+        ):
+            log_tour_route_change(db, user, tour, action, before_route, after_route)
         save_database(db)
         response = jsonify(tour=tour)
     if action == "withdraw":
