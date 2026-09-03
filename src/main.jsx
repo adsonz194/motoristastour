@@ -63,6 +63,155 @@ const NAV = [
 
 const DRIVER_NAV_IDS = new Set(['dashboard', 'prestige', 'tours', 'gallery', 'home', 'destinations', 'drivers']);
 
+// The server is the authority for access. These definitions only keep the UI
+// understandable while an older deployment is still returning role-only users.
+const FALLBACK_PERMISSION_CATALOG = [
+  { code: 'VIEW_DASHBOARD', label: 'Ver Painel Geral', description: 'Apenas visualiza o Painel Geral. Não libera botões, alteração de rota ou cadastros.', group: 'Visualização' },
+  { code: 'VIEW_PRESTIGE', label: 'Ver Prestige', description: 'Visualiza os grupos disponíveis no Prestige.', group: 'Visualização' },
+  { code: 'VIEW_TOURS', label: 'Ver tours em andamento', description: 'Visualiza o andamento dos tours.', group: 'Visualização' },
+  { code: 'VIEW_GALLERY', label: 'Ver Galeria', description: 'Visualiza grupos na Galeria.', group: 'Visualização' },
+  { code: 'VIEW_HOME', label: 'Ver Casa', description: 'Visualiza grupos que aguardam na Casa.', group: 'Visualização' },
+  { code: 'VIEW_DESTINATIONS', label: 'Ver destinos finais', description: 'Visualiza os destinos finais dos grupos.', group: 'Visualização' },
+  { code: 'VIEW_TRANSFERS', label: 'Ver convites Waves', description: 'Visualiza os convites e traslados Waves.', group: 'Visualização' },
+  { code: 'VIEW_DRIVERS', label: 'Ver motoristas', description: 'Visualiza status e disponibilidade dos motoristas.', group: 'Visualização' },
+  { code: 'VIEW_CONSULTANTS', label: 'Ver consultores', description: 'Visualiza os consultores cadastrados.', group: 'Visualização' },
+  { code: 'VIEW_CARTS', label: 'Ver carrinhos', description: 'Visualiza os carrinhos cadastrados.', group: 'Visualização' },
+  { code: 'VIEW_HISTORY', label: 'Ver histórico', description: 'Visualiza o histórico e a auditoria da operação.', group: 'Visualização' },
+  { code: 'VIEW_REPORTS', label: 'Ver relatórios', description: 'Visualiza os indicadores e relatórios.', group: 'Visualização' },
+  { code: 'CHECK_IN', label: 'Fazer check-in', description: 'Registra presença de trabalho no dia.', group: 'Operação' },
+  { code: 'MANAGE_TOUR_QUANTITIES', label: 'Registrar quantidades de tours', description: 'Registra as quantidades de tours e Self Gen por Ola.', group: 'Operação' },
+  { code: 'MANAGE_TOURS', label: 'Operar tours', description: 'Inicia tours e atualiza etapas, rotas e destinos.', group: 'Operação' },
+  { code: 'MANAGE_TRANSFERS', label: 'Gerenciar convites Waves', description: 'Cadastra, atualiza e registra desistências dos convites Waves.', group: 'Operação' },
+  { code: 'REQUEST_HOSTESS_CAR', label: 'Solicitar carro para Hostess', description: 'Abre e encerra solicitação de carro para a Hostess.', group: 'Operação' },
+  { code: 'MANAGE_HOSTESS_SUPPORT', label: 'Atender chamado da Hostess', description: 'Permite assumir e encerrar apoio a uma solicitação da Hostess.', group: 'Operação' },
+  { code: 'MANAGE_DRIVERS', label: 'Gerenciar motoristas', description: 'Cria, edita e exclui motoristas.', group: 'Cadastros e administração' },
+  { code: 'MANAGE_CONSULTANTS', label: 'Gerenciar consultores', description: 'Cria, edita e exclui consultores.', group: 'Cadastros e administração' },
+  { code: 'MANAGE_USERS', label: 'Gerenciar usuários', description: 'Cria, altera permissões e exclui usuários.', group: 'Cadastros e administração' },
+  { code: 'MANAGE_SETTINGS', label: 'Gerenciar configurações', description: 'Altera o Prestige de saída, fechamentos e zera a operação.', group: 'Cadastros e administração' }
+];
+
+const ROLE_DEFAULT_PERMISSIONS = {
+  ADMIN: FALLBACK_PERMISSION_CATALOG.map((item) => item.code),
+  MOTORISTA: ['VIEW_DASHBOARD', 'VIEW_PRESTIGE', 'VIEW_TOURS', 'VIEW_GALLERY', 'VIEW_HOME', 'VIEW_DESTINATIONS', 'VIEW_DRIVERS', 'CHECK_IN', 'MANAGE_TOURS', 'MANAGE_HOSTESS_SUPPORT'],
+  HOSTESS: ['VIEW_DASHBOARD', 'CHECK_IN', 'MANAGE_TOUR_QUANTITIES', 'REQUEST_HOSTESS_CAR'],
+  CONCIERGE: ['VIEW_TRANSFERS', 'MANAGE_TRANSFERS'],
+  VISUALIZADOR: ['VIEW_DASHBOARD']
+};
+
+function normalizedPermissionCode(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+function compactPermissionCode(value) {
+  return normalizedPermissionCode(value).replace(/_/g, '');
+}
+
+function permissionCodes(value) {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value.flatMap((item) => permissionCodes(item));
+  if (typeof value === 'string') return [normalizedPermissionCode(value)].filter(Boolean);
+  if (typeof value === 'object') {
+    const directCode = value.code || value.id || value.permission || value.name;
+    if (directCode) return [normalizedPermissionCode(directCode)].filter(Boolean);
+    return Object.entries(value).flatMap(([key, enabled]) => enabled ? [normalizedPermissionCode(key)] : []);
+  }
+  return [];
+}
+
+function hasPermissionModel(user) {
+  return Boolean(user && ['effectivePermissions', 'permissions', 'capabilities'].some((key) => Object.prototype.hasOwnProperty.call(user, key)));
+}
+
+function effectivePermissionCodes(user) {
+  if (!user) return [];
+  if (Object.prototype.hasOwnProperty.call(user, 'effectivePermissions')) return permissionCodes(user.effectivePermissions);
+  if (Object.prototype.hasOwnProperty.call(user, 'capabilities')) return permissionCodes(user.capabilities);
+  return permissionCodes(user.permissions);
+}
+
+function legacyCan(user, permission) {
+  const role = user?.role;
+  if (role === 'ADMIN') return true;
+  if (permission === 'VIEW_DASHBOARD') return ['MOTORISTA', 'HOSTESS'].includes(role);
+  if (['VIEW_PRESTIGE', 'VIEW_TOURS', 'VIEW_GALLERY', 'VIEW_HOME', 'VIEW_DESTINATIONS', 'VIEW_DRIVERS'].includes(permission)) return role === 'MOTORISTA';
+  if (permission === 'VIEW_TRANSFERS') return role === 'CONCIERGE';
+  if (permission === 'CHECK_IN') return ['MOTORISTA', 'HOSTESS'].includes(role);
+  if (permission === 'MANAGE_TOUR_QUANTITIES' || permission === 'REQUEST_HOSTESS_CAR') return role === 'HOSTESS';
+  if (permission === 'MANAGE_TOURS' || permission === 'MANAGE_HOSTESS_SUPPORT') return role === 'MOTORISTA';
+  if (permission === 'MANAGE_TRANSFERS') return role === 'CONCIERGE';
+  return false;
+}
+
+function can(user, permission) {
+  const wanted = normalizedPermissionCode(permission);
+  if (!wanted) return false;
+  if (!hasPermissionModel(user)) return legacyCan(user, wanted);
+  const granted = effectivePermissionCodes(user);
+  const wantedCompact = compactPermissionCode(wanted);
+  return granted.some((item) => {
+    const code = normalizedPermissionCode(item);
+    return code === '*' || code === wanted || compactPermissionCode(code) === wantedCompact;
+  });
+}
+
+function canAny(user, permissions) {
+  return permissions.some((permission) => can(user, permission));
+}
+
+function canAccessPage(user, page) {
+  const permissions = {
+    dashboard: ['VIEW_DASHBOARD'],
+    prestige: ['VIEW_PRESTIGE', 'MANAGE_TOURS'],
+    tours: ['VIEW_TOURS', 'MANAGE_TOURS'],
+    gallery: ['VIEW_GALLERY', 'MANAGE_TOURS'],
+    home: ['VIEW_HOME', 'MANAGE_TOURS'],
+    destinations: ['VIEW_DESTINATIONS', 'MANAGE_TOURS'],
+    transfers: ['VIEW_TRANSFERS', 'MANAGE_TRANSFERS'],
+    drivers: ['VIEW_DRIVERS', 'MANAGE_DRIVERS'],
+    consultants: ['VIEW_CONSULTANTS', 'MANAGE_CONSULTANTS'],
+    carts: ['VIEW_CARTS'],
+    history: ['VIEW_HISTORY'],
+    reports: ['VIEW_REPORTS'],
+    settings: ['MANAGE_USERS', 'MANAGE_SETTINGS']
+  };
+  return canAny(user, permissions[page] || []);
+}
+
+function firstAccessiblePage(user) {
+  return NAV.find((item) => canAccessPage(user, item.id))?.id || '';
+}
+
+function permissionCatalog(dataOrCatalog) {
+  const source = Array.isArray(dataOrCatalog)
+    ? dataOrCatalog
+    : dataOrCatalog?.permissionCatalog || dataOrCatalog?.permissionsCatalog || dataOrCatalog?.access?.permissionCatalog || [];
+  const fallbackByCode = new Map(FALLBACK_PERMISSION_CATALOG.map((item) => [item.code, item]));
+  const entries = (Array.isArray(source) ? source : []).map((item) => {
+    const code = normalizedPermissionCode(typeof item === 'string' ? item : item?.code || item?.key || item?.id || item?.permission);
+    if (!code) return null;
+    const fallback = fallbackByCode.get(code) || {};
+    return {
+      code,
+      label: item?.label || item?.name || fallback.label || code.replace(/_/g, ' '),
+      description: item?.description || fallback.description || 'Permite acessar esta função.',
+      group: item?.group || item?.category || fallback.group || 'Outras permissões'
+    };
+  }).filter(Boolean);
+  return entries.length ? entries : FALLBACK_PERMISSION_CATALOG;
+}
+
+function defaultPermissionsForRole(role, catalog = FALLBACK_PERMISSION_CATALOG) {
+  const validCodes = new Set(catalog.map((item) => normalizedPermissionCode(item.code)));
+  return (ROLE_DEFAULT_PERMISSIONS[role] || []).filter((code) => validCodes.has(code));
+}
+
+function accountPermissions(account) {
+  if (!account) return null;
+  if (Object.prototype.hasOwnProperty.call(account, 'permissions')) return permissionCodes(account.permissions);
+  if (Object.prototype.hasOwnProperty.call(account, 'effectivePermissions')) return permissionCodes(account.effectivePermissions);
+  return null;
+}
+
 const actionMeta = {
   start: { title: 'Iniciar tour', text: 'Selecione os motoristas para registrar a saída do Prestige. Um carrinho disponível será reservado automaticamente para cada motorista.', label: 'Iniciar tour', allocations: true },
   withdraw: { title: 'Registrar desistência', text: 'Confirme que este tour foi cancelado antes da saída. Ele sairá da lista de disponíveis, continuará registrado no histórico e não poderá ser iniciado.', label: 'Desistência', danger: true },
@@ -115,7 +264,7 @@ function auditText(value, fallback = 'Não informado') {
 }
 
 function roleLabel(role) {
-  return ({ ADMIN: 'Administrador', MOTORISTA: 'Motorista', HOSTESS: 'Hostess', CONCIERGE: 'Concierge' })[role] || role || '';
+  return ({ ADMIN: 'Administrador', MOTORISTA: 'Motorista', HOSTESS: 'Hostess', CONCIERGE: 'Concierge', VISUALIZADOR: 'Somente visualização' })[role] || role || '';
 }
 
 function urlBase64ToUint8Array(value) {
@@ -187,15 +336,17 @@ function Login({ onLogin }) {
   </main>;
 }
 
+function availableNavItems(user, operationSettings) {
+  return NAV.filter((item) => {
+    if (!canAccessPage(user, item.id)) return false;
+    if (item.id === 'transfers' && user.role === 'CONCIERGE' && operationSettings?.conciergePanelClosed) return false;
+    return true;
+  });
+}
+
 function Sidebar({ user, page, setPage, signOut, open, setOpen, operationSettings }) {
   const departureLabel = operationSettings?.departureLabel || 'Prestige Waves Bahia';
-  const nav = user.role === 'HOSTESS'
-    ? NAV.filter((item) => item.id === 'dashboard')
-    : user.role === 'CONCIERGE'
-      ? operationSettings?.conciergePanelClosed ? [] : NAV.filter((item) => item.id === 'transfers')
-      : user.role === 'MOTORISTA'
-        ? NAV.filter((item) => DRIVER_NAV_IDS.has(item.id))
-        : NAV.filter((item) => !item.admin || user.role === 'ADMIN');
+  const nav = availableNavItems(user, operationSettings);
   return <aside className={classNames('sidebar', open && 'sidebar-open')}>
     <div className="sidebar-top"><Logo /><button className="sidebar-close" onClick={() => setOpen(false)} aria-label="Fechar menu"><X /></button></div>
     <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setPage(id); setOpen(false); }} className={classNames('nav-item', page === id && 'nav-active')}><Icon size={19} /><span>{id === 'prestige' ? departureLabel : label}</span></button>)}</nav>
@@ -204,17 +355,19 @@ function Sidebar({ user, page, setPage, signOut, open, setOpen, operationSetting
 }
 
 function MobileNav({ page, setPage, user, operationSettings }) {
-  const driver = user.role === 'MOTORISTA';
-  const hostess = user.role === 'HOSTESS';
-  const items = hostess ? NAV.filter((item) => item.id === 'dashboard') : driver ? NAV.filter((item) => ['dashboard', 'prestige', 'tours', 'home', 'gallery'].includes(item.id)) : NAV.slice(0, 4);
+  const permitted = availableNavItems(user, operationSettings);
+  const items = permitted.slice(0, 4);
+  const showMore = permitted.length > items.length && canAccessPage(user, 'settings');
   const departureLabel = operationSettings?.departureLabel || 'Prestige Waves Bahia';
-  return <nav className={classNames('mobile-nav', hostess && 'mobile-nav-single')}>{items.map(({ id, label, icon: Icon }) => { const itemLabel = id === 'prestige' ? departureLabel : label; return <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : id === 'prestige' ? departureLabel.includes('Selection') ? 'Selection' : 'Bahia' : itemLabel.split(' ')[0]}</span></button>; })}{!driver && !hostess && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
+  const count = Math.max(1, items.length + (showMore ? 1 : 0));
+  if (!items.length && !showMore) return null;
+  return <nav className={classNames('mobile-nav', count === 1 && 'mobile-nav-single')} style={{ gridTemplateColumns: `repeat(${count}, 1fr)` }}>{items.map(({ id, label, icon: Icon }) => { const itemLabel = id === 'prestige' ? departureLabel : label; return <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : id === 'prestige' ? departureLabel.includes('Selection') ? 'Selection' : 'Bahia' : itemLabel.split(' ')[0]}</span></button>; })}{showMore && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
 }
 
 function Topbar({ user, setMenuOpen, notificationPermission, onNotifications }) {
   const [clock, setClock] = useState(time(new Date()));
   useEffect(() => { const timer = setInterval(() => setClock(time(new Date())), 30000); return () => clearInterval(timer); }, []);
-  const role = user.role === 'ADMIN' ? 'Administrador' : user.role === 'MOTORISTA' ? 'Motorista' : user.role === 'HOSTESS' ? 'Hostess' : 'Concierge';
+  const role = roleLabel(user.role);
   const notificationLabel = notificationPermission === 'granted' ? 'Notificações push ativas. Toque para enviar um teste.' : notificationPermission === 'denied' ? 'Notificações bloqueadas no navegador.' : 'Ativar notificações push neste aparelho';
   return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className={classNames('bell', notificationPermission === 'granted' && 'bell-enabled')} onClick={onNotifications} aria-label={notificationLabel} title={notificationLabel}><Bell size={20} /><span className="bell-status" aria-hidden="true" /></button><div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
 }
@@ -259,7 +412,9 @@ function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenh
   if (!tours.length) return <div className="empty-state">{empty}</div>;
   return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour); const driverInfo = driverDetails(tour);
-    const canOperate = driverCanOperate(tour, action);
+    // Viewing a tour never grants operational actions. In particular,
+    // VIEW_DASHBOARD is intentionally read-only.
+    const canOperate = can(user, 'MANAGE_TOURS') && driverCanOperate(tour, action);
     const team = consultantName !== 'Sem consultor' && driverInfo.active !== '—' ? `${consultantName} com ${driverInfo.active}` : '';
     const isOnInitialRoute = tour.status === 'EM_TOUR' && tour.phase !== 'Casa → Galeria' && !(tour.allocations || []).some((allocation) => allocation.homeDecision);
     const canCorrectToHome = tour.status === 'EM_TOUR' && tour.phase === 'Casa → Galeria';
@@ -272,8 +427,9 @@ function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenh
 function TransferTable({ transfers, onAction, user, settings = {}, empty = 'Nenhum convite agendado para hoje.' }) {
   if (!transfers.length) return <div className="empty-state">{empty}</div>;
   return <div className="table-wrap transfer-table"><table><thead><tr><th>Horário</th><th>Ola do tour</th><th>Grupo / Convidados</th><th>Pessoas</th><th>Concierge</th><th>Trajeto</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{transfers.map((transfer) => {
-    const next = user?.role === 'ADMIN' ? transfer.status === 'AGENDADO' ? settings.conciergePanelClosed ? null : 'start' : transfer.status === 'EM_DESLOCAMENTO' ? 'arrive' : null : null;
-    const canWithdraw = transfer.status === 'AGENDADO' && (user?.role === 'CONCIERGE' || user?.role === 'ADMIN');
+    const canManageTransfers = can(user, 'MANAGE_TRANSFERS');
+    const next = canManageTransfers && user?.role !== 'CONCIERGE' ? transfer.status === 'AGENDADO' ? settings.conciergePanelClosed ? null : 'start' : transfer.status === 'EM_DESLOCAMENTO' ? 'arrive' : null : null;
+    const canWithdraw = canManageTransfers && transfer.status === 'AGENDADO' && (user?.role === 'CONCIERGE' || user?.role === 'ADMIN');
     return <tr key={transfer.id}><td><strong>{transfer.scheduledTime}</strong></td><td><span className="wave-badge">{WAVES[transfer.wave]?.label || transfer.wave}<small>Tour {transfer.tourStartTime}</small></span></td><td><strong>{transfer.groupName}</strong></td><td>{transfer.people}</td><td>{transfer.conciergeName}</td><td><span className="route-copy">Waves Bahia <ChevronRight size={13} /> Praia do Forte</span></td><td><TransferStatusPill status={transfer.status} /></td><td className="actions-cell">{next && <button className="mini-action" onClick={() => onAction(transfer, next)}>{next === 'start' ? 'Iniciar traslado' : 'Confirmar chegada'}</button>}{canWithdraw && <button className="mini-action danger-mini" onClick={() => onAction(transfer, 'withdraw')}>Desistência</button>}</td></tr>;
   })}</tbody></table></div>;
 }
@@ -334,7 +490,9 @@ function CheckInCard({ data, user, token, refresh, notify }) {
 }
 
 function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onCreateTransfer, onTransferAction, setPage }) {
-  const admin = user.role === 'ADMIN';
+  const canManageTourQuantities = can(user, 'MANAGE_TOUR_QUANTITIES');
+  const canManageTransfers = can(user, 'MANAGE_TRANSFERS');
+  const canViewTransfers = canAccessPage(user, 'transfers');
   const tours = data.tours || [];
   const transfers = data.transfers || [];
   const settings = data.operationSettings || {};
@@ -348,13 +506,10 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
   const houseTours = tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status));
   const destTours = tours.filter((tour) => tour.status === 'AGUARDANDO_DESTINO');
   const consultantName = (tour) => tour.consultantName || data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
-  const checkIn = user.role === 'HOSTESS' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />;
-  if (user.role === 'HOSTESS') return <>{checkIn}<HostessDashboard tours={tours} token={token} refresh={refresh} notify={notify} /></>;
   return <>
-    {checkIn}
     <OperationRestriction settings={settings} />
-    {user.role === 'MOTORISTA' && <DriverHostessAvailability data={data} user={user} token={token} refresh={refresh} notify={notify} />}
-    <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria. Saída atual: {settings.departureLabel || 'Prestige Waves Bahia'}.</p></div>{admin && <button className="button button-primary" onClick={onCreate}><Plus size={18} /> Quantidades de tours</button>}</section>
+    {user.role === 'MOTORISTA' && can(user, 'MANAGE_HOSTESS_SUPPORT') && <DriverHostessAvailability data={data} user={user} token={token} refresh={refresh} notify={notify} />}
+    <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria. Saída atual: {settings.departureLabel || 'Prestige Waves Bahia'}.</p></div>{canManageTourQuantities && <button className="button button-primary" onClick={onCreate}><Plus size={18} /> Quantidades de tours</button>}</section>
     <section className="metrics-grid">
       <MetricCard icon={Users} color="teal" title="Disponíveis no Prestige" count={metrics.available.length} sub={`${people(metrics.available)} pessoas`} />
       <MetricCard icon={CarFront} color="blue" title="Em tour" count={metrics.enTour.length} sub={`${people(metrics.enTour)} pessoas`} />
@@ -364,13 +519,13 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
       <MetricCard icon={Route} color="teal" title="Convites do Waves" count={transfers.filter((item) => item.status !== 'CHEGOU_PRESTIGE').length} sub={`${transfers.reduce((sum, item) => sum + item.people, 0)} convidados`} />
     </section>
     <Flow counts={metrics} />
-    <section className="panel transfers-dashboard"><div className="panel-heading"><div><h2>Convites: Waves Bahia → Praia do Forte</h2><p>{settings.conciergePanelClosed ? 'Percurso Waves suspenso pelo fechamento de hotel.' : '07:50 para a 1ª Ola (09:00) · 09:50 para a 2ª Ola (11:00)'}</p></div>{admin && <div className="heading-actions">{!settings.conciergePanelClosed && <button className="text-button" onClick={onCreateTransfer}>Novo convite</button>}<button className="text-button" onClick={() => setPage('transfers')}>Ver todos</button></div>}</div><TransferTable transfers={transfers.slice(0, 3)} onAction={onTransferAction} user={user} settings={settings} /></section>
-    <section className="dashboard-columns main-columns"><div className="panel"><div className="panel-heading"><div><h2>Tours em andamento</h2><p>Grupos em deslocamento e em etapas ativas</p></div><button className="text-button" onClick={() => setPage('tours')}>Ver todos</button></div><TourTable tours={activeTours} data={data} user={user} onAction={onAction} compact /></div>
-      <div className="panel gallery-panel"><div className="panel-heading"><div><h2>Na Galeria</h2><p>{galleryTours.length} grupos aguardando destino</p></div><button className="text-button" onClick={() => setPage('gallery')}>Ver todos</button></div><div className="gallery-list">{galleryTours.length ? galleryTours.map((tour) => { const name = consultantName(tour); return <div className="gallery-row" key={tour.id}><Avatar name={name} color="purple" /><div><strong>{tour.groupName}</strong><span>{name !== 'Sem consultor' && `Consultor: ${name} · `}{tour.people || '—'} pessoas · aguardando destino</span></div><StatusPill status={tour.status} /></div>; }) : <div className="empty-state">Galeria sem grupos no momento.</div>}</div></div></section>
-    <section className="dashboard-columns bottom-columns"><div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando na Casa</h2><p>Fila de transporte prioritária</p></div><button className="text-button" onClick={() => setPage('home')}>Ver todos</button></div><Queue items={houseTours} data={data} /></div>
-      <div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando destino final</h2><p>Chegaram à Galeria</p></div><button className="text-button" onClick={() => setPage('destinations')}>Ver todos</button></div><Queue items={destTours} data={data} destinations /></div>
+    <section className="panel transfers-dashboard"><div className="panel-heading"><div><h2>Convites: Waves Bahia → Praia do Forte</h2><p>{settings.conciergePanelClosed ? 'Percurso Waves suspenso pelo fechamento de hotel.' : '07:50 para a 1ª Ola (09:00) · 09:50 para a 2ª Ola (11:00)'}</p></div>{(canManageTransfers || canViewTransfers) && <div className="heading-actions">{canManageTransfers && !settings.conciergePanelClosed && <button className="text-button" onClick={onCreateTransfer}>Novo convite</button>}{canViewTransfers && <button className="text-button" onClick={() => setPage('transfers')}>Ver todos</button>}</div>}</div><TransferTable transfers={transfers.slice(0, 3)} onAction={onTransferAction} user={user} settings={settings} /></section>
+    <section className="dashboard-columns main-columns"><div className="panel"><div className="panel-heading"><div><h2>Tours em andamento</h2><p>Grupos em deslocamento e em etapas ativas</p></div>{canAccessPage(user, 'tours') && <button className="text-button" onClick={() => setPage('tours')}>Ver todos</button>}</div><TourTable tours={activeTours} data={data} user={user} onAction={onAction} compact /></div>
+      <div className="panel gallery-panel"><div className="panel-heading"><div><h2>Na Galeria</h2><p>{galleryTours.length} grupos aguardando destino</p></div>{canAccessPage(user, 'gallery') && <button className="text-button" onClick={() => setPage('gallery')}>Ver todos</button>}</div><div className="gallery-list">{galleryTours.length ? galleryTours.map((tour) => { const name = consultantName(tour); return <div className="gallery-row" key={tour.id}><Avatar name={name} color="purple" /><div><strong>{tour.groupName}</strong><span>{name !== 'Sem consultor' && `Consultor: ${name} · `}{tour.people || '—'} pessoas · aguardando destino</span></div><StatusPill status={tour.status} /></div>; }) : <div className="empty-state">Galeria sem grupos no momento.</div>}</div></div></section>
+    <section className="dashboard-columns bottom-columns"><div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando na Casa</h2><p>Fila de transporte prioritária</p></div>{canAccessPage(user, 'home') && <button className="text-button" onClick={() => setPage('home')}>Ver todos</button>}</div><Queue items={houseTours} data={data} /></div>
+      <div className="panel queue-panel"><div className="panel-heading"><div><h2>Aguardando destino final</h2><p>Chegaram à Galeria</p></div>{canAccessPage(user, 'destinations') && <button className="text-button" onClick={() => setPage('destinations')}>Ver todos</button>}</div><Queue items={destTours} data={data} destinations /></div>
       <div className="panel activity-panel"><div className="panel-heading"><div><h2>Atividade recente</h2><p>Rastreabilidade da operação</p></div></div><div className="activity-list">{data.activities.slice(0, 4).map((activity) => <div className="activity" key={activity.id}><span className="activity-icon"><FileClock size={15} /></span><p>{activity.message}<small>{time(activity.at)}</small></p></div>)}</div></div></section>
-    <section className="panel drivers-panel"><div className="panel-heading"><div><h2>Status dos motoristas</h2><p>Disponibilidade, saídas e buscas na Casa</p></div><button className="text-button" onClick={() => setPage('drivers')}>Ver todos</button></div><div className="driver-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</div></section>
+    <section className="panel drivers-panel"><div className="panel-heading"><div><h2>Status dos motoristas</h2><p>Disponibilidade, saídas e buscas na Casa</p></div>{canAccessPage(user, 'drivers') && <button className="text-button" onClick={() => setPage('drivers')}>Ver todos</button>}</div><div className="driver-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</div></section>
   </>;
 }
 
@@ -393,6 +548,9 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
   const drivers = data.drivers || [];
   const requests = data.hostessRequests || [];
   const settings = data.operationSettings || {};
+  const canCheckIn = can(user, 'CHECK_IN');
+  const canRecordTourQuantities = can(user, 'MANAGE_TOUR_QUANTITIES');
+  const canRequestCar = canAny(user, ['REQUEST_HOSTESS_CAR', 'MANAGE_HOSTESS_SUPPORT']);
   const activeTours = tours.filter((tour) => !['CONCLUIDO', 'DESISTENCIA'].includes(tour.status));
   const totalSelfGuide = activeTours.filter((tour) => tour.selfGuide);
   const normalTours = activeTours.filter((tour) => !tour.selfGuide);
@@ -412,15 +570,15 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
     try { await api(token, `/api/hostess-requests/${ownRequest.id}/close`, { method: 'POST' }); await refresh(); notify('Solicitação de carro encerrada.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setRequestSaving(false); }
   }
   return <>
-    <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />
+    {canCheckIn && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}
     <OperationRestriction settings={settings} />
-    <section className="page-title hostess-title"><div><span>PAINEL GERAL · HOSTESS</span><h1>Painel Geral</h1><p>Visualização da operação. Você registra quantidades e pode solicitar carro.</p></div><button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidades de tours</button></section>
-    <section className="hostess-call"><div><span>SOLICITAÇÃO DE CARRO</span><h2>{ownRequest ? assignedDriverName ? `${assignedDriverName} está em apoio` : 'Carro solicitado' : 'Precisa de um carro?'}</h2><p>{ownRequest ? assignedDriverName ? 'O motorista encerra este chamado ao finalizar o apoio. Se necessário, você também pode encerrá-lo agora.' : 'Aguarde um motorista assumir este chamado. Não é necessário informar hotel, destino ou motorista.' : openRequests.length ? 'Há outro pedido em aberto. Você pode fazer o seu próprio pedido de carro.' : 'Toque no botão para avisar os motoristas livres. Não é necessário informar hotel, destino ou motorista.'}</p></div>{ownRequest ? <button className="button button-secondary" onClick={closeRequest} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} Encerrar solicitação</button> : <button className="button button-primary" onClick={requestCar} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={18} />} <CarFront size={18} /> Solicitar carro</button>}</section>
-    <section className="available-hostess-drivers"><div><h2>Motoristas em apoio à Hostess</h2><p>{openRequests.length ? 'Os motoristas desta lista estão reservados exclusivamente para este apoio.' : 'Abra uma solicitação para os motoristas responderem.'}</p></div><div>{hostessDrivers.length ? hostessDrivers.map((driver) => <span className="hostess-driver" key={driver.id}><Check size={15} /> {driver.name}</span>) : <span className="hostess-empty">Nenhum motorista assumiu o apoio ainda.</span>}</div></section>
+    <section className="page-title hostess-title"><div><span>PAINEL GERAL · HOSTESS</span><h1>Painel Geral</h1><p>Visualização da operação. As opções disponíveis seguem as permissões do seu usuário.</p></div>{canRecordTourQuantities && <button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidades de tours</button>}</section>
+    {canRequestCar && <><section className="hostess-call"><div><span>SOLICITAÇÃO DE CARRO</span><h2>{ownRequest ? assignedDriverName ? `${assignedDriverName} está em apoio` : 'Carro solicitado' : 'Precisa de um carro?'}</h2><p>{ownRequest ? assignedDriverName ? 'O motorista encerra este chamado ao finalizar o apoio. Se necessário, você também pode encerrá-lo agora.' : 'Aguarde um motorista assumir este chamado. Não é necessário informar hotel, destino ou motorista.' : openRequests.length ? 'Há outro pedido em aberto. Você pode fazer o seu próprio pedido de carro.' : 'Toque no botão para avisar os motoristas livres. Não é necessário informar hotel, destino ou motorista.'}</p></div>{ownRequest ? <button className="button button-secondary" onClick={closeRequest} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} Encerrar solicitação</button> : <button className="button button-primary" onClick={requestCar} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={18} />} <CarFront size={18} /> Solicitar carro</button>}</section>
+    <section className="available-hostess-drivers"><div><h2>Motoristas em apoio à Hostess</h2><p>{openRequests.length ? 'Os motoristas desta lista estão reservados exclusivamente para este apoio.' : 'Abra uma solicitação para os motoristas responderem.'}</p></div><div>{hostessDrivers.length ? hostessDrivers.map((driver) => <span className="hostess-driver" key={driver.id}><Check size={15} /> {driver.name}</span>) : <span className="hostess-empty">Nenhum motorista assumiu o apoio ainda.</span>}</div></section></>}
     <section className="metrics-grid hostess-general-metrics"><MetricCard icon={Route} color="teal" title="Tours normais" count={normalTours.length} sub={`${awaitingDriver.length} aguardando motorista`} /><MetricCard icon={Flag} color="purple" title="Self Gen" count={totalSelfGuide.length} sub="registros do dia" /><MetricCard icon={CarFront} color="blue" title="Em tour" count={enTour.length} sub="grupos em deslocamento" /><MetricCard icon={Check} color="green" title="Motoristas disponíveis" count={availableDrivers} sub={`${drivers.length} motoristas ativos`} /></section>
     <section className="panel drivers-panel"><div className="panel-heading"><div><h2>Status dos motoristas</h2><p>Somente visualização para a Hostess.</p></div></div><div className="driver-grid">{drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</div></section>
-    <section className="panel hostess-note"><h2>Acesso ao Painel Geral</h2><p>Você não vê nem altera telas de motoristas, Casa, Galeria, destinos, usuários ou convites. Para a operação, registre quantidades de tours e Self Gen ou solicite carro.</p></section>
-    {open && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}
+    <section className="panel hostess-note"><h2>Acesso ao Painel Geral</h2><p>{canRecordTourQuantities || canRequestCar ? 'Você só vê as funções liberadas pelo administrador para sua conta.' : 'Seu acesso é somente de visualização: não há botão para alterar tours, motoristas ou solicitações.'}</p></section>
+    {open && canRecordTourQuantities && <HostessTourModal onClose={() => setOpen(false)} token={token} refresh={refresh} notify={notify} />}
   </>;
 }
 
@@ -455,7 +613,7 @@ function OperationalPage({ page, data, user, onAction, onCreate }) {
     home: { title: 'Casa', description: 'Grupos na Casa e fila aguardando transporte.', tours: data.tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status)) },
     destinations: { title: 'Destinos finais', description: 'Grupos que chegaram à Galeria e aguardam ou seguem para o destino final.', tours: data.tours.filter((tour) => ['AGUARDANDO_DESTINO', 'EM_DESTINO_FINAL'].includes(tour.status)) }
   }[page];
-  return <><OperationRestriction settings={settings} /><SectionHeader {...options} action={user.role === 'ADMIN' && page === 'prestige' ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} user={user} onAction={onAction} /></section></>;
+  return <><OperationRestriction settings={settings} /><SectionHeader {...options} action={can(user, 'MANAGE_TOUR_QUANTITIES') && page === 'prestige' ? onCreate : undefined} actionText="Quantidade de tours" /><section className="panel full-panel"><TourTable tours={options.tours} data={data} user={user} onAction={onAction} /></section></>;
 }
 
 function TransfersPage({ data, user, onCreate, onAction }) {
@@ -466,7 +624,7 @@ function TransfersPage({ data, user, onCreate, onAction }) {
   const withdrawals = transfers.filter((transfer) => transfer.status === 'DESISTENCIA');
   const byWave = (wave) => activeTransfers.filter((transfer) => transfer.wave === wave && transfer.status !== 'CHEGOU_PRESTIGE');
   const description = settings.conciergePanelClosed ? 'O percurso Waves está suspenso enquanto houver hotel fechado no período.' : user.role === 'CONCIERGE' ? 'Cadastre somente as suas famílias/casais convidados e a quantidade de pessoas.' : 'Traslado dos hóspedes convidados pelos concierges para acompanhar os consultores no tour.';
-  return <><OperationRestriction settings={settings} /><SectionHeader title="Convites Waves → Praia do Forte" description={description} action={settings.conciergePanelClosed ? undefined : onCreate} actionText="Novo convite" /><section className="transfer-metrics"><MetricCard icon={Users} color="teal" title="Famílias convidadas" count={activeTransfers.length} sub={`${activeTransfers.reduce((sum, item) => sum + item.people, 0)} pessoas convidadas`} /><MetricCard icon={Flag} color="orange" title="Desistências" count={withdrawals.length} sub="convites não confirmados" /></section><section className="wave-schedule-grid">{Object.entries(WAVES).map(([wave, schedule]) => <article key={wave}><Route size={26} /><div><span>{schedule.label.toUpperCase()}</span><strong>{schedule.transferTime}</strong><p>Waves Bahia <ChevronRight size={13} /> Praia do Forte</p><small>Conecta ao tour das {schedule.tourTime} · {byWave(wave).length} convite{byWave(wave).length === 1 ? '' : 's'} pendente{byWave(wave).length === 1 ? '' : 's'}</small></div></article>)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>{user.role === 'CONCIERGE' ? 'Meus convites de hoje' : 'Convites de hoje'}</h2><p>{user.role === 'CONCIERGE' ? 'Você pode registrar a desistência de um casal ou família antes do traslado.' : 'O traslado não possui horário de encerramento; a chegada é registrada quando acontecer.'}</p></div></div><TransferTable transfers={transfers} onAction={onAction} user={user} settings={settings} empty="Nenhum convite cadastrado." /></section></>;
+  return <><OperationRestriction settings={settings} /><SectionHeader title="Convites Waves → Praia do Forte" description={description} action={settings.conciergePanelClosed || !can(user, 'MANAGE_TRANSFERS') ? undefined : onCreate} actionText="Novo convite" /><section className="transfer-metrics"><MetricCard icon={Users} color="teal" title="Famílias convidadas" count={activeTransfers.length} sub={`${activeTransfers.reduce((sum, item) => sum + item.people, 0)} pessoas convidadas`} /><MetricCard icon={Flag} color="orange" title="Desistências" count={withdrawals.length} sub="convites não confirmados" /></section><section className="wave-schedule-grid">{Object.entries(WAVES).map(([wave, schedule]) => <article key={wave}><Route size={26} /><div><span>{schedule.label.toUpperCase()}</span><strong>{schedule.transferTime}</strong><p>Waves Bahia <ChevronRight size={13} /> Praia do Forte</p><small>Conecta ao tour das {schedule.tourTime} · {byWave(wave).length} convite{byWave(wave).length === 1 ? '' : 's'} pendente{byWave(wave).length === 1 ? '' : 's'}</small></div></article>)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>{user.role === 'CONCIERGE' ? 'Meus convites de hoje' : 'Convites de hoje'}</h2><p>{user.role === 'CONCIERGE' ? 'Você pode registrar a desistência de um casal ou família antes do traslado.' : 'O traslado não possui horário de encerramento; a chegada é registrada quando acontecer.'}</p></div></div><TransferTable transfers={transfers} onAction={onAction} user={user} settings={settings} empty="Nenhum convite cadastrado." /></section></>;
 }
 
 function ConciergeClosedPage({ data }) {
@@ -494,12 +652,12 @@ function DriversPage({ data, user, token, refresh, notify }) {
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [savingDelete, setSavingDelete] = useState(false);
-  const admin = user.role === 'ADMIN';
+  const canManageDrivers = can(user, 'MANAGE_DRIVERS');
   async function removeDriver() {
     setSavingDelete(true);
     try { await api(token, `/api/drivers/${deleting.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify('Motorista excluído.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
   }
-  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." action={admin ? () => setEditing({}) : undefined} actionText="Novo motorista" /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>O administrador pode alterar situação, atividade e cadastro.</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Cadastro</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th>{admin && <th>Ações</th>}</tr></thead><tbody>{data.drivers.map((driver) => <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td><span className={driver.active ? 'active-dot' : 'inactive-dot'}>{driver.active ? 'Ativo' : 'Inativo'}</span></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td>{admin && <td className="actions-cell"><button className="mini-action" onClick={() => setEditing(driver)} disabled={driver.hostessAvailable} title={driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de editar este motorista.' : undefined}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(driver)} disabled={driver.hostessAvailable} title={driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de excluir este motorista.' : undefined}>Excluir</button></td>}</tr>)}</tbody></table></div></section>{editing && <DriverEditorModal key={editing.id || 'new'} driver={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir motorista" onClose={() => setDeleting(null)}><div className="danger-copy"><CarFront size={25} /><p>Excluir <strong>{deleting.name}</strong> removerá o cadastro. Motoristas vinculados a um tour ativo precisam ser liberados antes.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeDriver} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
+  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." action={canManageDrivers ? () => setEditing({}) : undefined} actionText="Novo motorista" /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>{canManageDrivers ? 'Você pode alterar situação, atividade e cadastro.' : 'Somente visualização dos indicadores de motoristas.'}</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Cadastro</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th>{canManageDrivers && <th>Ações</th>}</tr></thead><tbody>{data.drivers.map((driver) => <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td><span className={driver.active ? 'active-dot' : 'inactive-dot'}>{driver.active ? 'Ativo' : 'Inativo'}</span></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td>{canManageDrivers && <td className="actions-cell"><button className="mini-action" onClick={() => setEditing(driver)} disabled={driver.hostessAvailable} title={driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de editar este motorista.' : undefined}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(driver)} disabled={driver.hostessAvailable} title={driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de excluir este motorista.' : undefined}>Excluir</button></td>}</tr>)}</tbody></table></div></section>{editing && <DriverEditorModal key={editing.id || 'new'} driver={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir motorista" onClose={() => setDeleting(null)}><div className="danger-copy"><CarFront size={25} /><p>Excluir <strong>{deleting.name}</strong> removerá o cadastro. Motoristas vinculados a um tour ativo precisam ser liberados antes.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeDriver} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
 }
 
 function ConsultantEditorModal({ consultant, onClose, token, refresh, notify }) {
@@ -517,13 +675,13 @@ function ConsultantsPage({ data, user, token, refresh, notify }) {
   const [editing, setEditing] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [savingDelete, setSavingDelete] = useState(false);
-  const admin = user.role === 'ADMIN';
+  const canManageConsultants = can(user, 'MANAGE_CONSULTANTS');
   const currentTours = data.tours.filter((tour) => !['CONCLUIDO', 'DESISTENCIA'].includes(tour.status));
   async function removeConsultant() {
     setSavingDelete(true);
     try { await api(token, `/api/consultants/${deleting.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify('Consultor excluído.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
   }
-  return <><SectionHeader title="Consultores" description="Consultores vinculados aos grupos da operação." action={admin ? () => setEditing({}) : undefined} actionText="Novo consultor" /><section className="consultants-grid">{data.consultants.map((consultant) => { const tours = currentTours.filter((tour) => tour.consultantId === consultant.id); return <article className="consultant-card" key={consultant.id}><Avatar name={consultant.name} color="pink" /><h2>{consultant.name}</h2><span className={consultant.active ? 'active-dot' : 'inactive-dot'}>{consultant.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>grupos ativos</small></div>{admin && <p className="card-actions"><button className="mini-action" onClick={() => setEditing(consultant)}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(consultant)}>Excluir</button></p>}</article>; })}</section>{editing && <ConsultantEditorModal key={editing.id || 'new'} consultant={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir consultor" onClose={() => setDeleting(null)}><div className="danger-copy"><UserRound size={25} /><p>Excluir <strong>{deleting.name}</strong> remove o cadastro, preservando apenas os registros antigos de tours.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeConsultant} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
+  return <><SectionHeader title="Consultores" description="Consultores vinculados aos grupos da operação." action={canManageConsultants ? () => setEditing({}) : undefined} actionText="Novo consultor" /><section className="consultants-grid">{data.consultants.map((consultant) => { const tours = currentTours.filter((tour) => tour.consultantId === consultant.id); return <article className="consultant-card" key={consultant.id}><Avatar name={consultant.name} color="pink" /><h2>{consultant.name}</h2><span className={consultant.active ? 'active-dot' : 'inactive-dot'}>{consultant.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>grupos ativos</small></div>{canManageConsultants && <p className="card-actions"><button className="mini-action" onClick={() => setEditing(consultant)}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(consultant)}>Excluir</button></p>}</article>; })}</section>{editing && <ConsultantEditorModal key={editing.id || 'new'} consultant={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir consultor" onClose={() => setDeleting(null)}><div className="danger-copy"><UserRound size={25} /><p>Excluir <strong>{deleting.name}</strong> remove o cadastro, preservando apenas os registros antigos de tours.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeConsultant} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
 }
 
 function CartsPage({ data }) {
@@ -562,15 +720,52 @@ function ReportsPage({ data }) {
   return <><SectionHeader title="Relatórios" description="Indicadores rápidos para a coordenação da operação." /><section className="report-grid"><MetricCard icon={Route} color="blue" title="Tours ativos" count={active.length} sub={`${active.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={Flag} color="orange" title="Grupos Self Gen" count={selfGean.length} sub={`${selfGean.reduce((sum, tour) => sum + tour.people, 0)} pessoas`} /><MetricCard icon={CarFront} color="green" title="Motoristas disponíveis" count={availableDrivers.length} sub={`${data.drivers.length} cadastrados`} /><MetricCard icon={ShoppingCart} color="purple" title="Carrinhos em operação" count={data.carts.filter((cart) => cart.status !== 'DISPONIVEL').length} sub={`${data.carts.length} cadastrados`} /></section><section className="panel full-panel"><div className="panel-heading"><div><h2>Saídas por motorista</h2><p>Contagem de tours iniciados no {departureLabel}.</p></div></div><div className="bar-list">{data.drivers.map((driver) => <div key={driver.id}><span>{driver.name}</span><div><i style={{ width: `${Math.max(8, Math.round((driver.toursStarted / Math.max(...data.drivers.map((item) => item.toursStarted), 1)) * 100))}%` }} /></div><strong>{driver.toursStarted}</strong></div>)}</div></section></>;
 }
 
-function UserEditorModal({ account, drivers, onClose, token, refresh, notify }) {
+function selectedPermissionsForAccount(account, catalog) {
+  return accountPermissions(account) ?? defaultPermissionsForRole(account?.role || 'MOTORISTA', catalog);
+}
+
+function PermissionSummary({ permissions, catalog, fallbackRole }) {
+  const codes = Array.from(new Set((permissions ?? defaultPermissionsForRole(fallbackRole, catalog)).map(normalizedPermissionCode)));
+  const labels = codes.map((code) => catalog.find((item) => normalizedPermissionCode(item.code) === code)?.label || code.replace(/_/g, ' '));
+  if (codes.length === 1 && codes[0] === 'VIEW_DASHBOARD') return <span className="permission-summary permission-summary-readonly">Painel Geral · somente visualização</span>;
+  if (!labels.length) return <span className="permission-summary permission-summary-none">Sem permissões</span>;
+  const visible = labels.slice(0, 2);
+  const remaining = labels.length - visible.length;
+  return <span className="permission-summary" title={labels.join(' · ')}>{visible.join(' · ')}{remaining > 0 && <small>+{remaining}</small>}</span>;
+}
+
+function UserEditorModal({ account, drivers, permissionCatalog: catalogInput, onClose, token, refresh, notify }) {
   const editing = Boolean(account);
-  const [form, setForm] = useState({ name: account?.name || '', username: account?.username || '', password: '', role: account?.role || 'MOTORISTA', active: account?.active ?? true, driverId: account?.driverId || '', checkInLocation: account?.checkInLocation || 'Prestige Praia do Forte' });
+  const catalog = permissionCatalog(catalogInput);
+  const initialPermissions = selectedPermissionsForAccount(account, catalog);
+  const [form, setForm] = useState({ name: account?.name || '', username: account?.username || '', password: '', role: account?.role || 'MOTORISTA', active: account?.active ?? true, driverId: account?.driverId || '', checkInLocation: account?.checkInLocation || 'Prestige Praia do Forte', permissions: initialPermissions });
   const [saving, setSaving] = useState(false);
+  const [permissionsRole, setPermissionsRole] = useState(account?.role || 'MOTORISTA');
+  const permissionGroups = catalog.reduce((groups, permission) => {
+    const group = permission.group || 'Outras permissões';
+    groups[group] = [...(groups[group] || []), permission];
+    return groups;
+  }, {});
+  const selectedPermissions = new Set(form.permissions.map(normalizedPermissionCode));
+  const readOnlyDashboard = selectedPermissions.size === 1 && selectedPermissions.has('VIEW_DASHBOARD');
+  useEffect(() => {
+    if (form.role === permissionsRole) return;
+    setForm((current) => ({ ...current, permissions: defaultPermissionsForRole(current.role, catalog) }));
+    setPermissionsRole(form.role);
+  }, [form.role, permissionsRole, catalog]);
+  function togglePermission(code) {
+    const normalized = normalizedPermissionCode(code);
+    setForm((current) => ({ ...current, permissions: current.permissions.map(normalizedPermissionCode).includes(normalized) ? current.permissions.filter((item) => normalizedPermissionCode(item) !== normalized) : [...current.permissions, normalized] }));
+  }
+  function applyRoleDefaults() {
+    setForm((current) => ({ ...current, permissions: defaultPermissionsForRole(current.role, catalog) }));
+  }
   async function submit(event) {
     event.preventDefault(); setSaving(true);
-    try { await api(token, editing ? `/api/users/${account.id}` : '/api/users', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? 'Usuário atualizado.' : 'Usuário criado com sucesso.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+    const payload = { ...form, permissions: Array.from(new Set(form.permissions.map(normalizedPermissionCode))) };
+    try { await api(token, editing ? `/api/users/${account.id}` : '/api/users', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload) }); await refresh(); notify(editing ? 'Usuário atualizado.' : 'Usuário criado com sucesso.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={editing ? 'Editar usuário' : 'Criar usuário'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>{editing ? 'Nova senha (opcional)' : 'Senha inicial'}<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required={!editing} /></label><label>Perfil<select value={form.role} onChange={(event) => { const role = event.target.value; setForm({ ...form, role, driverId: role === 'MOTORISTA' ? form.driverId : '' }); }}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="CONCIERGE">Concierge</option><option value="ADMIN">Administrador</option></select></label>{form.role === 'MOTORISTA' && <label>Motorista vinculado<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Criar automaticamente com este nome</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}{['MOTORISTA', 'HOSTESS'].includes(form.role) && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}<label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Usuário ativo</label><div className="role-help"><strong>Motorista:</strong> sem vínculo selecionado, o cadastro operacional é criado automaticamente e fica disponível após o check-in. <strong>Concierge:</strong> registra somente seus convites Waves e desistências; não cria nem mantém cadastro de motorista.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Criar usuário'}</button></form></Modal>;
+  return <Modal title={editing ? 'Editar usuário' : 'Criar usuário'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>{editing ? 'Nova senha (opcional)' : 'Senha inicial'}<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required={!editing} /></label><label>Perfil<select value={form.role} onChange={(event) => { const role = event.target.value; setForm({ ...form, role, driverId: role === 'MOTORISTA' ? form.driverId : '' }); }}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="CONCIERGE">Concierge</option><option value="VISUALIZADOR">Somente visualização</option><option value="ADMIN">Administrador</option></select></label>{form.role === 'MOTORISTA' && <label>Motorista vinculado<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Criar automaticamente com este nome</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}{['MOTORISTA', 'HOSTESS'].includes(form.role) && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}<fieldset className="permissions-fieldset"><div className="permissions-heading"><div><legend>Permissões de acesso</legend><p>Marque exatamente o que este usuário pode ver ou fazer.</p></div><button type="button" className="text-button" onClick={applyRoleDefaults}>Usar sugestão do perfil</button></div><div className="permissions-readonly-note"><ShieldCheck size={17} /><span><strong>Ver Painel Geral</strong> sozinho deixa a conta em modo somente visualização: sem botões para alterar tours, motoristas ou cadastros.</span></div><div className="permission-groups">{Object.entries(permissionGroups).map(([group, permissions]) => <section className="permission-group" key={group}><h3>{group}</h3>{permissions.map((permission) => <label className="permission-option" key={permission.code}><input type="checkbox" checked={selectedPermissions.has(normalizedPermissionCode(permission.code))} onChange={() => togglePermission(permission.code)} /><span><strong>{permission.label}</strong><small>{permission.description}</small></span></label>)}</section>)}</div><div className="permission-selection-summary"><span>{selectedPermissions.size} permissão{selectedPermissions.size === 1 ? '' : 'ões'} selecionada{selectedPermissions.size === 1 ? '' : 's'}</span><PermissionSummary permissions={form.permissions} catalog={catalog} fallbackRole={form.role} />{readOnlyDashboard && <strong>Esta conta só poderá visualizar o Painel Geral.</strong>}</div></fieldset><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Usuário ativo</label><div className="role-help"><strong>Motorista:</strong> sem vínculo selecionado, o cadastro operacional é criado automaticamente e fica disponível após o check-in. <strong>Concierge:</strong> registra somente seus convites Waves e desistências; não cria nem mantém cadastro de motorista.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Criar usuário'}</button></form></Modal>;
 }
 
 function OperationSettingsPanel({ data, token, refresh, notify }) {
@@ -595,7 +790,7 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
   return <section className="operation-settings"><div className="panel-heading"><div><h2>Hotéis e Prestige de saída</h2><p>Escolha o ponto padrão de saída e cadastre períodos de fechamento. A mudança vale automaticamente nas datas informadas, sem novo deploy.</p></div></div><div className="operation-settings-grid"><div className="operation-setting-card"><h3>Saída padrão da operação</h3><p>Usada quando não há hotel fechado no período atual.</p><label>Prestige de saída<select value={defaultDeparture} onChange={(event) => setDefaultDeparture(event.target.value)}><option value="BAHIA">Prestige Waves Bahia</option><option value="SELECTION">Prestige Praia do Forte Selection</option></select></label><button className="button button-secondary" onClick={saveDefault} disabled={saving}>Salvar saída padrão</button></div><form className="operation-setting-card" onSubmit={addClosure}><h3>Fechamento de hotel</h3><p>O sistema bloqueia automaticamente as funções ligadas ao hotel fechado.</p><label>Hotel fechado<select value={closure.hotel} onChange={(event) => changeHotel(event.target.value)}><option value="WAVES_BAHIA">Waves Bahia</option><option value="PRAIA_SELECTION">Praia do Forte Selection</option></select></label><div className="closure-dates"><label>Data inicial<input type="date" value={closure.startDate} onChange={(event) => setClosure({ ...closure, startDate: event.target.value })} required /></label><label>Data final<input type="date" value={closure.endDate} onChange={(event) => setClosure({ ...closure, endDate: event.target.value })} required /></label></div><label>Prestige de saída nesse período<select value={closure.departurePrestige} onChange={(event) => setClosure({ ...closure, departurePrestige: event.target.value })}><option value="BAHIA" disabled={closure.hotel === 'WAVES_BAHIA'}>Prestige Waves Bahia</option><option value="SELECTION" disabled={closure.hotel === 'PRAIA_SELECTION'}>Prestige Praia do Forte Selection</option></select></label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Adicionar fechamento</button></form></div><div className="closure-list"><h3>Períodos configurados</h3>{closures.length ? closures.map((item) => <article key={item.id}><div><strong>{item.hotel === 'WAVES_BAHIA' ? 'Waves Bahia' : 'Praia do Forte Selection'}</strong><span>{item.startDate.split('-').reverse().join('/')} até {item.endDate.split('-').reverse().join('/')} · saída: {item.departurePrestige === 'BAHIA' ? 'Prestige Waves Bahia' : 'Prestige Praia do Forte Selection'}</span></div><button className="mini-action danger-mini" onClick={() => removeClosure(item)} disabled={saving}>Remover</button></article>) : <p className="hostess-empty">Nenhum fechamento de hotel configurado.</p>}</div>{(settings.activeClosures || []).length > 0 && <div className="operation-active-note"><Building2 size={19} /><span>Hoje: {(settings.activeClosures || []).map((item) => item.hotelLabel).join(', ')} fechado. Saída pelo {settings.departureLabel}.</span></div>}</section>;
 }
 
-function SettingsPage({ data, user, token, refresh, notify }) {
+function LegacySettingsPage({ data, user, token, refresh, notify }) {
   const [editor, setEditor] = useState(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [deletingUser, setDeletingUser] = useState(null);
@@ -612,6 +807,70 @@ function SettingsPage({ data, user, token, refresh, notify }) {
     try { await api(token, `/api/users/${deletingUser.id}`, { method: 'DELETE' }); await refresh(); setDeletingUser(null); notify('Usuário excluído com sucesso.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setDeleting(false); }
   }
   return <><SectionHeader title="Configurações" description="Gerencie usuários, acessos e presença diária da equipe." action={() => setEditor({})} actionText="Novo usuário" /><section className="panel full-panel"><div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>O administrador pode editar, desativar ou excluir qualquer cadastro.</p></div></div><div className="table-wrap users-table"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Status</th><th>Check-in hoje</th><th>Ações</th></tr></thead><tbody>{data.users.map((item) => { const checkin = checkins.get(item.id); const roleLabel = item.role === 'ADMIN' ? 'Administrador' : item.role === 'MOTORISTA' ? 'Motorista' : item.role === 'HOSTESS' ? 'Hostess' : 'Concierge'; const requiresCheckIn = ['MOTORISTA', 'HOSTESS'].includes(item.role); return <tr key={item.id}><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{roleLabel}</span></td><td><span className={item.active ? 'active-dot' : 'inactive-dot'}>{item.active ? 'Ativo' : 'Inativo'}</span></td><td>{requiresCheckIn ? checkin ? <span className="active-dot">Trabalhando · {time(checkin.checkInAt)}</span> : <span className="inactive-dot">Folga / atestado</span> : '—'}</td><td className="actions-cell"><button className="mini-action" onClick={() => setEditor(item)}>Editar</button>{item.id === user.id ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td></tr>; })}</tbody></table></div></section><OperationSettingsPanel data={data} token={token} refresh={refresh} notify={notify} /><section className="operation-reset"><div><h2>Zerar dados operacionais</h2><p>Remove tours, convites Waves, filas, atividades, check-ins e indicadores de motoristas. Usuários e cadastros são preservados.</p></div><button className="button button-danger" onClick={() => setResetOpen(true)}>Zerar operação</button></section>{editor && <UserEditorModal key={editor.id || 'new'} account={editor.id ? editor : null} drivers={data.drivers} onClose={() => setEditor(null)} token={token} refresh={refresh} notify={notify} />}{resetOpen && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove tours, convites Waves, filas, histórico, check-ins e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}{deletingUser && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}</>;
+}
+
+function SettingsPage({ data, user, token, refresh, notify }) {
+  const [editor, setEditor] = useState(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [deletingUser, setDeletingUser] = useState(null);
+  const [resetting, setResetting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const canManageUsers = can(user, 'MANAGE_USERS');
+  const canManageSettings = can(user, 'MANAGE_SETTINGS');
+  const catalog = permissionCatalog(data);
+  const checkins = new Map((data.attendance || []).map((item) => [item.userId, item]));
+
+  async function resetOperation() {
+    setResetting(true);
+    try {
+      await api(token, '/api/operation/reset', { method: 'POST' });
+      await refresh();
+      setResetOpen(false);
+      notify('Dados operacionais zerados para o dia atual.', 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  async function deleteUser() {
+    setDeleting(true);
+    try {
+      await api(token, `/api/users/${deletingUser.id}`, { method: 'DELETE' });
+      await refresh();
+      setDeletingUser(null);
+      notify('Usuário excluído com sucesso.', 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  if (!canManageUsers && !canManageSettings) {
+    return <section className="restricted"><LockKeyhole size={35} /><h1>Acesso restrito</h1><p>Você não possui permissão para alterar as configurações da operação.</p></section>;
+  }
+
+  return <>
+    <SectionHeader title="Configurações" description="Gerencie usuários, acessos e presença diária da equipe." action={canManageUsers ? () => setEditor({}) : undefined} actionText="Novo usuário" />
+    {canManageUsers && <section className="panel full-panel">
+      <div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Defina perfil e permissões específicas para cada conta.</p></div></div>
+      <div className="table-wrap users-table"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Acessos</th><th>Status</th><th>Check-in hoje</th><th>Ações</th></tr></thead><tbody>{data.users.map((item) => {
+        const checkin = checkins.get(item.id);
+        const requiresCheckIn = can(item, 'CHECK_IN');
+        const userPermissions = selectedPermissionsForAccount(item, catalog);
+        return <tr key={item.id}><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{roleLabel(item.role)}</span></td><td><PermissionSummary permissions={userPermissions} catalog={catalog} fallbackRole={item.role} /></td><td><span className={item.active ? 'active-dot' : 'inactive-dot'}>{item.active ? 'Ativo' : 'Inativo'}</span></td><td>{requiresCheckIn ? checkin ? <span className="active-dot">Trabalhando · {time(checkin.checkInAt)}</span> : <span className="inactive-dot">Folga / atestado</span> : '—'}</td><td className="actions-cell"><button className="mini-action" onClick={() => setEditor(item)}>Editar</button>{item.id === user.id ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td></tr>;
+      })}</tbody></table></div>
+    </section>}
+    {canManageSettings && <>
+      <OperationSettingsPanel data={data} token={token} refresh={refresh} notify={notify} />
+      <section className="operation-reset"><div><h2>Zerar dados operacionais</h2><p>Remove tours, convites Waves, filas, atividades, check-ins e indicadores de motoristas. Usuários e cadastros são preservados.</p></div><button className="button button-danger" onClick={() => setResetOpen(true)}>Zerar operação</button></section>
+    </>}
+    {editor && canManageUsers && <UserEditorModal key={editor.id || 'new'} account={editor.id ? editor : null} drivers={data.drivers} permissionCatalog={catalog} onClose={() => setEditor(null)} token={token} refresh={refresh} notify={notify} />}
+    {resetOpen && canManageSettings && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove tours, convites Waves, filas, histórico, check-ins e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}
+    {deletingUser && canManageUsers && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}
+  </>;
 }
 
 function CreateTourModal({ data, onClose, token, refresh, notify }) {
@@ -721,7 +980,7 @@ function App() {
   const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
   const refresh = useCallback(async () => {
     const payload = await api(token, '/api/bootstrap');
-    setUser(payload.user); setData(payload.data); setPage((current) => payload.user.role === 'CONCIERGE' ? 'transfers' : payload.user.role === 'HOSTESS' ? 'dashboard' : current);
+    setUser(payload.user); setData({ ...(payload.data || {}), permissionsCatalog: payload.permissionsCatalog || payload.data?.permissionsCatalog, rolePermissionDefaults: payload.rolePermissionDefaults || payload.data?.rolePermissionDefaults }); setPage((current) => canAccessPage(payload.user, current) ? current : firstAccessiblePage(payload.user));
   }, [token]);
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return undefined;
@@ -800,12 +1059,13 @@ function App() {
     const openCreate = () => setModal({ kind: 'create' });
     const openTransfer = () => setModal({ kind: 'transfer' });
     const openTransferAction = (transfer, action) => setModal({ kind: 'transfer-action', transfer, action });
-    if (user.role === 'CONCIERGE') return data.operationSettings?.conciergePanelClosed ? <ConciergeClosedPage data={data} /> : <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
-    if (user.role === 'HOSTESS') return <HostessDashboard data={data} user={user} token={token} refresh={refresh} notify={notify} />;
-    const activePage = user.role === 'MOTORISTA' && !DRIVER_NAV_IDS.has(page) ? 'prestige' : page;
+    const activePage = canAccessPage(user, page) ? page : firstAccessiblePage(user);
+    const hostessWorkspace = user.role === 'HOSTESS' && canAny(user, ['CHECK_IN', 'MANAGE_TOUR_QUANTITIES', 'REQUEST_HOSTESS_CAR']);
+    if (!activePage) return <section className="restricted"><LockKeyhole size={35} /><h1>Sem acesso liberado</h1><p>Peça ao administrador para selecionar as permissões da sua conta.</p></section>;
+    if (activePage === 'dashboard' && hostessWorkspace) return <HostessDashboard data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (activePage === 'dashboard') return <Dashboard data={data} user={user} token={token} refresh={refresh} notify={notify} onAction={openAction} onCreate={openCreate} onCreateTransfer={openTransfer} onTransferAction={openTransferAction} setPage={setPage} />;
     if (['prestige', 'tours', 'home', 'destinations'].includes(activePage)) return <OperationalPage page={activePage} data={data} user={user} onAction={openAction} onCreate={openCreate} />;
-    if (activePage === 'transfers') return <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
+    if (activePage === 'transfers') return user.role === 'CONCIERGE' && data.operationSettings?.conciergePanelClosed ? <ConciergeClosedPage data={data} /> : <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
     if (activePage === 'gallery') return <GalleryPage data={data} user={user} onAction={openAction} />;
     if (activePage === 'drivers') return <DriversPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (activePage === 'consultants') return <ConsultantsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
@@ -817,7 +1077,7 @@ function App() {
   }, [data, user, page, token]);
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
-  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} operationSettings={data.operationSettings} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{user.role !== 'CONCIERGE' && <MobileNav page={page} setPage={setPage} user={user} operationSettings={data.operationSettings} />}</div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} operationSettings={data.operationSettings} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && can(user, 'CHECK_IN') && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{<MobileNav page={page} setPage={setPage} user={user} operationSettings={data.operationSettings} />}</div>;
 }
 
 function Root() {

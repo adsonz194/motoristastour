@@ -49,6 +49,9 @@ Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, s
 
 ## Perfis
 
+- **Permissões por usuário:** em **Configurações → Usuários → Novo usuário** (ou **Editar**), o administrador escolhe o perfil como sugestão inicial e marca exatamente as permissões daquela conta. O perfil não obriga acessos extras.
+- **Ver Painel Geral:** quando esta for a única permissão marcada, a conta abre somente o Painel Geral em modo leitura. Ela não vê cadastros/configurações e não recebe botões de check-in, criação, alteração de rota, solicitação de carro ou qualquer outra ação operacional.
+- O servidor valida cada ação pela permissão recebida; ocultar um botão no navegador não é a única proteção. Uma conta com acesso somente de leitura também recebe apenas os dados necessários para visualizar o painel.
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
 - **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
 - **Hostess:** vê somente o Painel Geral em modo de leitura; pode registrar as quantidades de tours e Self Gen por Ola e solicitar um carro, sem informar hotel, destino ou motorista. Esses totais continuam sendo registrados mesmo em período de fechamento.

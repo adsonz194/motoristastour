@@ -47,7 +47,89 @@ ROLE_ADMIN = "ADMIN"
 ROLE_DRIVER = "MOTORISTA"
 ROLE_HOSTESS = "HOSTESS"
 ROLE_CONCIERGE = "CONCIERGE"
-ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE}
+ROLE_VIEWER = "VISUALIZADOR"
+ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE, ROLE_VIEWER}
+
+# A role is an initial access template, not an irrevocable authorization.
+# Administrators can tailor the explicit permissions of every account when it
+# is created or edited.  Keeping the permission names stable also lets the
+# browser safely hide screens that the account is not entitled to use.
+PERMISSION_VIEW_DASHBOARD = "VIEW_DASHBOARD"
+PERMISSION_VIEW_PRESTIGE = "VIEW_PRESTIGE"
+PERMISSION_VIEW_TOURS = "VIEW_TOURS"
+PERMISSION_VIEW_GALLERY = "VIEW_GALLERY"
+PERMISSION_VIEW_HOME = "VIEW_HOME"
+PERMISSION_VIEW_DESTINATIONS = "VIEW_DESTINATIONS"
+PERMISSION_VIEW_TRANSFERS = "VIEW_TRANSFERS"
+PERMISSION_VIEW_DRIVERS = "VIEW_DRIVERS"
+PERMISSION_VIEW_CONSULTANTS = "VIEW_CONSULTANTS"
+PERMISSION_VIEW_CARTS = "VIEW_CARTS"
+PERMISSION_VIEW_HISTORY = "VIEW_HISTORY"
+PERMISSION_VIEW_REPORTS = "VIEW_REPORTS"
+PERMISSION_MANAGE_TOUR_QUANTITIES = "MANAGE_TOUR_QUANTITIES"
+PERMISSION_MANAGE_TOURS = "MANAGE_TOURS"
+PERMISSION_MANAGE_TRANSFERS = "MANAGE_TRANSFERS"
+PERMISSION_REQUEST_HOSTESS_CAR = "REQUEST_HOSTESS_CAR"
+PERMISSION_MANAGE_DRIVERS = "MANAGE_DRIVERS"
+PERMISSION_MANAGE_CONSULTANTS = "MANAGE_CONSULTANTS"
+PERMISSION_MANAGE_USERS = "MANAGE_USERS"
+PERMISSION_MANAGE_SETTINGS = "MANAGE_SETTINGS"
+PERMISSION_CHECK_IN = "CHECK_IN"
+PERMISSION_MANAGE_HOSTESS_SUPPORT = "MANAGE_HOSTESS_SUPPORT"
+
+PERMISSION_CATALOG = [
+    {"key": PERMISSION_VIEW_DASHBOARD, "label": "Ver Painel Geral", "description": "Consulta o Painel Geral sem alterar a operação.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_PRESTIGE, "label": "Ver Prestige", "description": "Consulta os grupos disponíveis no Prestige.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_TOURS, "label": "Ver tours", "description": "Consulta os tours em andamento.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_GALLERY, "label": "Ver Galeria", "description": "Consulta os grupos na Galeria.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_HOME, "label": "Ver Casa", "description": "Consulta os grupos na Casa e aguardando transporte.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_DESTINATIONS, "label": "Ver destinos finais", "description": "Consulta os destinos finais dos grupos.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_TRANSFERS, "label": "Ver convites Waves", "description": "Consulta os convites e traslados Waves.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_DRIVERS, "label": "Ver motoristas", "description": "Consulta a disponibilidade e o local dos motoristas.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_CONSULTANTS, "label": "Ver consultores", "description": "Consulta os consultores cadastrados.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_CARTS, "label": "Ver carrinhos", "description": "Consulta os carrinhos cadastrados e sua situação.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_HISTORY, "label": "Ver histórico", "description": "Consulta o histórico e a auditoria da operação.", "group": "Visualização"},
+    {"key": PERMISSION_VIEW_REPORTS, "label": "Ver relatórios", "description": "Consulta os indicadores e relatórios diários.", "group": "Visualização"},
+    {"key": PERMISSION_MANAGE_TOUR_QUANTITIES, "label": "Registrar quantidades de tours", "description": "Registra quantidades de tours e Self Gen por Ola.", "group": "Operação"},
+    {"key": PERMISSION_MANAGE_TOURS, "label": "Operar tours", "description": "Inicia e atualiza etapas dos tours vinculados ao motorista.", "group": "Operação"},
+    {"key": PERMISSION_MANAGE_TRANSFERS, "label": "Gerenciar convites Waves", "description": "Registra e atualiza convites e traslados Waves.", "group": "Operação"},
+    {"key": PERMISSION_REQUEST_HOSTESS_CAR, "label": "Solicitar carro da Hostess", "description": "Abre e encerra solicitações de carro para a Hostess.", "group": "Operação"},
+    {"key": PERMISSION_MANAGE_HOSTESS_SUPPORT, "label": "Atender solicitação da Hostess", "description": "Permite ao motorista assumir e encerrar apoio à Hostess.", "group": "Operação"},
+    {"key": PERMISSION_CHECK_IN, "label": "Fazer check-in", "description": "Registra presença no dia de operação.", "group": "Operação"},
+    {"key": PERMISSION_MANAGE_DRIVERS, "label": "Gerenciar motoristas", "description": "Cria, edita e exclui cadastros de motoristas.", "group": "Administração"},
+    {"key": PERMISSION_MANAGE_CONSULTANTS, "label": "Gerenciar consultores", "description": "Cria, edita e exclui cadastros de consultores.", "group": "Administração"},
+    {"key": PERMISSION_MANAGE_USERS, "label": "Gerenciar usuários e permissões", "description": "Cria, edita, desativa e exclui usuários.", "group": "Administração"},
+    {"key": PERMISSION_MANAGE_SETTINGS, "label": "Gerenciar configurações", "description": "Altera fechamentos, Prestige de saída e zera a operação.", "group": "Administração"},
+]
+PERMISSIONS = {item["key"] for item in PERMISSION_CATALOG}
+PERMISSION_ORDER = {item["key"]: index for index, item in enumerate(PERMISSION_CATALOG)}
+
+DEFAULT_ROLE_PERMISSIONS = {
+    ROLE_ADMIN: set(PERMISSIONS),
+    ROLE_DRIVER: {
+        PERMISSION_VIEW_DASHBOARD,
+        PERMISSION_VIEW_PRESTIGE,
+        PERMISSION_VIEW_TOURS,
+        PERMISSION_VIEW_GALLERY,
+        PERMISSION_VIEW_HOME,
+        PERMISSION_VIEW_DESTINATIONS,
+        PERMISSION_VIEW_DRIVERS,
+        PERMISSION_MANAGE_TOURS,
+        PERMISSION_MANAGE_HOSTESS_SUPPORT,
+        PERMISSION_CHECK_IN,
+    },
+    ROLE_HOSTESS: {
+        PERMISSION_VIEW_DASHBOARD,
+        PERMISSION_MANAGE_TOUR_QUANTITIES,
+        PERMISSION_REQUEST_HOSTESS_CAR,
+        PERMISSION_CHECK_IN,
+    },
+    ROLE_CONCIERGE: {
+        PERMISSION_VIEW_TRANSFERS,
+        PERMISSION_MANAGE_TRANSFERS,
+    },
+    ROLE_VIEWER: {PERMISSION_VIEW_DASHBOARD},
+}
 
 STATE_AVAILABLE = "DISPONIVEL"
 STATE_IN_TOUR = "EM_TOUR"
@@ -163,6 +245,51 @@ class APIError(Exception):
         self.status = status
 
 
+def ordered_permissions(values: set[str] | list[str]) -> list[str]:
+    """Return permission keys in the same predictable order as the UI."""
+    return sorted(set(values), key=lambda key: PERMISSION_ORDER[key])
+
+
+def default_permissions_for_role(role: Any) -> list[str]:
+    """Return a copy of the default template for a user role."""
+    return ordered_permissions(DEFAULT_ROLE_PERMISSIONS.get(str(role), set()))
+
+
+def normalize_permissions(value: Any, role: Any, *, strict: bool = False) -> list[str]:
+    """Normalize an explicit permission list or safely migrate a legacy one.
+
+    ``strict`` is used for API input: malformed or unknown permission keys are
+    rejected rather than silently granting something unexpected.  Database
+    migration is deliberately forgiving so an old account can still sign in.
+    """
+    if value is None:
+        selected = set(default_permissions_for_role(role))
+    elif not isinstance(value, list):
+        if strict:
+            raise APIError("As permissões devem ser enviadas como uma lista.")
+        selected = set(default_permissions_for_role(role))
+    else:
+        unknown = [item for item in value if not isinstance(item, str) or item not in PERMISSIONS]
+        if strict and unknown:
+            raise APIError("Uma ou mais permissões selecionadas não são válidas.")
+        selected = {item for item in value if isinstance(item, str) and item in PERMISSIONS}
+
+    # Never allow the last administrator to turn an account into a user
+    # manager-less dead end. Other grants may be customized freely.
+    if role == ROLE_ADMIN:
+        selected.add(PERMISSION_MANAGE_USERS)
+    return ordered_permissions(selected)
+
+
+def effective_permissions(user: dict[str, Any]) -> set[str]:
+    """Calculate the account's effective permissions without trusting role alone."""
+    return set(normalize_permissions(user.get("permissions"), user.get("role")))
+
+
+def user_has_permission(user: dict[str, Any], permission: str) -> bool:
+    return permission in effective_permissions(user)
+
+
 def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -232,6 +359,7 @@ def initial_database() -> dict[str, Any]:
             "username": "adson.gonzalez",
             "name": "Administrador",
             "role": ROLE_ADMIN,
+            "permissions": default_permissions_for_role(ROLE_ADMIN),
             "active": True,
             "passwordHash": INITIAL_ADMIN_HASH,
             "createdAt": created,
@@ -510,24 +638,31 @@ def delete_invalid_push_subscriptions(db: dict[str, Any], endpoints: set[str]) -
 
 
 def notification_body_for_user(db: dict[str, Any], user: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> str | None:
-    role = user.get("role")
     if event_type == "TOURS":
-        if role not in {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS}:
+        if not any(user_has_permission(user, permission) for permission in {
+            PERMISSION_VIEW_DASHBOARD,
+            PERMISSION_VIEW_PRESTIGE,
+            PERMISSION_VIEW_TOURS,
+            PERMISSION_MANAGE_TOUR_QUANTITIES,
+            PERMISSION_MANAGE_TOURS,
+        }):
             return None
         active_tours = [tour for tour in db.get("tours", []) if tour.get("status") not in TERMINAL_TOUR_STATES]
         tour_count = sum(1 for tour in active_tours if not tour.get("selfGuide"))
         self_gean_count = sum(1 for tour in active_tours if tour.get("selfGuide"))
         return f"Tours: {tour_count} • Self Gen: {self_gean_count}"
     if event_type == "WAVES":
-        if role == ROLE_HOSTESS:
+        if not any(user_has_permission(user, permission) for permission in {
+            PERMISSION_VIEW_DASHBOARD,
+            PERMISSION_VIEW_TRANSFERS,
+            PERMISSION_MANAGE_TRANSFERS,
+        }):
             return None
         transfers = [transfer for transfer in db.get("transfers", []) if transfer.get("status") != TRANSFER_WITHDRAWN]
-        if role == ROLE_CONCIERGE:
+        if user.get("role") == ROLE_CONCIERGE:
             if not concierge_user_id or user["id"] != concierge_user_id:
                 return None
             transfers = [transfer for transfer in transfers if transfer.get("conciergeUserId") == user["id"]]
-        elif role not in {ROLE_ADMIN, ROLE_DRIVER}:
-            return None
         people = sum(int(transfer.get("people", 0) or 0) for transfer in transfers)
         return f"Convidados Waves → Praia: {people}"
     return None
@@ -606,7 +741,10 @@ def hostess_push_messages(db: dict[str, Any], event_type: str, driver_name: str 
     return [
         (record, payload)
         for record in load_push_subscriptions(db)
-        if users.get(record.get("userId"), {}).get("role") == ROLE_DRIVER
+        if (
+            users.get(record.get("userId"), {}).get("role") == ROLE_DRIVER
+            and user_has_permission(users[record["userId"]], PERMISSION_MANAGE_HOSTESS_SUPPORT)
+        )
     ]
 
 
@@ -778,6 +916,14 @@ def operational_database() -> dict[str, Any]:
     if db.get("destinations") != FINAL_DESTINATIONS:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
         schema_updated = True
+    # Existing accounts predate per-user permissions. Give each one the
+    # matching role template exactly once, while preserving any explicit list
+    # subsequently selected by an administrator.
+    for account in db.get("users", []):
+        normalized_permissions = normalize_permissions(account.get("permissions"), account.get("role"))
+        if account.get("permissions") != normalized_permissions:
+            account["permissions"] = normalized_permissions
+            schema_updated = True
     for account in db.get("users", []):
         if account.get("role") != ROLE_DRIVER or account.get("driverId"):
             continue
@@ -813,7 +959,11 @@ def operational_database() -> dict[str, Any]:
 
 
 def clean_user(user: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in user.items() if key != "passwordHash"}
+    result = {key: value for key, value in user.items() if key != "passwordHash"}
+    # Always return the effective list, including for a session that was
+    # loaded just before a legacy account is persisted by the migration.
+    result["permissions"] = normalize_permissions(user.get("permissions"), user.get("role"))
+    return result
 
 
 def safe_database(db: dict[str, Any]) -> dict[str, Any]:
@@ -848,19 +998,60 @@ def find(items: list[dict[str, Any]], item_id: str, label: str) -> dict[str, Any
     return result
 
 
+def require_permission(user: dict[str, Any], permission: str, message: str | None = None) -> None:
+    """Authorize an endpoint from the account's explicit grants, never role alone."""
+    if not user_has_permission(user, permission):
+        raise APIError(message or "Seu usuário não possui esta permissão.", 403)
+
+
 def require_operational(user: dict[str, Any]) -> None:
-    if user["role"] not in {ROLE_ADMIN, ROLE_DRIVER}:
-        raise APIError("Seu perfil é somente de consulta.", 403)
+    require_permission(user, PERMISSION_MANAGE_TOURS, "Seu usuário possui somente acesso de consulta aos tours.")
 
 
 def require_transfer_access(user: dict[str, Any]) -> None:
-    if user["role"] not in {ROLE_ADMIN, ROLE_CONCIERGE}:
-        raise APIError("Seu perfil não possui acesso aos convites Waves.", 403)
+    require_permission(user, PERMISSION_MANAGE_TRANSFERS, "Seu usuário não possui acesso para gerenciar os convites Waves.")
+
+
+def require_user_management(user: dict[str, Any]) -> None:
+    require_permission(user, PERMISSION_MANAGE_USERS, "Seu usuário não possui permissão para gerenciar usuários e acessos.")
+
+
+def require_user_management_scope(
+    user: dict[str, Any],
+    role: str,
+    permissions: list[str],
+    target: dict[str, Any] | None = None,
+) -> None:
+    """Prevent a delegated user manager from granting access above their own.
+
+    Administrators are the trusted coordinators who may assign any profile and
+    any combination from the catalog.  If the user-management permission is
+    deliberately delegated to another profile, that account can only manage
+    non-administrators whose current and requested grants are a subset of its
+    own grants.  This keeps a custom user manager from creating an
+    administrator or escalating their own authority through the API.
+    """
+    if user.get("role") == ROLE_ADMIN:
+        return
+    granted = effective_permissions(user)
+    requested = set(permissions)
+    if role == ROLE_ADMIN:
+        raise APIError("Somente um administrador pode criar ou promover uma conta de administrador.", 403)
+    if not requested.issubset(granted):
+        raise APIError("Você só pode conceder permissões que a sua conta também possui.", 403)
+    if target:
+        target_permissions = effective_permissions(target)
+        if target.get("role") == ROLE_ADMIN or not target_permissions.issubset(granted):
+            raise APIError("Você só pode administrar contas dentro do seu próprio escopo de acesso.", 403)
+
+
+def require_settings_management(user: dict[str, Any]) -> None:
+    require_permission(user, PERMISSION_MANAGE_SETTINGS, "Seu usuário não possui permissão para alterar as configurações.")
 
 
 def require_admin(user: dict[str, Any]) -> None:
-    if user["role"] != ROLE_ADMIN:
-        raise APIError("Apenas administradores podem realizar esta ação.", 403)
+    """Compatibility alias for older internal calls that mean settings access."""
+    require_settings_management(user)
 
 
 def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
@@ -1202,17 +1393,30 @@ def change_transfer_state(db: dict[str, Any], user: dict[str, Any], transfer: di
 
 
 def apply_transfer_action(db: dict[str, Any], user: dict[str, Any], transfer: dict[str, Any], action: str) -> None:
+    require_transfer_access(user)
+    # Concierge accounts own the invitations they register. A coordinator
+    # (Settings permission) or a non-concierge account explicitly granted
+    # transfer management may administer the shared transfer board instead.
+    if (
+        user.get("role") == ROLE_CONCIERGE
+        and not user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+        and transfer.get("conciergeUserId") != user.get("id")
+    ):
+        raise APIError("Você pode atualizar somente os seus próprios convites Waves.", 403)
+    # Concierges register their own invitations and may mark a no-show.  The
+    # departure and arrival are coordination actions, even when the concierge
+    # also has the general transfer-management permission.
+    if (
+        user.get("role") == ROLE_CONCIERGE
+        and not user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+        and action != "withdraw"
+    ):
+        raise APIError("Somente a coordenação pode iniciar ou confirmar a chegada do traslado.", 403)
     if action == "withdraw":
-        if user["role"] == ROLE_CONCIERGE:
-            if transfer.get("conciergeUserId") != user["id"]:
-                raise APIError("Você pode registrar desistência apenas nos seus próprios convites.", 403)
-        elif user["role"] != ROLE_ADMIN:
-            raise APIError("Somente o concierge responsável ou um administrador registra desistências.", 403)
         if transfer["status"] != TRANSFER_SCHEDULED:
             raise APIError("A desistência só pode ser registrada antes do início do traslado.")
         change_transfer_state(db, user, transfer, TRANSFER_WITHDRAWN, f"{transfer['groupName']} registrou desistência do convite Waves.")
         return
-    require_admin(user)
     if action == "start":
         require_waves_transfers_open(db)
         if transfer["status"] != TRANSFER_SCHEDULED:
@@ -1336,7 +1540,10 @@ def require_tour_action_access(user: dict[str, Any], tour: dict[str, Any], actio
     stayed with the family; a driver who already returned to the Prestige
     cannot move the couple from afar.
     """
-    if user.get("role") == ROLE_ADMIN:
+    # A coordination account with Settings access may correct any route. A
+    # normal tour operator remains limited to the tour they are actually
+    # driving, even if their display role happens to be ADMIN.
+    if user_has_permission(user, PERMISSION_MANAGE_SETTINGS):
         return
     driver_id = str(user.get("driverId") or "").strip()
     if not driver_id:
@@ -1710,57 +1917,150 @@ def public_driver_status():
         return jsonify(operationDate=db["operationDate"], drivers=drivers)
 
 
+def dashboard_readonly_data(db: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """The operational snapshot used by a dashboard-only account.
+
+    It intentionally excludes user accounts, check-in records, push device
+    subscriptions and writable configuration.  Arrays are always present so a
+    read-only dashboard can render safely even when the operation is empty.
+    """
+    tour_fields = {
+        "id", "groupName", "slotLabel", "people", "selfGuide", "consultantId",
+        "consultantName", "wave", "scheduledTime", "status", "phase",
+        "destinationId", "requiredCartCount", "requiresDetails", "allocations",
+        "createdAt", "updatedAt",
+    }
+    transfer_fields = {
+        "id", "groupName", "people", "conciergeName", "wave", "scheduledTime",
+        "tourStartTime", "status", "origin", "destination", "createdAt", "updatedAt",
+    }
+    driver_fields = {
+        "id", "name", "active", "status", "toursStarted", "homePickups",
+        "hostessAvailable", "lastActivity",
+    }
+    activity_fields = {
+        "id", "at", "userName", "actorName", "actorRole", "tourId", "transferId",
+        "message", "previous", "next", "audit",
+    }
+    return {
+        "operationDate": db["operationDate"],
+        "operationSettings": settings,
+        "tours": [{key: value for key, value in item.items() if key in tour_fields} for item in db.get("tours", [])],
+        "transfers": [{key: value for key, value in item.items() if key in transfer_fields} for item in db.get("transfers", [])],
+        "drivers": [{key: value for key, value in item.items() if key in driver_fields} for item in db.get("drivers", [])],
+        "consultants": [
+            {"id": item.get("id"), "name": item.get("name"), "active": bool(item.get("active", True))}
+            for item in db.get("consultants", [])
+        ],
+        "carts": [
+            {"id": item.get("id"), "name": item.get("name"), "capacity": item.get("capacity"), "guestCapacity": item.get("guestCapacity"), "status": item.get("status")}
+            for item in db.get("carts", [])
+        ],
+        "destinations": [
+            {"id": item.get("id"), "name": item.get("name"), "active": bool(item.get("active", True))}
+            for item in db.get("destinations", [])
+        ],
+        "activities": [{key: value for key, value in item.items() if key in activity_fields} for item in db.get("activities", [])],
+        # A dashboard-only account cannot open, close or respond to a Hostess
+        # call, therefore it receives an empty collection rather than request
+        # ownership information.
+        "hostessRequests": [],
+        "attendance": [],
+    }
+
+
+def bootstrap_data_for_user(
+    db: dict[str, Any],
+    user: dict[str, Any],
+    current_attendance: dict[str, Any] | None,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Return only the operational data required by the effective grants."""
+    permissions = effective_permissions(user)
+
+    # This branch must precede role templates. A Hostess or Driver whose
+    # explicit list was reduced to only VIEW_DASHBOARD cannot inherit controls
+    # or extra account information from their previous role.
+    if permissions == {PERMISSION_VIEW_DASHBOARD}:
+        return dashboard_readonly_data(db, settings)
+
+    data: dict[str, Any] = {
+        "operationDate": db["operationDate"],
+        "operationSettings": settings,
+    }
+
+    if PERMISSION_VIEW_DASHBOARD in permissions:
+        data.update(dashboard_readonly_data(db, settings))
+
+    tour_permissions = {
+        PERMISSION_VIEW_PRESTIGE,
+        PERMISSION_VIEW_TOURS,
+        PERMISSION_VIEW_GALLERY,
+        PERMISSION_VIEW_HOME,
+        PERMISSION_VIEW_DESTINATIONS,
+        PERMISSION_MANAGE_TOUR_QUANTITIES,
+        PERMISSION_MANAGE_TOURS,
+    }
+    if permissions & tour_permissions:
+        data["tours"] = db.get("tours", [])
+        data["drivers"] = db.get("drivers", [])
+        data["consultants"] = db.get("consultants", [])
+        data["carts"] = db.get("carts", [])
+        data["destinations"] = db.get("destinations", [])
+
+    if permissions & {PERMISSION_VIEW_TRANSFERS, PERMISSION_MANAGE_TRANSFERS}:
+        transfers = db.get("transfers", [])
+        if user.get("role") == ROLE_CONCIERGE and not user_has_permission(user, PERMISSION_MANAGE_SETTINGS):
+            # When a hotel is closed the Waves route is suspended for the
+            # concierge account, as before the permission migration.
+            transfers = [] if settings["conciergePanelClosed"] else [item for item in transfers if item.get("conciergeUserId") == user["id"]]
+        data["transfers"] = transfers
+
+    if permissions & {PERMISSION_VIEW_DRIVERS, PERMISSION_MANAGE_DRIVERS, PERMISSION_MANAGE_HOSTESS_SUPPORT, PERMISSION_REQUEST_HOSTESS_CAR}:
+        data["drivers"] = db.get("drivers", [])
+    if permissions & {PERMISSION_VIEW_CONSULTANTS, PERMISSION_MANAGE_CONSULTANTS}:
+        data["consultants"] = db.get("consultants", [])
+    if permissions & {PERMISSION_VIEW_CARTS, PERMISSION_MANAGE_TOURS}:
+        data["carts"] = db.get("carts", [])
+    if permissions & {PERMISSION_VIEW_HISTORY, PERMISSION_MANAGE_SETTINGS}:
+        data["activities"] = db.get("activities", [])
+    if permissions & {PERMISSION_VIEW_REPORTS}:
+        data["tours"] = db.get("tours", [])
+        data["drivers"] = db.get("drivers", [])
+        data["carts"] = db.get("carts", [])
+
+    if permissions & {PERMISSION_REQUEST_HOSTESS_CAR, PERMISSION_MANAGE_HOSTESS_SUPPORT}:
+        data["hostessRequests"] = db.get("hostessRequests", [])
+    if PERMISSION_CHECK_IN in permissions:
+        data["attendance"] = [current_attendance] if current_attendance else []
+
+    if PERMISSION_MANAGE_USERS in permissions:
+        data["users"] = [clean_user(account) for account in db.get("users", [])]
+        data["attendance"] = db.get("attendance", [])
+    if PERMISSION_MANAGE_SETTINGS in permissions:
+        data["hotelClosures"] = db.get("hotelClosures", [])
+        data["defaultDeparturePrestige"] = db.get("defaultDeparturePrestige", PRESTIGE_BAHIA)
+
+    # Pages are defensive in the browser, but returning empty collections
+    # keeps a custom, narrowly scoped account from crashing a shared view.
+    for collection in ("tours", "transfers", "drivers", "consultants", "carts", "destinations", "activities", "hostessRequests", "attendance"):
+        data.setdefault(collection, [])
+    return data
+
+
 @app.get("/api/bootstrap")
 def bootstrap():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
         current_attendance = attendance_for(db, user["id"])
-        data = safe_database(db)
         settings = active_operation_settings(db)
-        data["operationSettings"] = settings
-        if user["role"] == ROLE_CONCIERGE:
-            # When a hotel is closed there is no Waves route, therefore no
-            # invitation board is exposed to concierges for that period.
-            concierge_transfers = [] if settings["conciergePanelClosed"] else [item for item in db.get("transfers", []) if item.get("conciergeUserId") == user["id"]]
-            data = {"operationDate": db["operationDate"], "operationSettings": settings, "transfers": concierge_transfers}
-        elif user["role"] == ROLE_HOSTESS:
-            # Hostesses see the General Panel but never operational controls.
-            data = {
-                "operationDate": db["operationDate"],
-                "operationSettings": settings,
-                "attendance": [current_attendance] if current_attendance else [],
-                "tours": [
-                    {"id": item["id"], "selfGuide": bool(item.get("selfGuide")), "status": item["status"], "requiresDetails": bool(item.get("requiresDetails"))}
-                    for item in db.get("tours", [])
-                ],
-                "drivers": [
-                    {"id": item["id"], "name": item["name"], "status": item["status"], "active": bool(item.get("active", True)), "hostessAvailable": bool(item.get("hostessAvailable", False)), "toursStarted": item.get("toursStarted", 0), "homePickups": item.get("homePickups", 0), "lastActivity": item.get("lastActivity")}
-                    for item in db.get("drivers", [])
-                    if item.get("active", True)
-                ],
-                "hostessRequests": db.get("hostessRequests", []),
-            }
-        elif user["role"] == ROLE_DRIVER:
-            # Drivers receive the operational dashboard, without users or management data.
-            data = {
-                "operationDate": db["operationDate"],
-                # The departure Prestige is shared operational context. Without
-                # it, drivers fell back to the Bahia label even after an
-                # administrator selected Prestige Selection.
-                "operationSettings": settings,
-                "attendance": [current_attendance] if current_attendance else [],
-                "tours": db.get("tours", []),
-                "drivers": db.get("drivers", []),
-                "consultants": db.get("consultants", []),
-                "destinations": db.get("destinations", []),
-                "transfers": db.get("transfers", []),
-                "hostessRequests": db.get("hostessRequests", []),
-                "activities": db.get("activities", []),
-            }
+        data = bootstrap_data_for_user(db, user, current_attendance, settings)
         return jsonify(
             user=clean_user(user),
             data=data,
+            permissionsCatalog=PERMISSION_CATALOG,
+            rolePermissionDefaults={role: default_permissions_for_role(role) for role in sorted(ROLES)},
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE, "DESISTENCIA": STATE_WITHDRAWN},
             driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "APOIO_HOSTESS": DRIVER_HOSTESS_SUPPORT, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
             attendance=current_attendance,
@@ -1775,7 +2075,7 @@ def create_user():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_user_management(user)
         username = str(payload.get("username", "")).strip().lower()
         name = str(payload.get("name", "")).strip()
         password = str(payload.get("password", ""))
@@ -1785,15 +2085,17 @@ def create_user():
         if any(item["username"] == username for item in db["users"]):
             raise APIError("Esse usuário já existe.", 409)
         driver_id = validate_driver_link(db, payload.get("driverId")) if role == ROLE_DRIVER else None
-        new_user = {"id": new_id("user"), "username": username, "name": name, "role": role, "active": True, "passwordHash": generate_password_hash(password), "createdAt": timestamp()}
+        permissions = normalize_permissions(payload.get("permissions"), role, strict=True) if "permissions" in payload else default_permissions_for_role(role)
+        require_user_management_scope(user, role, permissions)
+        new_user = {"id": new_id("user"), "username": username, "name": name, "role": role, "permissions": permissions, "active": True, "passwordHash": generate_password_hash(password), "createdAt": timestamp()}
         if driver_id:
             new_user["driverId"] = driver_id
-        if role in {ROLE_DRIVER, ROLE_HOSTESS}:
+        if role in {ROLE_DRIVER, ROLE_HOSTESS} or PERMISSION_CHECK_IN in permissions:
             new_user["checkInLocation"] = str(payload.get("checkInLocation", "")).strip() or "Prestige Praia do Forte"
         db["users"].append(new_user)
         if role == ROLE_DRIVER and not driver_id:
             create_linked_driver(db, new_user)
-        log_activity(db, user, None, None, None, f"Usuário {name} criado com perfil {role}.")
+        log_activity(db, user, None, None, None, f"Usuário {name} criado com perfil {role} e {len(permissions)} permissões.")
         save_database(db)
         return jsonify(user=clean_user(new_user)), 201
 
@@ -1804,10 +2106,11 @@ def update_user(user_id: str):
     with DB_LOCK:
         db = operational_database()
         current_user = get_current_user(db)
-        require_admin(current_user)
+        require_user_management(current_user)
         target = find(db["users"], user_id, "Usuário")
         previous_role = target["role"]
         previous_driver_id = target.get("driverId")
+        previous_permissions = normalize_permissions(target.get("permissions"), previous_role)
         name = str(payload.get("name", target["name"])).strip()
         username = str(payload.get("username", target["username"])).strip().lower()
         role = payload.get("role", target["role"])
@@ -1826,18 +2129,27 @@ def update_user(user_id: str):
             active_admins_after += 1
         if active_admins_after < 1:
             raise APIError("Mantenha ao menos um administrador ativo no sistema.")
+        if "permissions" in payload:
+            permissions = normalize_permissions(payload.get("permissions"), role, strict=True)
+        elif role != previous_role:
+            # Changing the role intentionally starts from the matching
+            # template. The administrator can then customize it if needed.
+            permissions = default_permissions_for_role(role)
+        else:
+            permissions = normalize_permissions(target.get("permissions"), role)
+        require_user_management_scope(current_user, role, permissions, target)
         driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
         driver_id = validate_driver_link(db, driver_id, target["id"])
         if previous_role == ROLE_DRIVER and role != ROLE_DRIVER and previous_driver_id:
             remove_driver_for_role_change(db, previous_driver_id, target["id"])
-        target.update({"name": name, "username": username, "role": role, "active": active})
+        target.update({"name": name, "username": username, "role": role, "permissions": permissions, "active": active})
         if role == ROLE_DRIVER and not driver_id:
             driver_id = create_linked_driver(db, target, active=active)["id"]
         if driver_id:
             target["driverId"] = driver_id
         else:
             target.pop("driverId", None)
-        if role in {ROLE_DRIVER, ROLE_HOSTESS}:
+        if role in {ROLE_DRIVER, ROLE_HOSTESS} or PERMISSION_CHECK_IN in permissions:
             target["checkInLocation"] = str(payload.get("checkInLocation", target.get("checkInLocation", ""))).strip() or "Prestige Praia do Forte"
         else:
             target.pop("checkInLocation", None)
@@ -1848,7 +2160,8 @@ def update_user(user_id: str):
         if not active:
             # An inactive account must no longer receive operational pushes.
             delete_user_push_subscriptions(db, target["id"])
-        log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.")
+        permission_note = "" if permissions == previous_permissions else f" Permissões: {len(previous_permissions)} → {len(permissions)}."
+        log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.{permission_note}")
         save_database(db)
         return jsonify(user=clean_user(target))
 
@@ -1859,14 +2172,15 @@ def create_tour():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
         if "quantity" in payload:
-            # Administrator and Hostess may always register the daily totals,
-            # including when the departure moves to the other Prestige.
+            require_permission(user, PERMISSION_MANAGE_TOUR_QUANTITIES, "Seu usuário não possui permissão para registrar quantidades de tours.")
+            # Quantity registration remains available even when the departure
+            # moves to the other Prestige.
             tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
             save_database(db)
             response = jsonify(tours=tours), 201
         else:
+            require_operational(user)
             require_tours_open(db)
             group_name = str(payload.get("groupName", "")).strip()
             try:
@@ -1894,8 +2208,7 @@ def register_hostess_tours():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        if user["role"] != ROLE_HOSTESS:
-            raise APIError("Somente o perfil Hostess registra a quantidade de tours.", 403)
+        require_permission(user, PERMISSION_MANAGE_TOUR_QUANTITIES, "Seu usuário não possui permissão para registrar quantidades de tours.")
         # Hostess records the daily totals even when a hotel is closed; tours
         # continue from the other configured Prestige.
         tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
@@ -1910,8 +2223,9 @@ def delete_user(user_id: str):
     with DB_LOCK:
         db = operational_database()
         current_user = get_current_user(db)
-        require_admin(current_user)
+        require_user_management(current_user)
         target = find(db["users"], user_id, "Usuário")
+        require_user_management_scope(current_user, target["role"], normalize_permissions(target.get("permissions"), target["role"]), target)
         if target["id"] == current_user["id"]:
             raise APIError("O administrador conectado não pode excluir a própria conta.")
         if target["role"] == ROLE_ADMIN and sum(1 for item in db["users"] if item["role"] == ROLE_ADMIN and item["active"]) <= 1:
@@ -1932,8 +2246,7 @@ def check_in():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        if user["role"] not in {ROLE_DRIVER, ROLE_HOSTESS}:
-            raise APIError("O check-in é destinado a motoristas e hostess.", 403)
+        require_permission(user, PERMISSION_CHECK_IN, "Seu usuário não possui permissão para fazer check-in.")
         existing = attendance_for(db, user["id"])
         created_driver = None
         if user["role"] == ROLE_DRIVER and not user.get("driverId"):
@@ -1963,9 +2276,8 @@ def create_hostess_request():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        if user["role"] not in {ROLE_HOSTESS, ROLE_ADMIN}:
-            raise APIError("Somente Hostess pode solicitar carro.", 403)
-        if user["role"] == ROLE_HOSTESS and not attendance_for(db, user["id"]):
+        require_permission(user, PERMISSION_REQUEST_HOSTESS_CAR, "Seu usuário não possui permissão para solicitar carro da Hostess.")
+        if not user_has_permission(user, PERMISSION_MANAGE_SETTINGS) and not attendance_for(db, user["id"]):
             raise APIError("Faça o check-in antes de solicitar um carro.", 409)
         if any(item.get("requestedById") == user["id"] for item in open_hostess_requests(db)):
             raise APIError("Você já possui uma solicitação de carro aberta.", 409)
@@ -1996,8 +2308,9 @@ def close_hostess_request(request_id: str):
         db = operational_database()
         user = get_current_user(db)
         car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
-        if user["role"] != ROLE_ADMIN and (user["role"] != ROLE_HOSTESS or car_request.get("requestedById") != user["id"]):
-            raise APIError("Apenas a Hostess que solicitou ou um administrador pode encerrar este pedido.", 403)
+        require_permission(user, PERMISSION_REQUEST_HOSTESS_CAR, "Seu usuário não possui permissão para encerrar solicitações da Hostess.")
+        if not user_has_permission(user, PERMISSION_MANAGE_SETTINGS) and car_request.get("requestedById") != user["id"]:
+            raise APIError("Você pode encerrar somente a solicitação de carro feita pela sua conta.", 403)
         if car_request.get("status") != HOSTESS_REQUEST_OPEN:
             raise APIError("Esta solicitação já foi encerrada.", 409)
         close_hostess_request_record(db, car_request, user, "HOSTESS_ENCERROU_SOLICITACAO")
@@ -2013,8 +2326,7 @@ def driver_hostess_availability():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        if user["role"] != ROLE_DRIVER:
-            raise APIError("Somente motoristas podem informar disponibilidade para a Hostess.", 403)
+        require_permission(user, PERMISSION_MANAGE_HOSTESS_SUPPORT, "Seu usuário não possui permissão para atender solicitações da Hostess.")
         driver_id = user.get("driverId")
         if not driver_id:
             raise APIError("Seu usuário não está vinculado a um cadastro de motorista.", 409)
@@ -2083,7 +2395,7 @@ def create_driver():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_permission(user, PERMISSION_MANAGE_DRIVERS, "Seu usuário não possui permissão para gerenciar motoristas.")
         name = str(payload.get("name", "")).strip()
         status = payload.get("status", DRIVER_AVAILABLE)
         if not name or status not in DRIVER_STATUSES:
@@ -2104,7 +2416,7 @@ def update_driver_record(driver_id: str):
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_permission(user, PERMISSION_MANAGE_DRIVERS, "Seu usuário não possui permissão para gerenciar motoristas.")
         driver = find(db["drivers"], driver_id, "Motorista")
         if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
             raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de alterar seu cadastro.", 409)
@@ -2152,7 +2464,7 @@ def delete_driver(driver_id: str):
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_permission(user, PERMISSION_MANAGE_DRIVERS, "Seu usuário não possui permissão para gerenciar motoristas.")
         driver = find(db["drivers"], driver_id, "Motorista")
         if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
             raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de excluir.", 409)
@@ -2174,7 +2486,7 @@ def create_consultant():
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_permission(user, PERMISSION_MANAGE_CONSULTANTS, "Seu usuário não possui permissão para gerenciar consultores.")
         name = str(payload.get("name", "")).strip()
         if not name:
             raise APIError("Informe o nome do consultor.")
@@ -2191,7 +2503,7 @@ def update_consultant(consultant_id: str):
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_permission(user, PERMISSION_MANAGE_CONSULTANTS, "Seu usuário não possui permissão para gerenciar consultores.")
         consultant = find(db["consultants"], consultant_id, "Consultor")
         name = str(payload.get("name", consultant["name"])).strip()
         if not name:
@@ -2207,7 +2519,7 @@ def delete_consultant(consultant_id: str):
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
-        require_admin(user)
+        require_permission(user, PERMISSION_MANAGE_CONSULTANTS, "Seu usuário não possui permissão para gerenciar consultores.")
         consultant = find(db["consultants"], consultant_id, "Consultor")
         db["consultants"] = [item for item in db["consultants"] if item["id"] != consultant_id]
         log_activity(db, user, None, None, None, f"Consultor {consultant['name']} excluído.")
