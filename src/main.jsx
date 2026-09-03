@@ -399,22 +399,13 @@ function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenh
     if (tour.status === 'EM_DESTINO_FINAL') return 'complete-destination';
     return null;
   };
-  const driverCanOperate = (tour, action) => {
-    if (user?.role !== 'MOTORISTA') return true;
-    const ownDriverId = user.driverId;
-    if (!ownDriverId) return false;
-    const ownAllocation = (tour.allocations || []).find((allocation) => allocation.driverId === ownDriverId);
-    if (['DISPONIVEL', 'AGUARDANDO_CASA', 'AGUARDANDO_DESTINO'].includes(tour.status)) return true;
-    if (tour.status === 'NA_CASA') return ownAllocation?.homeDecision === 'AGUARDOU_NA_CASA';
-    if (action === 'arrived-home') return Boolean(ownAllocation && !ownAllocation.homeDecision);
-    return Boolean(ownAllocation);
-  };
   if (!tours.length) return <div className="empty-state">{empty}</div>;
   return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour); const driverInfo = driverDetails(tour);
-    // Viewing a tour never grants operational actions. In particular,
-    // VIEW_DASHBOARD is intentionally read-only.
-    const canOperate = can(user, 'MANAGE_TOURS') && driverCanOperate(tour, action);
+    // A permissão operacional vale para toda a equipe autorizada: um motorista
+    // pode assumir ou corrigir qualquer tour. O servidor registra quem fez cada alteração.
+    // VIEW_DASHBOARD, por sua vez, continua estritamente em modo de visualização.
+    const canOperate = can(user, 'MANAGE_TOURS');
     const team = consultantName !== 'Sem consultor' && driverInfo.active !== '—' ? `${consultantName} com ${driverInfo.active}` : '';
     const isOnInitialRoute = tour.status === 'EM_TOUR' && tour.phase !== 'Casa → Galeria' && !(tour.allocations || []).some((allocation) => allocation.homeDecision);
     const canCorrectToHome = tour.status === 'EM_TOUR' && tour.phase === 'Casa → Galeria';

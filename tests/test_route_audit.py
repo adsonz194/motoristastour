@@ -1,4 +1,4 @@
-"""Regression coverage for route ownership and audit attribution.
+"""Regression coverage for shared route operations and audit attribution.
 
 Run with:
     python -m unittest tests.test_route_audit
@@ -21,7 +21,7 @@ import app as tour_app  # noqa: E402
 
 
 class RouteAuditApiTest(unittest.TestCase):
-    """A driver may change only a tour to which they are assigned."""
+    """Any driver with tour permission may support a route, with attribution."""
 
     def setUp(self) -> None:
         self.database = self._database_at_home()
@@ -127,26 +127,21 @@ class RouteAuditApiTest(unittest.TestCase):
         })
         return db
 
-    def _post_action(self, token: str, action: str):
+    def _post_action(self, token: str, action: str, **payload):
         return self.client.post(
             "/api/tours/tour_8/action",
             headers={"Authorization": f"Bearer {token}"},
-            json={"action": action},
+            json={"action": action, **payload},
         )
 
-    def test_only_assigned_driver_can_change_home_route_and_change_is_audited(self) -> None:
-        # A different driver must neither move the couple nor produce an audit entry.
-        forbidden = self._post_action("token-outsider", "depart-home")
-        self.assertEqual(forbidden.status_code, 403, forbidden.get_json())
-        tour = self.database["tours"][0]
-        self.assertEqual(tour["status"], tour_app.STATE_HOME)
-        self.assertEqual(tour["phase"], "Casa")
-        self.assertFalse(self.database["activities"])
-
-        # Natan is assigned to the tour and can advance it. The record must name
-        # the account, previous/new route, consultant, and every affected driver.
-        allowed = self._post_action("token-natan", "depart-home")
+    def test_another_driver_can_change_home_route_and_change_is_audited(self) -> None:
+        # Another operational driver may support a team at Casa.  The action
+        # must move the tour and preserve the identity of the account that
+        # made the change, rather than silently attributing it to the drivers
+        # allocated to the tour.
+        allowed = self._post_action("token-outsider", "depart-home")
         self.assertEqual(allowed.status_code, 200, allowed.get_json())
+        tour = self.database["tours"][0]
         self.assertEqual(tour["status"], tour_app.STATE_IN_TOUR)
         self.assertEqual(tour["phase"], "Casa → Galeria")
 
@@ -156,9 +151,9 @@ class RouteAuditApiTest(unittest.TestCase):
         ]
         self.assertEqual(len(audits), 1)
         audit_activity = audits[0]
-        self.assertEqual(audit_activity["actorUserId"], "user_natan")
-        self.assertEqual(audit_activity["actorName"], "Natan Operador")
-        self.assertEqual(audit_activity["actorUsername"], "natan.operador")
+        self.assertEqual(audit_activity["actorUserId"], "user_outsider")
+        self.assertEqual(audit_activity["actorName"], "Outro Motorista")
+        self.assertEqual(audit_activity["actorUsername"], "outro.motorista")
         self.assertEqual(audit_activity["actorRole"], tour_app.ROLE_DRIVER)
         self.assertEqual(audit_activity["audit"]["action"], "depart-home")
         self.assertEqual(audit_activity["audit"]["tourName"], "Tour 8")
@@ -166,6 +161,36 @@ class RouteAuditApiTest(unittest.TestCase):
         self.assertEqual(audit_activity["audit"]["from"], "Casa")
         self.assertEqual(audit_activity["audit"]["to"], "Casa → Galeria")
         self.assertEqual(set(audit_activity["audit"]["driverNames"]), {"Natan", "Wagner"})
+
+    def test_another_driver_can_change_final_destination_and_is_audited(self) -> None:
+        tour = self.database["tours"][0]
+        tour.update({
+            "status": tour_app.STATE_FINAL_DESTINATION,
+            "phase": "Destino final",
+            "destinationId": "dest_lobby_bahia",
+        })
+
+        changed = self._post_action(
+            "token-outsider",
+            "change-destination",
+            destinationId="dest_prestige",
+        )
+        self.assertEqual(changed.status_code, 200, changed.get_json())
+        self.assertEqual(tour["destinationId"], "dest_prestige")
+
+        audits = [
+            activity for activity in self.database["activities"]
+            if activity.get("audit", {}).get("type") == "ROUTE_CHANGE"
+        ]
+        self.assertEqual(len(audits), 1)
+        audit_activity = audits[0]
+        self.assertEqual(audit_activity["actorUserId"], "user_outsider")
+        self.assertEqual(audit_activity["actorName"], "Outro Motorista")
+        self.assertEqual(audit_activity["actorUsername"], "outro.motorista")
+        self.assertEqual(audit_activity["actorRole"], tour_app.ROLE_DRIVER)
+        self.assertEqual(audit_activity["audit"]["action"], "change-destination")
+        self.assertEqual(audit_activity["audit"]["from"], "A caminho de Lobby Bahia")
+        self.assertEqual(audit_activity["audit"]["to"], "A caminho de Prestige Praia")
 
 
 if __name__ == "__main__":

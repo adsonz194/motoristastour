@@ -1519,74 +1519,13 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
     return tours
 
 
-def requested_driver_ids(payload: dict[str, Any]) -> set[str]:
-    """Return the driver IDs selected in an action payload, without trusting it."""
-    allocations = payload.get("allocations")
-    if not isinstance(allocations, list):
-        return set()
-    return {
-        str(item.get("driverId"))
-        for item in allocations
-        if isinstance(item, dict) and item.get("driverId")
-    }
-
-
-def require_tour_action_access(user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
-    """Keep drivers from advancing a tour operated by somebody else.
-
-    Administrators may correct any record.  A driver can start or pick up a
-    group only when selecting themself, and can change an active route only
-    when allocated to it.  At Casa the driver must actually be the person who
-    stayed with the family; a driver who already returned to the Prestige
-    cannot move the couple from afar.
-    """
-    # A coordination account with Settings access may correct any route. A
-    # normal tour operator remains limited to the tour they are actually
-    # driving, even if their display role happens to be ADMIN.
-    if user_has_permission(user, PERMISSION_MANAGE_SETTINGS):
-        return
-    driver_id = str(user.get("driverId") or "").strip()
-    if not driver_id:
-        raise APIError("Sua conta de motorista não está vinculada a um cadastro operacional.", 403)
-
-    allocation_ids = {
-        str(item.get("driverId"))
-        for item in tour.get("allocations", [])
-        if item.get("driverId")
-    }
-    selected_ids = requested_driver_ids(payload)
-
-    if action == "arrived-home":
-        if str(payload.get("driverId") or "") != driver_id:
-            raise APIError("Cada motorista só pode registrar a própria situação na Casa.", 403)
-        return
-
-    # At the first allocation / pickup / destination call there is no active
-    # driver to match yet. Require the logged-in driver to be in the team.
-    if action in {"start", "pickup-home", "assign-destination"}:
-        if driver_id not in selected_ids:
-            raise APIError("Você só pode assumir um tour quando o seu nome estiver selecionado como motorista.", 403)
-        return
-
-    # These actions physically move a couple that is still at Casa. Only a
-    # driver who remained there may make that decision.
-    if action in {"return-prestige", "depart-home", "join-home"}:
-        driver_at_home = {
-            str(item.get("driverId"))
-            for item in tour.get("allocations", [])
-            if item.get("driverId") and item.get("homeDecision") == "AGUARDOU_NA_CASA"
-        }
-        if driver_id not in driver_at_home:
-            raise APIError("Somente o motorista que está na Casa com a família pode alterar esta rota.", 403)
-        return
-
-    if action in {"correct-to-home", "deliver-gallery", "change-destination", "complete-destination"} and driver_id not in allocation_ids:
-        raise APIError("Somente um motorista vinculado a este tour pode alterar a rota.", 403)
-
-
 def apply_action(db: dict[str, Any], user: dict[str, Any], tour: dict[str, Any], action: str, payload: dict[str, Any]) -> None:
     require_operational(user)
-    require_tour_action_access(user, tour, action, payload)
+    # A driver with operational access may assume or correct any tour.  In a
+    # live operation another driver frequently gives support or fixes a route
+    # while the original team is at the Casa.  Accountability comes from the
+    # immutable actor fields and route audit recorded after this action, not
+    # from blocking that collaboration based on the current allocation.
     allocations = lambda: tour.get("allocations", [])
 
     if action == "withdraw":
