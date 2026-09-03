@@ -1,4 +1,4 @@
-# Iberostar Tour Interno
+# Iberostar The Club
 
 Painel operacional para controlar grupos e famílias entre Prestige, Casa, Galeria e destino final. A aplicação de produção é executada em **Python com Flask e Gunicorn**, pronta para publicação no Render.
 
@@ -45,7 +45,7 @@ No iPhone e iPad com iOS/iPadOS 16.4 ou mais recente, abra o menu Compartilhar d
 
 ## Painel público dos consultores
 
-Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, sem usuário nem senha, os nomes, status e a localização operacional atual dos motoristas, como **Disponível**, **Na Casa**, **Em tour** ou **A caminho da Galeria**. É uma página de leitura, atualizada a cada 30 segundos, sem dados de hóspedes, tours, usuários ou ações operacionais.
+Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, sem usuário nem senha, os nomes, status e a localização operacional atual dos motoristas, como **Disponível**, **Na Casa**, **Em tour**, **A caminho da Galeria** ou **Em apoio · local informado**. É uma página de leitura, atualizada a cada 30 segundos, sem dados de hóspedes, tours, usuários ou ações operacionais.
 
 ## Perfis
 
@@ -53,7 +53,7 @@ Abra `https://seu-endereco-no-render.onrender.com/consultores` para consultar, s
 - **Ver Painel Geral:** quando esta for a única permissão marcada, a conta abre somente o Painel Geral em modo leitura. Ela não vê cadastros/configurações e não recebe botões de check-in, criação, alteração de rota, solicitação de carro ou qualquer outra ação operacional.
 - O servidor valida cada ação pela permissão recebida; ocultar um botão no navegador não é a única proteção. Uma conta com acesso somente de leitura também recebe apenas os dados necessários para visualizar o painel.
 - **Administrador:** cria, edita, desativa e exclui usuários, motoristas e consultores; também executa todos os processos.
-- **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino e consulta de motoristas), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
+- **Motorista:** visualiza o Painel Geral e acessa somente as etapas operacionais de motorista (Prestige, tour, Casa, Galeria, destino, consulta de motoristas e **Apoio**), sem acesso a cadastros, relatórios ou configurações. Convites Waves ficam somente para visualização no painel.
 - **Hostess:** vê somente o Painel Geral em modo de leitura; pode registrar as quantidades de tours e Self Gen por Ola e solicitar um carro, sem informar hotel, destino ou motorista. Esses totais continuam sendo registrados mesmo em período de fechamento.
 - **Concierge:** acessa somente os próprios convites Waves, registra famílias/casais convidados e suas quantidades de pessoas, e marca desistências antes do traslado; não acessa nenhuma função de motorista. Quando houver hotel fechado, o percurso Waves e esse painel ficam indisponíveis automaticamente.
 
@@ -84,6 +84,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - A operação é zerada automaticamente somente ao mudar o dia em America/Sao_Paulo; um novo deploy do Render não apaga os dados armazenados no PostgreSQL. Administradores também podem zerá-la manualmente. Check-ins, cadastros e usuários são tratados corretamente para o novo dia.
 - Todo Motorista e Hostess inicia o dia como “Folga ou atestado” e confirma “Fazer check-in” ao entrar, vendo o local definido pelo administrador. Um motorista sem check-in não aparece como disponível e não pode ser alocado; ao confirmar presença, seu cadastro fica disponível quando não houver tour ativo.
 - A Hostess pode abrir uma solicitação simples de carro. Os motoristas com check-in, livres e disponíveis recebem o chamado no Painel Geral e assumem uma solicitação; ao aceitar, ficam em **apoio à Hostess** e não podem ser usados em tour, Casa, Galeria ou destino. Quando esse motorista encerra o apoio, a solicitação vinculada é encerrada automaticamente e ele volta a ficar disponível. A Hostess ou o administrador também podem encerrar o próprio pedido antes disso.
+- Em **Apoio**, o motorista registra o local obrigatório e, se quiser, uma observação quando estiver ajudando em qualquer outra atividade. Enquanto o apoio estiver aberto, ele aparece como **Em apoio**, não pode ser escolhido para tour nem para apoio da Hostess e não parece disponível. O próprio motorista encerra seu apoio; quem tiver a permissão de configurações também pode registrar ou encerrar o apoio de qualquer motorista. Ao encerrar, o motorista volta a ficar disponível somente se tiver feito check-in no dia.
 - Ao criar uma conta com perfil Motorista sem selecionar um cadastro existente, o sistema cria e vincula automaticamente o motorista com o mesmo nome. Contas antigas sem vínculo também são corrigidas automaticamente.
 - Administradores podem criar, editar, desativar e excluir usuários, motoristas e consultores. A própria conta e o último administrador são protegidos contra perda de acesso; motoristas em tour ativo precisam ser liberados antes de excluir ou mudar a disponibilidade.
 - Toda transição gera histórico com data, responsável, estado anterior e novo estado. Qualquer motorista com permissão para operar tours pode assumir, avançar ou corrigir um tour de outro motorista quando for necessário. Alterações de rota e destino ficam destacadas com o nome, conta e perfil de quem executou, além do tour, consultor, rota anterior → nova e motoristas afetados.

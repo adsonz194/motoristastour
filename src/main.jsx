@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   BarChart3, Bell, Building2, CalendarDays, CarFront, Check, ChevronRight, CircleUserRound,
-  Clock3, FileClock, Flag, House, Image, LayoutDashboard, LoaderCircle, LockKeyhole,
+  Clock3, FileClock, Flag, HandHeart, House, Image, LayoutDashboard, LoaderCircle, LockKeyhole,
   LogOut, MapPin, Menu, MoreHorizontal, Plus, Route, Settings, ShieldCheck, ShoppingCart,
-  Star, UserCog, UserRound, Users, X
+  Star, UserCog, UserRound, Users, Warehouse, WavesLadder, X
 } from 'lucide-react';
 import './styles.css';
 
@@ -28,10 +28,29 @@ const DRIVER_STATUS = {
   CASA: { label: 'Na Casa', tone: 'orange' },
   GALERIA: { label: 'Na Galeria', tone: 'purple' },
   DESTINO_FINAL: { label: 'Destino final', tone: 'teal' },
+  APOIO: { label: 'Em apoio', tone: 'purple' },
+  EM_APOIO: { label: 'Em apoio', tone: 'purple' },
+  APOIO_MOTORISTA: { label: 'Em apoio', tone: 'purple' },
   APOIO_HOSTESS: { label: 'Em apoio à Hostess', tone: 'purple' },
   FOLGA: { label: 'Folga', tone: 'gray' },
   ATESTADO: { label: 'Atestado', tone: 'orange' }
 };
+
+const INTERNAL_DRIVER_STATUSES = new Set(['APOIO', 'EM_APOIO', 'APOIO_MOTORISTA', 'APOIO_HOSTESS']);
+const CLOSED_SUPPORT_STATUSES = new Set(['ENCERRADO', 'CONCLUIDO', 'FECHADO', 'CANCELADO', 'CLOSED']);
+
+function supportIsActive(support) {
+  if (!support || support.active === false || support.closedAt) return false;
+  return !CLOSED_SUPPORT_STATUSES.has(String(support.status || '').trim().toUpperCase());
+}
+
+function supportDriverId(support) {
+  return String(support?.driverId || support?.driver?.id || '');
+}
+
+function supportDriverName(support, drivers = []) {
+  return support?.driverName || support?.driver?.name || drivers.find((driver) => String(driver.id) === supportDriverId(support))?.name || 'Motorista';
+}
 
 const WAVES = {
   WAVE_1: { label: '1ª Ola', tourTime: '09:00', transferTime: '07:50' },
@@ -50,6 +69,7 @@ const NAV = [
   { id: 'prestige', label: 'Prestige Praia do Forte', icon: Building2 },
   { id: 'transfers', label: 'Convites Waves → Praia', icon: Route },
   { id: 'tours', label: 'Tours em Andamento', icon: Route },
+  { id: 'support', label: 'Apoio', icon: HandHeart },
   { id: 'gallery', label: 'Galeria', icon: Image },
   { id: 'home', label: 'Casa (Aguardando)', icon: House },
   { id: 'destinations', label: 'Destinos Finais', icon: MapPin },
@@ -61,7 +81,7 @@ const NAV = [
   { id: 'settings', label: 'Configurações', icon: Settings, admin: true }
 ];
 
-const DRIVER_NAV_IDS = new Set(['dashboard', 'prestige', 'tours', 'gallery', 'home', 'destinations', 'drivers']);
+const DRIVER_NAV_IDS = new Set(['dashboard', 'prestige', 'tours', 'gallery', 'home', 'destinations', 'drivers', 'support']);
 
 // The server is the authority for access. These definitions only keep the UI
 // understandable while an older deployment is still returning role-only users.
@@ -81,6 +101,7 @@ const FALLBACK_PERMISSION_CATALOG = [
   { code: 'CHECK_IN', label: 'Fazer check-in', description: 'Registra presença de trabalho no dia.', group: 'Operação' },
   { code: 'MANAGE_TOUR_QUANTITIES', label: 'Registrar quantidades de tours', description: 'Registra as quantidades de tours e Self Gen por Ola.', group: 'Operação' },
   { code: 'MANAGE_TOURS', label: 'Operar tours', description: 'Inicia tours e atualiza etapas, rotas e destinos.', group: 'Operação' },
+  { code: 'MANAGE_DRIVER_SUPPORT', label: 'Registrar apoio de motorista', description: 'Inicia e encerra apoios para que o motorista não apareça disponível durante outra atividade.', group: 'Operação' },
   { code: 'MANAGE_TRANSFERS', label: 'Gerenciar convites Waves', description: 'Cadastra, atualiza e registra desistências dos convites Waves.', group: 'Operação' },
   { code: 'REQUEST_HOSTESS_CAR', label: 'Solicitar carro para Hostess', description: 'Abre e encerra solicitação de carro para a Hostess.', group: 'Operação' },
   { code: 'MANAGE_HOSTESS_SUPPORT', label: 'Atender chamado da Hostess', description: 'Permite assumir e encerrar apoio a uma solicitação da Hostess.', group: 'Operação' },
@@ -92,7 +113,7 @@ const FALLBACK_PERMISSION_CATALOG = [
 
 const ROLE_DEFAULT_PERMISSIONS = {
   ADMIN: FALLBACK_PERMISSION_CATALOG.map((item) => item.code),
-  MOTORISTA: ['VIEW_DASHBOARD', 'VIEW_PRESTIGE', 'VIEW_TOURS', 'VIEW_GALLERY', 'VIEW_HOME', 'VIEW_DESTINATIONS', 'VIEW_DRIVERS', 'CHECK_IN', 'MANAGE_TOURS', 'MANAGE_HOSTESS_SUPPORT'],
+  MOTORISTA: ['VIEW_DASHBOARD', 'VIEW_PRESTIGE', 'VIEW_TOURS', 'VIEW_GALLERY', 'VIEW_HOME', 'VIEW_DESTINATIONS', 'VIEW_DRIVERS', 'CHECK_IN', 'MANAGE_TOURS', 'MANAGE_DRIVER_SUPPORT', 'MANAGE_HOSTESS_SUPPORT'],
   HOSTESS: ['VIEW_DASHBOARD', 'CHECK_IN', 'MANAGE_TOUR_QUANTITIES', 'REQUEST_HOSTESS_CAR'],
   CONCIERGE: ['VIEW_TRANSFERS', 'MANAGE_TRANSFERS'],
   VISUALIZADOR: ['VIEW_DASHBOARD']
@@ -137,7 +158,7 @@ function legacyCan(user, permission) {
   if (permission === 'VIEW_TRANSFERS') return role === 'CONCIERGE';
   if (permission === 'CHECK_IN') return ['MOTORISTA', 'HOSTESS'].includes(role);
   if (permission === 'MANAGE_TOUR_QUANTITIES' || permission === 'REQUEST_HOSTESS_CAR') return role === 'HOSTESS';
-  if (permission === 'MANAGE_TOURS' || permission === 'MANAGE_HOSTESS_SUPPORT') return role === 'MOTORISTA';
+  if (permission === 'MANAGE_TOURS' || permission === 'MANAGE_DRIVER_SUPPORT' || permission === 'MANAGE_HOSTESS_SUPPORT') return role === 'MOTORISTA';
   if (permission === 'MANAGE_TRANSFERS') return role === 'CONCIERGE';
   return false;
 }
@@ -168,6 +189,7 @@ function canAccessPage(user, page) {
     destinations: ['VIEW_DESTINATIONS', 'MANAGE_TOURS'],
     transfers: ['VIEW_TRANSFERS', 'MANAGE_TRANSFERS'],
     drivers: ['VIEW_DRIVERS', 'MANAGE_DRIVERS'],
+    support: ['MANAGE_DRIVER_SUPPORT', 'MANAGE_SETTINGS'],
     consultants: ['VIEW_CONSULTANTS', 'MANAGE_CONSULTANTS'],
     carts: ['VIEW_CARTS'],
     history: ['VIEW_HISTORY'],
@@ -290,7 +312,7 @@ function api(token, path, options = {}) {
 }
 
 function Logo() {
-  return <div className="brand"><span className="brand-star"><Star size={27} fill="currentColor" /></span><span><strong>IBEROSTAR</strong><small>TOUR INTERNO</small></span></div>;
+  return <div className="brand" aria-label="Iberostar The Club"><span className="brand-star"><Star size={27} fill="currentColor" /></span><span><strong>IBEROSTAR</strong><small>THE CLUB</small></span></div>;
 }
 
 function StatusPill({ status, driver = false }) {
@@ -325,7 +347,7 @@ function Login({ onLogin }) {
   }
 
   return <main className="login-page">
-    <section className="login-brand-panel"><Logo /><div className="login-illustration"><div className="orbit orbit-a" /><div className="orbit orbit-b" /><Route size={54} /><h1>Tour interno,<br />operação sob controle.</h1><p>Acompanhe cada família do Prestige ao destino final em tempo real.</p></div><p className="login-footer">Iberostar Tour Interno · Painel operacional</p></section>
+    <section className="login-brand-panel"><Logo /><div className="login-illustration"><div className="orbit orbit-a" /><div className="orbit orbit-b" /><Route size={54} /><h1>Tour interno,<br />operação sob controle.</h1><p>Acompanhe cada família do Prestige ao destino final em tempo real.</p></div><p className="login-footer">Iberostar The Club · Painel operacional</p></section>
     <section className="login-form-panel"><form className="login-card" onSubmit={submit}><div className="login-kicker"><ShieldCheck size={18} /> Acesso seguro</div><h2>Bem-vindo</h2><p>Entre com suas credenciais para acessar o painel.</p>
       <label>Usuário<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Seu usuário" required /></label>
       <label>Senha<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Sua senha" required /></label>
@@ -535,10 +557,10 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
     {user.role === 'MOTORISTA' && can(user, 'MANAGE_HOSTESS_SUPPORT') && <DriverHostessAvailability data={data} user={user} token={token} refresh={refresh} notify={notify} />}
     <section className="page-title"><div><span>OPERAÇÃO EM TEMPO REAL</span><h1>Painel Geral</h1><p>Visão completa do fluxo de famílias, transporte e Galeria. Saída atual: {settings.departureLabel || 'Prestige Waves Bahia'}.</p></div>{canManageTourQuantities && <button className="button button-primary" onClick={onCreate}><Plus size={18} /> Quantidades de tours</button>}</section>
     <section className="metrics-grid">
-      <MetricCard icon={Users} color="teal" title="Disponíveis no Prestige" count={metrics.available.length} sub={`${people(metrics.available)} pessoas`} />
+      <MetricCard icon={WavesLadder} color="teal" title="Disponíveis no Star Prestige" count={metrics.available.length} sub={`${people(metrics.available)} pessoas`} />
       <MetricCard icon={CarFront} color="blue" title="Em tour" count={metrics.enTour.length} sub={`${people(metrics.enTour)} pessoas`} />
       <MetricCard icon={House} color="orange" title="Aguardando na Casa" count={metrics.home.length} sub={`${people(metrics.home)} pessoas`} />
-      <MetricCard icon={Users} color="purple" title="Na Galeria" count={metrics.gallery.length} sub="aguardando destino" />
+      <MetricCard icon={Warehouse} color="orange" title="Na Galeria" count={metrics.gallery.length} sub="aguardando destino" />
       <MetricCard icon={Check} color="green" title="Em destino final" count={metrics.destination.length} sub={`${people(metrics.destination)} pessoas`} />
       <MetricCard icon={Route} color="teal" title="Convites do Waves" count={transfers.filter((item) => item.status !== 'CHEGOU_PRESTIGE').length} sub={`${transfers.reduce((sum, item) => sum + item.people, 0)} convidados`} />
     </section>
@@ -669,7 +691,7 @@ function DriverEditorModal({ driver, onClose, token, refresh, notify }) {
     event.preventDefault(); setSaving(true);
     try { await api(token, editing ? `/api/drivers/${driver.id}` : '/api/drivers', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? 'Motorista atualizado.' : 'Motorista cadastrado.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={editing ? 'Editar motorista' : 'Novo motorista'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Disponibilidade<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>{Object.entries(DRIVER_STATUS).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Cadastrar motorista'}</button></form></Modal>;
+  return <Modal title={editing ? 'Editar motorista' : 'Novo motorista'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Disponibilidade<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>{Object.entries(DRIVER_STATUS).filter(([value]) => !INTERNAL_DRIVER_STATUSES.has(value)).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Cadastrar motorista'}</button></form></Modal>;
 }
 
 function DriversPage({ data, user, token, refresh, notify }) {
@@ -677,11 +699,96 @@ function DriversPage({ data, user, token, refresh, notify }) {
   const [deleting, setDeleting] = useState(null);
   const [savingDelete, setSavingDelete] = useState(false);
   const canManageDrivers = can(user, 'MANAGE_DRIVERS');
+  const activeSupportDriverIds = new Set((data.driverSupports || []).filter(supportIsActive).map(supportDriverId));
+  const driverHasActiveSupport = (driver) => driver.hostessAvailable || INTERNAL_DRIVER_STATUSES.has(String(driver.status || '').toUpperCase()) || activeSupportDriverIds.has(String(driver.id));
   async function removeDriver() {
     setSavingDelete(true);
     try { await api(token, `/api/drivers/${deleting.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify('Motorista excluído.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
   }
-  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." action={canManageDrivers ? () => setEditing({}) : undefined} actionText="Novo motorista" /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>{canManageDrivers ? 'Você pode alterar situação, atividade e cadastro.' : 'Somente visualização dos indicadores de motoristas.'}</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Cadastro</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th>{canManageDrivers && <th>Ações</th>}</tr></thead><tbody>{data.drivers.map((driver) => <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td><span className={driver.active ? 'active-dot' : 'inactive-dot'}>{driver.active ? 'Ativo' : 'Inativo'}</span></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td>{canManageDrivers && <td className="actions-cell"><button className="mini-action" onClick={() => setEditing(driver)} disabled={driver.hostessAvailable} title={driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de editar este motorista.' : undefined}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(driver)} disabled={driver.hostessAvailable} title={driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de excluir este motorista.' : undefined}>Excluir</button></td>}</tr>)}</tbody></table></div></section>{editing && <DriverEditorModal key={editing.id || 'new'} driver={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir motorista" onClose={() => setDeleting(null)}><div className="danger-copy"><CarFront size={25} /><p>Excluir <strong>{deleting.name}</strong> removerá o cadastro. Motoristas vinculados a um tour ativo precisam ser liberados antes.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeDriver} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
+  return <><SectionHeader title="Motoristas" description="Disponibilidade, tours iniciados no Prestige e buscas realizadas na Casa." action={canManageDrivers ? () => setEditing({}) : undefined} actionText="Novo motorista" /><section className="driver-page-grid">{data.drivers.map((driver) => <DriverCard key={driver.id} driver={driver} />)}</section><section className="panel full-panel"><div className="panel-heading"><div><h2>Indicadores por motorista</h2><p>{canManageDrivers ? 'Você pode alterar situação, atividade e cadastro.' : 'Somente visualização dos indicadores de motoristas.'}</p></div></div><div className="table-wrap"><table><thead><tr><th>Motorista</th><th>Status</th><th>Cadastro</th><th>Tours iniciados</th><th>Buscas na Casa</th><th>Última atividade</th>{canManageDrivers && <th>Ações</th>}</tr></thead><tbody>{data.drivers.map((driver) => { const busyWithSupport = driverHasActiveSupport(driver); const supportTitle = driver.hostessAvailable ? 'Encerre o apoio da Hostess antes de editar este motorista.' : busyWithSupport ? 'Encerre o apoio ativo antes de editar este motorista.' : undefined; return <tr key={driver.id}><td><div className="name-cell"><Avatar name={driver.name} color="photo" /><strong>{driver.name}</strong></div></td><td><StatusPill driver status={driver.status} /></td><td><span className={driver.active ? 'active-dot' : 'inactive-dot'}>{driver.active ? 'Ativo' : 'Inativo'}</span></td><td>{driver.toursStarted}</td><td>{driver.homePickups}</td><td>{time(driver.lastActivity)}</td>{canManageDrivers && <td className="actions-cell"><button className="mini-action" onClick={() => setEditing(driver)} disabled={busyWithSupport} title={supportTitle}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(driver)} disabled={busyWithSupport} title={supportTitle}>Excluir</button></td>}</tr>; })}</tbody></table></div></section>{editing && <DriverEditorModal key={editing.id || 'new'} driver={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir motorista" onClose={() => setDeleting(null)}><div className="danger-copy"><CarFront size={25} /><p>Excluir <strong>{deleting.name}</strong> removerá o cadastro. Motoristas vinculados a um tour ativo precisam ser liberados antes.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeDriver} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
+}
+
+function DriverSupportPage({ data, user, token, refresh, notify }) {
+  const drivers = (data.drivers || []).filter((driver) => driver.active !== false);
+  const supports = data.driverSupports || [];
+  const activeSupports = supports.filter(supportIsActive);
+  const canManageSettings = can(user, 'MANAGE_SETTINGS');
+  const ownDriverId = String(user.driverId || '');
+  const ownDriver = drivers.find((driver) => String(driver.id) === ownDriverId);
+  const ownSupport = activeSupports.find((support) => supportDriverId(support) === ownDriverId);
+  const visibleSupports = canManageSettings ? activeSupports : activeSupports.filter((support) => supportDriverId(support) === ownDriverId);
+  const busyDriverIds = new Set(activeSupports.map(supportDriverId));
+  const selectableDrivers = drivers.filter((driver) => driver.status === 'DISPONIVEL' && !busyDriverIds.has(String(driver.id)));
+  const [selectedDriverId, setSelectedDriverId] = useState('');
+  const [location, setLocation] = useState('');
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [closingId, setClosingId] = useState('');
+  const driverId = canManageSettings ? selectedDriverId : ownDriverId;
+  const selectedDriver = drivers.find((driver) => String(driver.id) === String(driverId));
+  const selectedDriverBusy = Boolean(activeSupports.find((support) => supportDriverId(support) === String(driverId))) || INTERNAL_DRIVER_STATUSES.has(String(selectedDriver?.status || '').toUpperCase());
+  const noOwnDriver = !canManageSettings && (!ownDriverId || !ownDriver);
+  const canStart = Boolean(driverId && location.trim() && !selectedDriverBusy && (canManageSettings || ownDriver?.status === 'DISPONIVEL'));
+
+  async function startSupport(event) {
+    event.preventDefault();
+    if (!canStart) return;
+    setSaving(true);
+    try {
+      const body = { location: location.trim() };
+      if (note.trim()) body.note = note.trim();
+      if (canManageSettings) body.driverId = selectedDriverId;
+      await api(token, '/api/driver-supports', { method: 'POST', body: JSON.stringify(body) });
+      await refresh();
+      setLocation('');
+      setNote('');
+      setSelectedDriverId('');
+      notify(`${selectedDriver?.name || 'Motorista'} está em apoio e não aparecerá como disponível.`, 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function closeSupport(support) {
+    setClosingId(support.id);
+    try {
+      await api(token, `/api/driver-supports/${support.id}/close`, { method: 'POST' });
+      await refresh();
+      notify(`${supportDriverName(support, drivers)} voltou a ficar disponível conforme a operação.`, 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setClosingId('');
+    }
+  }
+
+  if (noOwnDriver) {
+    return <section className="restricted"><HandHeart size={35} /><h1>Motorista não vinculado</h1><p>Peça ao administrador para vincular um motorista ao seu usuário antes de registrar um apoio.</p></section>;
+  }
+
+  return <>
+    <SectionHeader title="Apoio" description={canManageSettings ? 'Registre apoios em qualquer local e selecione o motorista que ficará indisponível durante a atividade.' : 'Informe onde você está prestando apoio para não aparecer como motorista disponível.'} />
+    <section className="support-create-card">
+      <div className="support-create-copy"><span>CONTROLE DE APOIO</span><h2>{ownSupport ? 'Você está em apoio' : canManageSettings ? 'Registrar apoio de motorista' : 'Iniciar meu apoio'}</h2><p>{ownSupport ? `Você está em apoio em ${ownSupport.location || 'local não informado'}. Encerre somente quando a atividade terminar.` : canManageSettings ? 'O motorista selecionado passa a aparecer como “Em apoio” e não poderá ser usado em tours enquanto o registro estiver aberto.' : 'Ao iniciar, seu status muda para “Em apoio”. Informe o local para a equipe saber onde você está.'}</p></div>
+      <form className="support-form" onSubmit={startSupport}>
+        {canManageSettings && <label>Motorista<select value={selectedDriverId} onChange={(event) => setSelectedDriverId(event.target.value)} required><option value="">Selecione o motorista</option>{selectableDrivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select>{!selectableDrivers.length && <small>Nenhum motorista disponível para iniciar um novo apoio.</small>}</label>}
+        <label className="support-location">Local do apoio<input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Ex.: Lobby, Casa, estacionamento" maxLength="120" required disabled={Boolean(ownSupport)} /></label>
+        <label className="support-note-input">Observação (opcional)<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ex.: auxiliando hóspede ou equipe" maxLength="300" rows="3" disabled={Boolean(ownSupport)} /></label>
+        <button className="button button-primary" disabled={saving || !canStart}>{saving && <LoaderCircle className="spin" size={17} />} <HandHeart size={18} /> Iniciar apoio</button>
+      </form>
+    </section>
+    <section className="support-active-section">
+      <div className="panel-heading"><div><h2>{canManageSettings ? 'Apoios em andamento' : 'Meu apoio em andamento'}</h2><p>{canManageSettings ? 'A coordenação pode encerrar qualquer apoio ao final da atividade.' : 'Ao encerrar, você volta a ficar disponível conforme seu check-in.'}</p></div><span className="support-count"><HandHeart size={16} /> {visibleSupports.length} em apoio</span></div>
+      <div className="support-grid">{visibleSupports.length ? visibleSupports.map((support) => {
+        const isOwn = supportDriverId(support) === ownDriverId;
+        const canClose = canManageSettings || isOwn;
+        const startedAt = support.startedAt || support.createdAt;
+        return <article className="support-card" key={support.id}><div className="support-card-header"><div><Avatar name={supportDriverName(support, drivers)} color="photo" /><span><strong>{supportDriverName(support, drivers)}</strong><small>{isOwn ? 'Seu apoio atual' : 'Motorista em apoio'}</small></span></div><StatusPill driver status="APOIO" /></div><dl><div><dt>Local</dt><dd>{support.location || 'Local não informado'}</dd></div><div><dt>Início</dt><dd>{startedAt ? time(startedAt) : '—'}</dd></div>{support.note && <div className="support-note"><dt>Observação</dt><dd>{support.note}</dd></div>}</dl>{canClose && <button className="button button-secondary support-close" onClick={() => closeSupport(support)} disabled={Boolean(closingId)}>{closingId === support.id && <LoaderCircle className="spin" size={17} />} Encerrar apoio</button>}</article>;
+      }) : <div className="empty-state">Nenhum apoio em andamento. Motoristas livres aparecem como disponíveis até registrarem um apoio.</div>}</div>
+    </section>
+  </>;
 }
 
 function ConsultantEditorModal({ consultant, onClose, token, refresh, notify }) {
@@ -1092,6 +1199,7 @@ function App() {
     if (activePage === 'transfers') return user.role === 'CONCIERGE' && data.operationSettings?.conciergePanelClosed ? <ConciergeClosedPage data={data} /> : <TransfersPage data={data} user={user} onCreate={openTransfer} onAction={openTransferAction} />;
     if (activePage === 'gallery') return <GalleryPage data={data} user={user} onAction={openAction} />;
     if (activePage === 'drivers') return <DriversPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
+    if (activePage === 'support') return <DriverSupportPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (activePage === 'consultants') return <ConsultantsPage data={data} user={user} token={token} refresh={refresh} notify={notify} />;
     if (activePage === 'carts') return <CartsPage data={data} />;
     if (activePage === 'history') return <HistoryPage data={data} />;

@@ -11,7 +11,7 @@ self.addEventListener('push', (event) => {
   } catch {
     payload = { body: event.data ? event.data.text() : '' };
   }
-  event.waitUntil(self.registration.showNotification(payload.title || 'Iberostar Tour Interno', {
+  event.waitUntil(self.registration.showNotification(payload.title || 'Iberostar The Club', {
     body: payload.body || 'A operação recebeu uma atualização.',
     tag: payload.tag || 'iberostar-tour-summary',
     renotify: true,

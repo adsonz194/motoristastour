@@ -1,4 +1,4 @@
-"""Iberostar Tour Interno - Flask application ready for Render."""
+"""Iberostar The Club - Flask application ready for Render."""
 
 from __future__ import annotations
 
@@ -76,6 +76,7 @@ PERMISSION_MANAGE_USERS = "MANAGE_USERS"
 PERMISSION_MANAGE_SETTINGS = "MANAGE_SETTINGS"
 PERMISSION_CHECK_IN = "CHECK_IN"
 PERMISSION_MANAGE_HOSTESS_SUPPORT = "MANAGE_HOSTESS_SUPPORT"
+PERMISSION_MANAGE_DRIVER_SUPPORT = "MANAGE_DRIVER_SUPPORT"
 
 PERMISSION_CATALOG = [
     {"key": PERMISSION_VIEW_DASHBOARD, "label": "Ver Painel Geral", "description": "Consulta o Painel Geral sem alterar a operação.", "group": "Visualização"},
@@ -95,6 +96,7 @@ PERMISSION_CATALOG = [
     {"key": PERMISSION_MANAGE_TRANSFERS, "label": "Gerenciar convites Waves", "description": "Registra e atualiza convites e traslados Waves.", "group": "Operação"},
     {"key": PERMISSION_REQUEST_HOSTESS_CAR, "label": "Solicitar carro da Hostess", "description": "Abre e encerra solicitações de carro para a Hostess.", "group": "Operação"},
     {"key": PERMISSION_MANAGE_HOSTESS_SUPPORT, "label": "Atender solicitação da Hostess", "description": "Permite ao motorista assumir e encerrar apoio à Hostess.", "group": "Operação"},
+    {"key": PERMISSION_MANAGE_DRIVER_SUPPORT, "label": "Registrar apoio operacional", "description": "Permite iniciar e encerrar um apoio do motorista em outro local.", "group": "Operação"},
     {"key": PERMISSION_CHECK_IN, "label": "Fazer check-in", "description": "Registra presença no dia de operação.", "group": "Operação"},
     {"key": PERMISSION_MANAGE_DRIVERS, "label": "Gerenciar motoristas", "description": "Cria, edita e exclui cadastros de motoristas.", "group": "Administração"},
     {"key": PERMISSION_MANAGE_CONSULTANTS, "label": "Gerenciar consultores", "description": "Cria, edita e exclui cadastros de consultores.", "group": "Administração"},
@@ -116,6 +118,7 @@ DEFAULT_ROLE_PERMISSIONS = {
         PERMISSION_VIEW_DRIVERS,
         PERMISSION_MANAGE_TOURS,
         PERMISSION_MANAGE_HOSTESS_SUPPORT,
+        PERMISSION_MANAGE_DRIVER_SUPPORT,
         PERMISSION_CHECK_IN,
     },
     ROLE_HOSTESS: {
@@ -129,6 +132,15 @@ DEFAULT_ROLE_PERMISSIONS = {
         PERMISSION_MANAGE_TRANSFERS,
     },
     ROLE_VIEWER: {PERMISSION_VIEW_DASHBOARD},
+}
+
+# Accounts created before the generic support feature already have an explicit
+# permission list.  Only a list that exactly matches the complete old role
+# template is safe to upgrade automatically; any smaller or tailored list is
+# an intentional administrator decision and must be left untouched.
+PRE_DRIVER_SUPPORT_DEFAULT_PERMISSIONS = {
+    ROLE_ADMIN: set(PERMISSIONS) - {PERMISSION_MANAGE_DRIVER_SUPPORT},
+    ROLE_DRIVER: set(DEFAULT_ROLE_PERMISSIONS[ROLE_DRIVER]) - {PERMISSION_MANAGE_DRIVER_SUPPORT},
 }
 
 STATE_AVAILABLE = "DISPONIVEL"
@@ -164,6 +176,7 @@ DRIVER_HOME = "CASA"
 DRIVER_GALLERY = "GALERIA"
 DRIVER_DESTINATION = "DESTINO_FINAL"
 DRIVER_HOSTESS_SUPPORT = "APOIO_HOSTESS"
+DRIVER_SUPPORT = "APOIO"
 DRIVER_LEAVE = "FOLGA"
 DRIVER_MEDICAL = "ATESTADO"
 # APOIO_HOSTESS is an internal temporary reservation. It is set only when a
@@ -176,6 +189,7 @@ DRIVER_STATUS_LABELS = {
     DRIVER_GALLERY: "Na Galeria",
     DRIVER_DESTINATION: "No destino final",
     DRIVER_HOSTESS_SUPPORT: "Em apoio à Hostess",
+    DRIVER_SUPPORT: "Em apoio",
     DRIVER_LEAVE: "Folga",
     DRIVER_MEDICAL: "Atestado",
 }
@@ -192,6 +206,8 @@ TRANSFER_ARRIVED = "CHEGOU_PRESTIGE"
 TRANSFER_WITHDRAWN = "DESISTENCIA"
 HOSTESS_REQUEST_OPEN = "SOLICITADO"
 HOSTESS_REQUEST_CLOSED = "ENCERRADO"
+DRIVER_SUPPORT_OPEN = "ABERTO"
+DRIVER_SUPPORT_CLOSED = "ENCERRADO"
 HOTEL_WAVES_BAHIA = "WAVES_BAHIA"
 HOTEL_PRAIA_SELECTION = "PRAIA_SELECTION"
 HOTELS = {
@@ -377,6 +393,7 @@ def initial_database() -> dict[str, Any]:
         "tours": [],
         "transfers": [],
         "hostessRequests": [],
+        "driverSupports": [],
         # Local development keeps push subscriptions here. Production keeps
         # them in their own PostgreSQL table so device endpoints never enter
         # the operational state blob.
@@ -759,12 +776,16 @@ def reset_operational_data(db: dict[str, Any], message: str) -> None:
     db["tours"] = []
     db["transfers"] = []
     db["hostessRequests"] = []
+    db["driverSupports"] = []
     db["attendance"] = []
     for driver in db["drivers"]:
         # A new day starts with everyone off duty. A driver becomes available
         # only after using their own account to check in for that day.
         driver["status"] = DRIVER_LEAVE
         driver["hostessAvailable"] = False
+        driver["hostessRequestId"] = None
+        driver["driverSupportId"] = None
+        driver["supportLocation"] = None
         driver["toursStarted"] = 0
         driver["homePickups"] = 0
         driver["lastActivity"] = current_time
@@ -835,6 +856,9 @@ def operational_database() -> dict[str, Any]:
     if "hostessRequests" not in db:
         db["hostessRequests"] = []
         schema_updated = True
+    if "driverSupports" not in db:
+        db["driverSupports"] = []
+        schema_updated = True
     for car_request in db["hostessRequests"]:
         for field, default in (
             ("assignedDriverId", None),
@@ -868,6 +892,12 @@ def operational_database() -> dict[str, Any]:
         if "hostessRequestId" not in driver:
             driver["hostessRequestId"] = None
             schema_updated = True
+        if "driverSupportId" not in driver:
+            driver["driverSupportId"] = None
+            schema_updated = True
+        if "supportLocation" not in driver:
+            driver["supportLocation"] = None
+            schema_updated = True
         # Earlier versions kept an accepted Hostess call as only a Boolean,
         # which left the driver selectable for a tour. Convert it to the
         # exclusive support state the first time this version loads the data.
@@ -899,6 +929,8 @@ def operational_database() -> dict[str, Any]:
             })
             driver["hostessRequestId"] = car_request["id"]
             schema_updated = True
+    if reconcile_driver_supports(db):
+        schema_updated = True
     # Prestige Praia and Prestige Selection refer to the same destination.
     # Keep historical tours valid while removing the duplicated option.
     for tour in db.get("tours", []):
@@ -916,11 +948,14 @@ def operational_database() -> dict[str, Any]:
     if db.get("destinations") != FINAL_DESTINATIONS:
         db["destinations"] = [dict(item) for item in FINAL_DESTINATIONS]
         schema_updated = True
-    # Existing accounts predate per-user permissions. Give each one the
-    # matching role template exactly once, while preserving any explicit list
-    # subsequently selected by an administrator.
+    # Existing accounts predate the generic driver-support permission.  Add it
+    # only to complete, untouched Admin/Driver templates; a customized list is
+    # an explicit access decision and must not grow silently after deployment.
     for account in db.get("users", []):
         normalized_permissions = normalize_permissions(account.get("permissions"), account.get("role"))
+        old_template = PRE_DRIVER_SUPPORT_DEFAULT_PERMISSIONS.get(account.get("role"))
+        if old_template is not None and set(normalized_permissions) == old_template:
+            normalized_permissions = default_permissions_for_role(account.get("role"))
         if account.get("permissions") != normalized_permissions:
             account["permissions"] = normalized_permissions
             schema_updated = True
@@ -1006,6 +1041,16 @@ def require_permission(user: dict[str, Any], permission: str, message: str | Non
 
 def require_operational(user: dict[str, Any]) -> None:
     require_permission(user, PERMISSION_MANAGE_TOURS, "Seu usuário possui somente acesso de consulta aos tours.")
+
+
+def can_manage_driver_support(user: dict[str, Any]) -> bool:
+    """Settings coordinators may supervise support even if custom grants omit it."""
+    return user_has_permission(user, PERMISSION_MANAGE_DRIVER_SUPPORT) or user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+
+
+def require_driver_support_access(user: dict[str, Any]) -> None:
+    if not can_manage_driver_support(user):
+        raise APIError("Seu usuário não possui permissão para registrar apoio operacional.", 403)
 
 
 def require_transfer_access(user: dict[str, Any]) -> None:
@@ -1215,6 +1260,12 @@ def update_driver(db: dict[str, Any], driver_id: str, status: str, tours: bool =
     if status != DRIVER_HOSTESS_SUPPORT:
         driver["hostessAvailable"] = False
         driver["hostessRequestId"] = None
+    # Generic operational support is also an exclusive temporary state. It
+    # can only be released through its close endpoint (or reconciliation),
+    # never left attached to a driver who moved back into the tour pool.
+    if status != DRIVER_SUPPORT:
+        driver["driverSupportId"] = None
+        driver["supportLocation"] = None
     if tours:
         driver["toursStarted"] += 1
     if home_pickup:
@@ -1233,6 +1284,8 @@ def create_linked_driver(db: dict[str, Any], user: dict[str, Any], status: str =
         "homePickups": 0,
         "hostessAvailable": False,
         "hostessRequestId": None,
+        "driverSupportId": None,
+        "supportLocation": None,
         "lastActivity": timestamp(),
     }
     db["drivers"].append(driver)
@@ -1284,6 +1337,174 @@ def active_driver_assignment(db: dict[str, Any], driver_id: str) -> dict[str, An
     return None
 
 
+def open_driver_supports(db: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return generic operational supports that are still active."""
+    return [item for item in db.setdefault("driverSupports", []) if item.get("status") == DRIVER_SUPPORT_OPEN]
+
+
+def driver_support_for_driver(db: dict[str, Any], driver: dict[str, Any]) -> dict[str, Any] | None:
+    """Find the one open generic support assigned to a driver."""
+    support_id = driver.get("driverSupportId")
+    if support_id:
+        support = next((item for item in open_driver_supports(db) if item.get("id") == support_id), None)
+        if support:
+            return support
+    return next((item for item in open_driver_supports(db) if item.get("driverId") == driver.get("id")), None)
+
+
+def driver_status_from_assignment(tour: dict[str, Any]) -> str:
+    """Recover a safe driver state when repairing an inconsistent record."""
+    if tour.get("status") == STATE_HOME:
+        return DRIVER_HOME
+    if tour.get("status") == STATE_FINAL_DESTINATION:
+        return DRIVER_DESTINATION
+    return DRIVER_IN_TOUR
+
+
+def close_driver_support_record(
+    db: dict[str, Any],
+    support: dict[str, Any],
+    user: dict[str, Any],
+    reason: str,
+) -> dict[str, Any] | None:
+    """Close a generic support and release only its assigned driver."""
+    closed_at = timestamp()
+    support.update({
+        "status": DRIVER_SUPPORT_CLOSED,
+        "closedAt": closed_at,
+        "closedById": user.get("id"),
+        "closedByName": user.get("name", "Sistema"),
+        "closedReason": reason,
+        "updatedAt": closed_at,
+    })
+    driver = next((item for item in db.get("drivers", []) if item.get("id") == support.get("driverId")), None)
+    if driver:
+        remaining_support = driver_support_for_driver(db, driver)
+        if remaining_support:
+            # A malformed old database may have duplicated open records. Keep
+            # the driver reserved for the remaining one instead of releasing
+            # them into the tour pool prematurely.
+            driver["status"] = DRIVER_SUPPORT
+            driver["driverSupportId"] = remaining_support["id"]
+            driver["supportLocation"] = remaining_support.get("location")
+            driver["lastActivity"] = closed_at
+        else:
+            next_status = DRIVER_AVAILABLE if driver.get("active", True) and driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
+            update_driver(db, driver["id"], next_status)
+    return driver
+
+
+def close_stale_driver_support(support: dict[str, Any], reason: str) -> None:
+    """Mark a migrated/corrupt support closed without inventing an actor."""
+    closed_at = timestamp()
+    support.update({
+        "status": DRIVER_SUPPORT_CLOSED,
+        "closedAt": support.get("closedAt") or closed_at,
+        "closedById": support.get("closedById"),
+        "closedByName": support.get("closedByName") or "Sistema",
+        "closedReason": support.get("closedReason") or reason,
+        "updatedAt": closed_at,
+    })
+
+
+def reconcile_driver_supports(db: dict[str, Any]) -> bool:
+    """Repair support records left incomplete by an older deploy or bad data.
+
+    A generic support must have exactly one active, checked-in driver and may
+    never coexist with a tour allocation or a Hostess support.  Existing tour
+    and Hostess records win any conflict, because they carry a concrete group
+    or request that must not be displaced by a stale support marker.
+    """
+    changed = False
+    supports = db.setdefault("driverSupports", [])
+    drivers_by_id = {item.get("id"): item for item in db.get("drivers", [])}
+    operation_day = db.get("operationDate") or operation_date()
+    accepted_by_driver: dict[str, dict[str, Any]] = {}
+
+    for support in supports:
+        defaults = {
+            "status": DRIVER_SUPPORT_OPEN,
+            "location": "",
+            "note": "",
+            "operationDate": operation_day,
+            "startedAt": support.get("createdAt") or timestamp(),
+            "createdAt": support.get("startedAt") or timestamp(),
+            "updatedAt": support.get("startedAt") or timestamp(),
+        }
+        for field, default in defaults.items():
+            if field not in support:
+                support[field] = default
+                changed = True
+
+        if support.get("status") not in {DRIVER_SUPPORT_OPEN, DRIVER_SUPPORT_CLOSED}:
+            close_stale_driver_support(support, "STATUS_INVALIDO")
+            changed = True
+            continue
+        if support.get("status") != DRIVER_SUPPORT_OPEN:
+            continue
+
+        driver_id = str(support.get("driverId") or "").strip()
+        driver = drivers_by_id.get(driver_id)
+        location = str(support.get("location") or "").strip()
+        if driver and not str(support.get("driverName") or "").strip():
+            support["driverName"] = driver["name"]
+            changed = True
+        assignment = active_driver_assignment(db, driver_id) if driver else None
+        conflict = (
+            support.get("operationDate") != operation_day
+            or not driver
+            or not location
+            or not driver.get("active", True)
+            or not driver_has_checked_in(db, driver_id)
+            or assignment is not None
+            or driver.get("status") == DRIVER_HOSTESS_SUPPORT
+            or bool(driver.get("hostessAvailable"))
+            or driver.get("status") not in {DRIVER_AVAILABLE, DRIVER_SUPPORT}
+            or driver_id in accepted_by_driver
+        )
+        if conflict:
+            close_stale_driver_support(support, "CONFLITO_RECONCILIADO")
+            changed = True
+            continue
+        accepted_by_driver[driver_id] = support
+
+    for driver in db.get("drivers", []):
+        support = accepted_by_driver.get(driver.get("id"))
+        if support:
+            if (
+                driver.get("status") != DRIVER_SUPPORT
+                or driver.get("driverSupportId") != support.get("id")
+                or driver.get("supportLocation") != support.get("location")
+            ):
+                driver["status"] = DRIVER_SUPPORT
+                driver["driverSupportId"] = support["id"]
+                driver["supportLocation"] = support["location"]
+                driver["lastActivity"] = support.get("startedAt") or timestamp()
+                changed = True
+            continue
+
+        had_support_fields = bool(driver.get("driverSupportId") or driver.get("supportLocation"))
+        if had_support_fields:
+            driver["driverSupportId"] = None
+            driver["supportLocation"] = None
+            changed = True
+        if driver.get("status") != DRIVER_SUPPORT:
+            continue
+        assignment = active_driver_assignment(db, driver["id"])
+        if assignment:
+            next_status = driver_status_from_assignment(assignment)
+        elif driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
+            # The branch is retained for malformed records. A real Hostess
+            # reservation has already been reconciled above and keeps priority.
+            next_status = DRIVER_HOSTESS_SUPPORT
+        else:
+            next_status = DRIVER_AVAILABLE if driver.get("active", True) and driver_has_checked_in(db, driver["id"]) else DRIVER_LEAVE
+        driver["status"] = next_status
+        driver["lastActivity"] = timestamp()
+        changed = True
+    return changed
+
+
 def public_final_destination_name(db: dict[str, Any], driver_id: str) -> str | None:
     """Get the current final destination without exposing any tour details."""
     final_destination_tours = [
@@ -1316,6 +1537,10 @@ def public_driver_location(db: dict[str, Any], driver: dict[str, Any]) -> tuple[
         if destination_name:
             return DRIVER_DESTINATION, f"A caminho de {destination_name}"
         return DRIVER_DESTINATION, "A caminho do destino final"
+    if status == DRIVER_SUPPORT:
+        support = driver_support_for_driver(db, driver)
+        location = str((support or {}).get("location") or driver.get("supportLocation") or "").strip()
+        return DRIVER_SUPPORT, f"Em apoio · {location}" if location else "Em apoio operacional"
     locations = {
         DRIVER_AVAILABLE: "Disponível",
         DRIVER_HOME: "Na Casa",
@@ -1342,6 +1567,11 @@ def remove_driver_for_role_change(db: dict[str, Any], driver_id: str, user_id: s
     assigned_tour = active_driver_assignment(db, driver_id)
     if assigned_tour:
         raise APIError(f"O motorista está vinculado ao tour de {assigned_tour['groupName']}. Libere o transporte antes de mudar o perfil.", 409)
+    driver = find(db["drivers"], driver_id, "Motorista")
+    if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
+        raise APIError("Encerre o apoio à Hostess antes de mudar o perfil do motorista.", 409)
+    if driver.get("status") == DRIVER_SUPPORT or driver_support_for_driver(db, driver):
+        raise APIError("Encerre o apoio operacional antes de mudar o perfil do motorista.", 409)
     if any(item.get("id") != user_id and item.get("role") == ROLE_DRIVER and item.get("driverId") == driver_id for item in db["users"]):
         return
     db["drivers"] = [item for item in db["drivers"] if item["id"] != driver_id]
@@ -1369,6 +1599,9 @@ def enforce_driver_checkin(db: dict[str, Any]) -> bool:
         if not driver.get("active", True) or not driver_has_checked_in(db, driver["id"]):
             driver["status"] = DRIVER_LEAVE
             driver["hostessAvailable"] = False
+            driver["hostessRequestId"] = None
+            driver["driverSupportId"] = None
+            driver["supportLocation"] = None
             driver["lastActivity"] = timestamp()
             changed = True
     return changed
@@ -1447,6 +1680,10 @@ def normalized_allocations(db: dict[str, Any], raw_allocations: Any) -> list[dic
         driver = find(db["drivers"], driver_id, "Motorista")
         if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
             raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de usar este motorista.", 409)
+        if driver.get("status") == DRIVER_SUPPORT or driver_support_for_driver(db, driver):
+            location = str(driver.get("supportLocation") or "").strip()
+            suffix = f" em {location}" if location else ""
+            raise APIError(f"{driver['name']} está em apoio operacional{suffix}. Encerre o apoio antes de usar este motorista.", 409)
         if not driver.get("active", True) or driver["status"] != DRIVER_AVAILABLE:
             raise APIError(f"{driver['name']} não está disponível.")
         if not driver_has_checked_in(db, driver_id):
@@ -1822,7 +2059,7 @@ def test_push():
             raise APIError("As notificações push ainda não foram configuradas no servidor.", 503)
         messages = [
             (record, {
-                "title": "Iberostar Tour Interno",
+                "title": "Iberostar The Club",
                 "body": "Notificações push ativadas neste aparelho.",
                 "tag": "iberostar-tour-push-test",
                 "url": "/",
@@ -1875,7 +2112,7 @@ def dashboard_readonly_data(db: dict[str, Any], settings: dict[str, Any]) -> dic
     }
     driver_fields = {
         "id", "name", "active", "status", "toursStarted", "homePickups",
-        "hostessAvailable", "lastActivity",
+        "hostessAvailable", "driverSupportId", "supportLocation", "lastActivity",
     }
     activity_fields = {
         "id", "at", "userName", "actorName", "actorUsername", "actorRole", "tourId", "transferId",
@@ -1955,7 +2192,14 @@ def bootstrap_data_for_user(
             transfers = [] if settings["conciergePanelClosed"] else [item for item in transfers if item.get("conciergeUserId") == user["id"]]
         data["transfers"] = transfers
 
-    if permissions & {PERMISSION_VIEW_DRIVERS, PERMISSION_MANAGE_DRIVERS, PERMISSION_MANAGE_HOSTESS_SUPPORT, PERMISSION_REQUEST_HOSTESS_CAR}:
+    if permissions & {
+        PERMISSION_VIEW_DRIVERS,
+        PERMISSION_MANAGE_DRIVERS,
+        PERMISSION_MANAGE_HOSTESS_SUPPORT,
+        PERMISSION_MANAGE_DRIVER_SUPPORT,
+        PERMISSION_REQUEST_HOSTESS_CAR,
+        PERMISSION_MANAGE_SETTINGS,
+    }:
         data["drivers"] = db.get("drivers", [])
     if permissions & {PERMISSION_VIEW_CONSULTANTS, PERMISSION_MANAGE_CONSULTANTS}:
         data["consultants"] = db.get("consultants", [])
@@ -1970,6 +2214,8 @@ def bootstrap_data_for_user(
 
     if permissions & {PERMISSION_REQUEST_HOSTESS_CAR, PERMISSION_MANAGE_HOSTESS_SUPPORT}:
         data["hostessRequests"] = db.get("hostessRequests", [])
+    if permissions & {PERMISSION_MANAGE_DRIVER_SUPPORT, PERMISSION_MANAGE_SETTINGS}:
+        data["driverSupports"] = db.get("driverSupports", [])
     if PERMISSION_CHECK_IN in permissions:
         data["attendance"] = [current_attendance] if current_attendance else []
 
@@ -1982,7 +2228,7 @@ def bootstrap_data_for_user(
 
     # Pages are defensive in the browser, but returning empty collections
     # keeps a custom, narrowly scoped account from crashing a shared view.
-    for collection in ("tours", "transfers", "drivers", "consultants", "carts", "destinations", "activities", "hostessRequests", "attendance"):
+    for collection in ("tours", "transfers", "drivers", "consultants", "carts", "destinations", "activities", "hostessRequests", "driverSupports", "attendance"):
         data.setdefault(collection, [])
     return data
 
@@ -2001,7 +2247,8 @@ def bootstrap():
             permissionsCatalog=PERMISSION_CATALOG,
             rolePermissionDefaults={role: default_permissions_for_role(role) for role in sorted(ROLES)},
             states={"DISPONIVEL": STATE_AVAILABLE, "EM_TOUR": STATE_IN_TOUR, "NA_CASA": STATE_HOME, "AGUARDANDO_CASA": STATE_WAITING_HOME, "NA_GALERIA": STATE_GALLERY, "EM_APRESENTACAO": STATE_PRESENTATION, "AGUARDANDO_DESTINO": STATE_WAITING_DESTINATION, "EM_DESTINO_FINAL": STATE_FINAL_DESTINATION, "CONCLUIDO": STATE_COMPLETE, "DESISTENCIA": STATE_WITHDRAWN},
-            driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "APOIO_HOSTESS": DRIVER_HOSTESS_SUPPORT, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
+            driverStates={"DISPONIVEL": DRIVER_AVAILABLE, "EM_TOUR": DRIVER_IN_TOUR, "CASA": DRIVER_HOME, "GALERIA": DRIVER_GALLERY, "DESTINO_FINAL": DRIVER_DESTINATION, "APOIO": DRIVER_SUPPORT, "APOIO_HOSTESS": DRIVER_HOSTESS_SUPPORT, "FOLGA": DRIVER_LEAVE, "ATESTADO": DRIVER_MEDICAL},
+            driverSupportStates={"ABERTO": DRIVER_SUPPORT_OPEN, "ENCERRADO": DRIVER_SUPPORT_CLOSED},
             attendance=current_attendance,
             waves=TRANSFER_SCHEDULES,
             transferStates={"AGENDADO": TRANSFER_SCHEDULED, "EM_DESLOCAMENTO": TRANSFER_IN_PROGRESS, "CHEGOU_PRESTIGE": TRANSFER_ARRIVED, "DESISTENCIA": TRANSFER_WITHDRAWN},
@@ -2272,6 +2519,8 @@ def driver_hostess_availability():
         driver = find(db["drivers"], driver_id, "Motorista")
         available = bool(payload.get("available", True))
         if available:
+            if driver.get("status") == DRIVER_SUPPORT or driver_support_for_driver(db, driver):
+                raise APIError("Você está em apoio operacional. Encerre o apoio antes de responder à Hostess.", 409)
             open_requests = open_hostess_requests(db)
             if not open_requests:
                 raise APIError("Não há solicitação de carro aberta pela Hostess no momento.", 409)
@@ -2328,6 +2577,140 @@ def driver_hostess_availability():
     return response
 
 
+@app.post("/api/driver-supports")
+def create_driver_support():
+    """Reserve a checked-in driver while they provide operational support.
+
+    Drivers can only mark their own work. A coordinator with settings access
+    can register support for any checked-in, available driver when coordinating
+    the operation from the panel.
+    """
+    payload = request.get_json(silent=True) or {}
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_driver_support_access(user)
+        coordinator = user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+        requested_driver_id = str(payload.get("driverId") or "").strip()
+        own_driver_id = str(user.get("driverId") or "").strip()
+        if coordinator:
+            driver_id = requested_driver_id or own_driver_id
+            if not driver_id:
+                raise APIError("Selecione o motorista que irá prestar o apoio.")
+        else:
+            if not own_driver_id:
+                raise APIError("Seu usuário não está vinculado a um cadastro de motorista.", 409)
+            if requested_driver_id and requested_driver_id != own_driver_id:
+                raise APIError("Você pode iniciar apoio somente para o seu próprio motorista.", 403)
+            driver_id = own_driver_id
+
+        location = str(payload.get("location") or "").strip()
+        note = str(payload.get("note") or "").strip()
+        if not location:
+            raise APIError("Informe o local do apoio.")
+        if len(location) > 160:
+            raise APIError("O local do apoio deve ter no máximo 160 caracteres.")
+        if len(note) > 500:
+            raise APIError("A observação do apoio deve ter no máximo 500 caracteres.")
+
+        driver = find(db["drivers"], driver_id, "Motorista")
+        if driver_support_for_driver(db, driver):
+            raise APIError(f"{driver['name']} já está em apoio operacional.", 409)
+        if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
+            raise APIError(f"{driver['name']} está atendendo a Hostess. Encerre esse apoio antes de iniciar outro.", 409)
+        assigned_tour = active_driver_assignment(db, driver_id)
+        if assigned_tour:
+            raise APIError(f"{driver['name']} está vinculado ao {assigned_tour['groupName']}. Libere o tour antes de iniciar apoio.", 409)
+        if not driver.get("active", True):
+            raise APIError("O cadastro do motorista está inativo.", 409)
+        if driver.get("status") != DRIVER_AVAILABLE:
+            raise APIError(f"{driver['name']} não está disponível para iniciar apoio.", 409)
+        if not driver_has_checked_in(db, driver_id):
+            raise APIError(f"{driver['name']} precisa fazer check-in antes de iniciar apoio.", 409)
+
+        started_at = timestamp()
+        support = {
+            "id": new_id("support"),
+            "status": DRIVER_SUPPORT_OPEN,
+            "driverId": driver["id"],
+            "driverName": driver["name"],
+            "location": location,
+            "note": note,
+            "operationDate": operation_date(),
+            "startedAt": started_at,
+            "createdAt": started_at,
+            "updatedAt": started_at,
+            "startedById": user["id"],
+            "startedByName": user["name"],
+        }
+        db.setdefault("driverSupports", []).insert(0, support)
+        update_driver(db, driver["id"], DRIVER_SUPPORT)
+        driver["driverSupportId"] = support["id"]
+        driver["supportLocation"] = location
+        driver["lastActivity"] = started_at
+        log_activity(
+            db,
+            user,
+            None,
+            DRIVER_AVAILABLE,
+            DRIVER_SUPPORT,
+            f"{driver['name']} iniciou apoio operacional em {location}.",
+            audit={
+                "type": "DRIVER_SUPPORT",
+                "action": "START",
+                "supportId": support["id"],
+                "driverId": driver["id"],
+                "driverName": driver["name"],
+                "location": location,
+                "note": note or None,
+            },
+        )
+        save_database(db)
+        return jsonify(support=support, driver=driver), 201
+
+
+@app.post("/api/driver-supports/<support_id>/close")
+def close_driver_support(support_id: str):
+    """End a generic support and return the checked-in driver to the pool."""
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_driver_support_access(user)
+        support = find(db.setdefault("driverSupports", []), support_id, "Apoio")
+        if support.get("status") != DRIVER_SUPPORT_OPEN:
+            raise APIError("Este apoio já foi encerrado.", 409)
+        coordinator = user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+        own_driver_id = str(user.get("driverId") or "").strip()
+        if not coordinator:
+            if not own_driver_id:
+                raise APIError("Seu usuário não está vinculado a um cadastro de motorista.", 409)
+            if support.get("driverId") != own_driver_id:
+                raise APIError("Você pode encerrar somente o seu próprio apoio.", 403)
+
+        driver = find(db["drivers"], str(support.get("driverId") or ""), "Motorista")
+        previous_status = driver.get("status")
+        released_driver = close_driver_support_record(db, support, user, "ENCERRADO_PELO_USUARIO")
+        next_status = released_driver.get("status") if released_driver else DRIVER_LEAVE
+        log_activity(
+            db,
+            user,
+            None,
+            previous_status,
+            next_status,
+            f"{user['name']} encerrou o apoio operacional de {driver['name']} em {support.get('location') or 'local não informado'}.",
+            audit={
+                "type": "DRIVER_SUPPORT",
+                "action": "CLOSE",
+                "supportId": support["id"],
+                "driverId": driver["id"],
+                "driverName": driver["name"],
+                "location": support.get("location"),
+            },
+        )
+        save_database(db)
+        return jsonify(support=support, driver=released_driver)
+
+
 @app.post("/api/drivers")
 def create_driver():
     payload = request.get_json(silent=True) or {}
@@ -2342,7 +2725,7 @@ def create_driver():
         # A registered driver still needs a linked account and today's check-in
         # before becoming operationally available.
         initial_status = DRIVER_LEAVE if status == DRIVER_AVAILABLE else status
-        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "hostessAvailable": False, "hostessRequestId": None, "lastActivity": timestamp()}
+        driver = {"id": new_id("drv"), "name": name, "active": bool(payload.get("active", True)), "status": initial_status, "toursStarted": 0, "homePickups": 0, "hostessAvailable": False, "hostessRequestId": None, "driverSupportId": None, "supportLocation": None, "lastActivity": timestamp()}
         db["drivers"].append(driver)
         log_activity(db, user, None, None, None, f"Motorista {name} cadastrado.")
         save_database(db)
@@ -2359,6 +2742,8 @@ def update_driver_record(driver_id: str):
         driver = find(db["drivers"], driver_id, "Motorista")
         if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
             raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de alterar seu cadastro.", 409)
+        if driver.get("status") == DRIVER_SUPPORT or driver_support_for_driver(db, driver):
+            raise APIError(f"{driver['name']} está em apoio operacional. Encerre o apoio antes de alterar seu cadastro.", 409)
         previous_name = driver["name"]
         previous_status = driver["status"]
         previous_active = driver.get("active", True)
@@ -2375,6 +2760,9 @@ def update_driver_record(driver_id: str):
         driver.update({"name": name, "active": active, "status": status, "lastActivity": timestamp()})
         if status != DRIVER_AVAILABLE or not active:
             driver["hostessAvailable"] = False
+            driver["hostessRequestId"] = None
+            driver["driverSupportId"] = None
+            driver["supportLocation"] = None
         changed = (name, status, active) != (previous_name, previous_status, previous_active)
         audit = None
         if changed:
@@ -2407,6 +2795,8 @@ def delete_driver(driver_id: str):
         driver = find(db["drivers"], driver_id, "Motorista")
         if driver.get("status") == DRIVER_HOSTESS_SUPPORT or driver.get("hostessAvailable"):
             raise APIError(f"{driver['name']} está reservado para o apoio da Hostess. Encerre o apoio antes de excluir.", 409)
+        if driver.get("status") == DRIVER_SUPPORT or driver_support_for_driver(db, driver):
+            raise APIError(f"{driver['name']} está em apoio operacional. Encerre o apoio antes de excluir.", 409)
         assigned_tour = active_driver_assignment(db, driver_id)
         if assigned_tour:
             raise APIError(f"{driver['name']} está vinculado ao tour de {assigned_tour['groupName']}. Libere-o antes de excluir.", 409)
