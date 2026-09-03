@@ -4,7 +4,7 @@ import {
   BarChart3, Bell, Building2, CalendarDays, CarFront, Check, ChevronRight, CircleUserRound,
   Clock3, FileClock, Flag, HandHeart, House, Image, LayoutDashboard, LoaderCircle, LockKeyhole,
   LogOut, MapPin, Menu, MoreHorizontal, Plus, Route, Settings, ShieldCheck, ShoppingCart,
-  Star, UserCog, UserRound, Users, Warehouse, WavesLadder, X
+  UserCog, UserRound, Users, Warehouse, WavesLadder, X
 } from 'lucide-react';
 import './styles.css';
 
@@ -312,7 +312,7 @@ function api(token, path, options = {}) {
 }
 
 function Logo() {
-  return <div className="brand" aria-label="Iberostar The Club"><span className="brand-star"><Star size={27} fill="currentColor" /></span><span><strong>IBEROSTAR</strong><small>THE CLUB</small></span></div>;
+  return <div className="brand"><img className="brand-logo" src="/static/iberostar-the-club-logo.png" width="738" height="215" alt="Iberostar The Club" /></div>;
 }
 
 function StatusPill({ status, driver = false }) {
