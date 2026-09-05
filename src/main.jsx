@@ -310,6 +310,19 @@ function time(value) {
   return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
+const SALVADOR_TIME_FORMATTER = new Intl.DateTimeFormat('pt-BR', {
+  timeZone: 'America/Bahia',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+
+function salvadorTime(value) {
+  if (value === null || value === undefined || value === '') return 'horário não informado';
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? SALVADOR_TIME_FORMATTER.format(timestamp) : 'horário não informado';
+}
+
 function dateLabel() {
   return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
 }
@@ -1017,7 +1030,20 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
   const [defaultDeparture, setDefaultDeparture] = useState(data.defaultDeparturePrestige || 'BAHIA');
   const [closure, setClosure] = useState({ hotel: 'WAVES_BAHIA', startDate: data.operationDate || '', endDate: data.operationDate || '', departurePrestige: 'SELECTION' });
   const [saving, setSaving] = useState(false);
+  const [savingLocationTest, setSavingLocationTest] = useState(false);
+  const [locationTestClock, setLocationTestClock] = useState(Date.now);
   const closures = [...(data.hotelClosures || [])].sort((left, right) => right.startDate.localeCompare(left.startDate));
+  const locationTestEndsAt = new Date(settings.locationTestModeEndsAt).getTime();
+  const locationTestModeActive = settings.locationTestModeActive === true && Number.isFinite(locationTestEndsAt) && locationTestClock < locationTestEndsAt;
+  const locationTestEndLabel = salvadorTime(settings.locationTestModeEndsAt);
+  useEffect(() => {
+    setLocationTestClock(Date.now());
+    if (settings.locationTestModeActive !== true || !Number.isFinite(locationTestEndsAt)) return undefined;
+    const remaining = locationTestEndsAt - Date.now();
+    if (remaining <= 0) return undefined;
+    const timer = window.setTimeout(() => setLocationTestClock(Date.now()), remaining + 25);
+    return () => window.clearTimeout(timer);
+  }, [settings.locationTestModeActive, settings.locationTestModeEndsAt, locationTestEndsAt]);
   function changeHotel(hotel) { setClosure((current) => ({ ...current, hotel, departurePrestige: hotel === 'WAVES_BAHIA' ? 'SELECTION' : 'BAHIA' })); }
   async function saveDefault() {
     setSaving(true);
@@ -1031,7 +1057,19 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
     setSaving(true);
     try { await api(token, `/api/hotel-closures/${item.id}`, { method: 'DELETE' }); await refresh(); notify('Fechamento removido.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <section className="operation-settings"><div className="panel-heading"><div><h2>Hotéis e Prestige de saída</h2><p>Escolha o ponto padrão de saída e cadastre períodos de fechamento. A mudança vale automaticamente nas datas informadas, sem novo deploy.</p></div></div><div className="operation-settings-grid"><div className="operation-setting-card"><h3>Saída padrão da operação</h3><p>Usada quando não há hotel fechado no período atual.</p><label>Prestige de saída<select value={defaultDeparture} onChange={(event) => setDefaultDeparture(event.target.value)}><option value="BAHIA">Prestige Waves Bahia</option><option value="SELECTION">Prestige Praia do Forte Selection</option></select></label><button className="button button-secondary" onClick={saveDefault} disabled={saving}>Salvar saída padrão</button></div><form className="operation-setting-card" onSubmit={addClosure}><h3>Fechamento de hotel</h3><p>O sistema bloqueia automaticamente as funções ligadas ao hotel fechado.</p><label>Hotel fechado<select value={closure.hotel} onChange={(event) => changeHotel(event.target.value)}><option value="WAVES_BAHIA">Waves Bahia</option><option value="PRAIA_SELECTION">Praia do Forte Selection</option></select></label><div className="closure-dates"><label>Data inicial<input type="date" value={closure.startDate} onChange={(event) => setClosure({ ...closure, startDate: event.target.value })} required /></label><label>Data final<input type="date" value={closure.endDate} onChange={(event) => setClosure({ ...closure, endDate: event.target.value })} required /></label></div><label>Prestige de saída nesse período<select value={closure.departurePrestige} onChange={(event) => setClosure({ ...closure, departurePrestige: event.target.value })}><option value="BAHIA" disabled={closure.hotel === 'WAVES_BAHIA'}>Prestige Waves Bahia</option><option value="SELECTION" disabled={closure.hotel === 'PRAIA_SELECTION'}>Prestige Praia do Forte Selection</option></select></label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Adicionar fechamento</button></form></div><div className="closure-list"><h3>Períodos configurados</h3>{closures.length ? closures.map((item) => <article key={item.id}><div><strong>{item.hotel === 'WAVES_BAHIA' ? 'Waves Bahia' : 'Praia do Forte Selection'}</strong><span>{item.startDate.split('-').reverse().join('/')} até {item.endDate.split('-').reverse().join('/')} · saída: {item.departurePrestige === 'BAHIA' ? 'Prestige Waves Bahia' : 'Prestige Praia do Forte Selection'}</span></div><button className="mini-action danger-mini" onClick={() => removeClosure(item)} disabled={saving}>Remover</button></article>) : <p className="hostess-empty">Nenhum fechamento de hotel configurado.</p>}</div>{(settings.activeClosures || []).length > 0 && <div className="operation-active-note"><Building2 size={19} /><span>Hoje: {(settings.activeClosures || []).map((item) => item.hotelLabel).join(', ')} fechado. Saída pelo {settings.departureLabel}.</span></div>}</section>;
+  async function changeLocationTestMode(active) {
+    setSavingLocationTest(true);
+    try {
+      await api(token, '/api/operation/driver-location-test', { method: 'POST', body: JSON.stringify({ active }) });
+      await refresh();
+      notify(active ? 'Modo de teste da localização ativado por 30 minutos.' : 'Modo de teste da localização encerrado.', 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setSavingLocationTest(false);
+    }
+  }
+  return <section className="operation-settings"><div className="panel-heading"><div><h2>Hotéis, saída e testes operacionais</h2><p>Escolha o ponto padrão de saída, cadastre períodos de fechamento e controle testes temporários sem novo deploy.</p></div></div><div className="operation-settings-grid"><div className="operation-setting-card"><h3>Saída padrão da operação</h3><p>Usada quando não há hotel fechado no período atual.</p><label>Prestige de saída<select value={defaultDeparture} onChange={(event) => setDefaultDeparture(event.target.value)}><option value="BAHIA">Prestige Waves Bahia</option><option value="SELECTION">Prestige Praia do Forte Selection</option></select></label><button className="button button-secondary" onClick={saveDefault} disabled={saving}>Salvar saída padrão</button></div><form className="operation-setting-card" onSubmit={addClosure}><h3>Fechamento de hotel</h3><p>O sistema bloqueia automaticamente as funções ligadas ao hotel fechado.</p><label>Hotel fechado<select value={closure.hotel} onChange={(event) => changeHotel(event.target.value)}><option value="WAVES_BAHIA">Waves Bahia</option><option value="PRAIA_SELECTION">Praia do Forte Selection</option></select></label><div className="closure-dates"><label>Data inicial<input type="date" value={closure.startDate} onChange={(event) => setClosure({ ...closure, startDate: event.target.value })} required /></label><label>Data final<input type="date" value={closure.endDate} onChange={(event) => setClosure({ ...closure, endDate: event.target.value })} required /></label></div><label>Prestige de saída nesse período<select value={closure.departurePrestige} onChange={(event) => setClosure({ ...closure, departurePrestige: event.target.value })}><option value="BAHIA" disabled={closure.hotel === 'WAVES_BAHIA'}>Prestige Waves Bahia</option><option value="SELECTION" disabled={closure.hotel === 'PRAIA_SELECTION'}>Prestige Praia do Forte Selection</option></select></label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Adicionar fechamento</button></form><div className={classNames('operation-setting-card', 'location-test-setting-card', locationTestModeActive && 'is-active')}><div className="location-test-setting-copy"><div className="location-test-setting-title"><Clock3 size={20} /><h3>Teste temporário da localização</h3></div><div className={classNames('location-test-setting-status', locationTestModeActive && 'is-active')} role="status">{locationTestModeActive ? `Modo de teste ativo até ${locationTestEndLabel} (Salvador)` : 'Modo de teste inativo'}</div><p id="location-test-setting-help">Use somente para validar o GPS fora do horário normal. Durante 30 minutos, apenas o limite das 15:00 fica suspenso; check-in, permissão, vínculo do motorista, expiração dos pontos e privacidade continuam obrigatórios.</p></div><button className={classNames('button', locationTestModeActive ? 'button-secondary' : 'button-primary')} type="button" onClick={() => void changeLocationTestMode(!locationTestModeActive)} disabled={savingLocationTest} aria-describedby="location-test-setting-help">{savingLocationTest && <LoaderCircle className="spin" size={17} />} {locationTestModeActive ? 'Encerrar teste' : 'Ativar teste por 30 min'}</button></div></div><div className="closure-list"><h3>Períodos configurados</h3>{closures.length ? closures.map((item) => <article key={item.id}><div><strong>{item.hotel === 'WAVES_BAHIA' ? 'Waves Bahia' : 'Praia do Forte Selection'}</strong><span>{item.startDate.split('-').reverse().join('/')} até {item.endDate.split('-').reverse().join('/')} · saída: {item.departurePrestige === 'BAHIA' ? 'Prestige Waves Bahia' : 'Prestige Praia do Forte Selection'}</span></div><button className="mini-action danger-mini" onClick={() => removeClosure(item)} disabled={saving}>Remover</button></article>) : <p className="hostess-empty">Nenhum fechamento de hotel configurado.</p>}</div>{(settings.activeClosures || []).length > 0 && <div className="operation-active-note"><Building2 size={19} /><span>Hoje: {(settings.activeClosures || []).map((item) => item.hotelLabel).join(', ')} fechado. Saída pelo {settings.departureLabel}.</span></div>}</section>;
 }
 
 function LegacySettingsPage({ data, user, token, refresh, notify }) {
