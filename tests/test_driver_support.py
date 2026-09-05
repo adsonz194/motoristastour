@@ -139,7 +139,7 @@ class DriverSupportApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.get_json())
         return response.get_json()["support"]
 
-    def test_driver_starts_and_closes_own_support_with_audit_and_public_location(self) -> None:
+    def test_driver_starts_and_closes_own_support_without_public_location_leak(self) -> None:
         support = self._start_own_support()
         driver = self.database["drivers"][0]
         self.assertEqual(support["status"], tour_app.DRIVER_SUPPORT_OPEN)
@@ -172,7 +172,8 @@ class DriverSupportApiTest(unittest.TestCase):
         self.assertEqual(public_board.status_code, 200, public_board.get_json())
         public_driver = next(item for item in public_board.get_json()["drivers"] if item["name"] == "Motorista Um")
         self.assertEqual(public_driver["status"], tour_app.DRIVER_SUPPORT)
-        self.assertEqual(public_driver["locationLabel"], "Em apoio · Casa 305")
+        self.assertNotIn("locationLabel", public_driver)
+        self.assertNotIn("Casa 305", str(public_board.get_json()))
 
         closed = self._request("token-one", "POST", f"/api/driver-supports/{support['id']}/close")
         self.assertEqual(closed.status_code, 200, closed.get_json())

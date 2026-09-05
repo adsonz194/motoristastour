@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "leaflet": "1.9.4",
     "vite": "latest",
     "react": "latest",
     "react-dom": "latest",
