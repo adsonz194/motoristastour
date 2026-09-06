@@ -634,6 +634,8 @@ def initial_database() -> dict[str, Any]:
         # Keep only the latest point for each driver. Exact coordinates never
         # enter the public driver board or the generic bootstrap payload.
         "driverLocations": {},
+        # The Hostess point is temporary and tied to one open car request.
+        "hostessRequestLocations": {},
         # Local development keeps push subscriptions here. Production keeps
         # them in their own PostgreSQL table so device endpoints never enter
         # the operational state blob.
@@ -713,12 +715,27 @@ def ensure_postgres_schema(connection: Any) -> None:
     """)
     connection.execute("CREATE INDEX IF NOT EXISTS tour_control_driver_locations_operation_idx ON tour_control_driver_locations (operation_date)")
     connection.execute("INSERT INTO tour_control_schema (schema_version) VALUES (2) ON CONFLICT DO NOTHING")
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS tour_control_hostess_request_locations (
+            request_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            attendance_id TEXT NOT NULL,
+            operation_date TEXT NOT NULL,
+            latitude DOUBLE PRECISION NOT NULL,
+            longitude DOUBLE PRECISION NOT NULL,
+            accuracy_m DOUBLE PRECISION,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    connection.execute("CREATE INDEX IF NOT EXISTS tour_control_hostess_locations_operation_idx ON tour_control_hostess_request_locations (operation_date)")
+    connection.execute("INSERT INTO tour_control_schema (schema_version) VALUES (3) ON CONFLICT DO NOTHING")
 
 
 def postgres_state_payload(db: dict[str, Any]) -> dict[str, Any]:
     """Keep precise device locations out of the generic operational JSONB."""
     payload = dict(db)
     payload["driverLocations"] = {}
+    payload["hostessRequestLocations"] = {}
     return payload
 
 
@@ -1073,6 +1090,7 @@ def reset_operational_data(db: dict[str, Any], message: str) -> None:
     db["driverSupports"] = []
     db["attendance"] = []
     clear_driver_locations(db)
+    clear_hostess_request_locations(db)
     for driver in db["drivers"]:
         # A new day starts with everyone off duty. A driver becomes available
         # only after using their own account to check in for that day.
@@ -1156,6 +1174,9 @@ def operational_database() -> dict[str, Any]:
         schema_updated = True
     if not isinstance(db.get("driverLocations"), dict) or (POSTGRES_URL and db.get("driverLocations")):
         db["driverLocations"] = {}
+        schema_updated = True
+    if not isinstance(db.get("hostessRequestLocations"), dict) or (POSTGRES_URL and db.get("hostessRequestLocations")):
+        db["hostessRequestLocations"] = {}
         schema_updated = True
     for car_request in db["hostessRequests"]:
         for field, default in (
@@ -1315,6 +1336,7 @@ def safe_database(db: dict[str, Any]) -> dict[str, Any]:
     # never be included in the operational bootstrap response.
     result.pop("pushSubscriptions", None)
     result.pop("driverLocations", None)
+    result.pop("hostessRequestLocations", None)
     return result
 
 
@@ -1628,6 +1650,7 @@ def close_hostess_request_record(db: dict[str, Any], car_request: dict[str, Any]
         "closedReason": reason,
         "updatedAt": closed_at,
     })
+    remove_hostess_request_location(db, car_request.get("id"))
     driver_id = car_request.get("assignedDriverId")
     driver = next((item for item in db.get("drivers", []) if item.get("id") == driver_id), None)
     if driver:
@@ -2003,6 +2026,111 @@ def clear_driver_locations(db: dict[str, Any]) -> None:
     db["driverLocations"] = {}
 
 
+def load_hostess_request_location_records(db: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Load only the latest temporary point for each Hostess car request."""
+    if not POSTGRES_URL:
+        locations = db.setdefault("hostessRequestLocations", {})
+        return locations if isinstance(locations, dict) else {}
+
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            rows = connection.execute("""
+                SELECT request_id, user_id, attendance_id, operation_date,
+                       latitude, longitude, accuracy_m, updated_at
+                FROM tour_control_hostess_request_locations
+            """).fetchall()
+        return {
+            row[0]: {
+                "requestId": row[0],
+                "userId": row[1],
+                "attendanceId": row[2],
+                "operationDate": row[3],
+                "latitude": row[4],
+                "longitude": row[5],
+                "accuracy": row[6],
+                "updatedAt": row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
+            }
+            for row in rows
+        }
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def save_hostess_request_location_record(db: dict[str, Any], record: dict[str, Any]) -> None:
+    if not POSTGRES_URL:
+        db.setdefault("hostessRequestLocations", {})[record["requestId"]] = record
+        return
+
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            connection.execute("""
+                INSERT INTO tour_control_hostess_request_locations (
+                    request_id, user_id, attendance_id, operation_date,
+                    latitude, longitude, accuracy_m, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (request_id) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    attendance_id = EXCLUDED.attendance_id,
+                    operation_date = EXCLUDED.operation_date,
+                    latitude = EXCLUDED.latitude,
+                    longitude = EXCLUDED.longitude,
+                    accuracy_m = EXCLUDED.accuracy_m,
+                    updated_at = EXCLUDED.updated_at
+            """, (
+                record["requestId"], record["userId"], record["attendanceId"],
+                record["operationDate"], record["latitude"], record["longitude"],
+                record.get("accuracy"), record["updatedAt"],
+            ))
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def remove_hostess_request_location(db: dict[str, Any], request_id: Any) -> bool:
+    request_id = str(request_id or "")
+    if POSTGRES_URL:
+        connection = None
+        try:
+            connection = postgres_connection()
+            with connection:
+                ensure_postgres_schema(connection)
+                cursor = connection.execute(
+                    "DELETE FROM tour_control_hostess_request_locations WHERE request_id = %s",
+                    (request_id,),
+                )
+                return bool(cursor.rowcount)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    locations = db.setdefault("hostessRequestLocations", {})
+    if not isinstance(locations, dict):
+        db["hostessRequestLocations"] = {}
+        return False
+    return locations.pop(request_id, None) is not None
+
+
+def clear_hostess_request_locations(db: dict[str, Any]) -> None:
+    if POSTGRES_URL:
+        connection = None
+        try:
+            connection = postgres_connection()
+            with connection:
+                ensure_postgres_schema(connection)
+                connection.execute("DELETE FROM tour_control_hostess_request_locations")
+        finally:
+            if connection is not None:
+                connection.close()
+    db["hostessRequestLocations"] = {}
+
+
 def purge_driver_locations_after_cutoff(db: dict[str, Any], value: datetime | None = None) -> bool:
     """Reconcile expired test state and retain only its selected driver after 15:00."""
     local_now = driver_location_now(value)
@@ -2151,16 +2279,177 @@ def visible_driver_locations(db: dict[str, Any], value: datetime | None = None) 
     return sorted(result, key=lambda item: (item["stale"], item["driverName"].casefold()))
 
 
+def hostess_request_location_window(
+    db: dict[str, Any],
+    car_request: dict[str, Any],
+    value: datetime | None = None,
+) -> dict[str, Any]:
+    """Use the assigned driver's normal/test window for both points."""
+    driver_id = str(car_request.get("assignedDriverId") or "").strip() or None
+    return driver_location_window_payload(value, db=db, driver_id=driver_id)
+
+
+def visible_hostess_request_location(
+    db: dict[str, Any],
+    car_request: dict[str, Any],
+    value: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Return one current Hostess point only while its private call is open."""
+    if (
+        car_request.get("status") != HOSTESS_REQUEST_OPEN
+        or car_request.get("requesterType", HOSTESS_REQUESTER) != HOSTESS_REQUESTER
+        or car_request.get("operationDate") != operation_date()
+    ):
+        return None
+    local_now = driver_location_now(value)
+    if not hostess_request_location_window(db, car_request, local_now)["sharingWindowOpen"]:
+        return None
+    record = load_hostess_request_location_records(db).get(str(car_request.get("id") or ""))
+    if not isinstance(record, dict):
+        return None
+    owner = next(
+        (
+            item for item in db.get("users", [])
+            if item.get("id") == car_request.get("requestedById")
+            and item.get("role") == ROLE_HOSTESS
+            and item.get("active", True)
+            and user_has_permission(item, PERMISSION_REQUEST_HOSTESS_CAR)
+        ),
+        None,
+    )
+    attendance = attendance_for(db, owner["id"]) if owner else None
+    updated_at = location_timestamp(record.get("updatedAt"))
+    if (
+        not owner
+        or not attendance
+        or record.get("userId") != owner.get("id")
+        or record.get("attendanceId") != attendance.get("id")
+        or record.get("operationDate") != operation_date()
+        or not updated_at
+    ):
+        return None
+    try:
+        latitude = float(record.get("latitude"))
+        longitude = float(record.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(latitude) or not math.isfinite(longitude) or not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+        return None
+    accuracy = None
+    if record.get("accuracy") is not None:
+        try:
+            candidate = float(record.get("accuracy"))
+            if math.isfinite(candidate) and 0 <= candidate <= 10000:
+                accuracy = candidate
+        except (TypeError, ValueError):
+            pass
+    age_seconds = max(0, (local_now.astimezone(timezone.utc) - updated_at).total_seconds())
+    if age_seconds > DRIVER_LOCATION_EXPIRES_SECONDS:
+        return None
+    return {
+        "hostessName": str(owner.get("name") or "Hostess"),
+        "latitude": latitude,
+        "longitude": longitude,
+        "accuracy": accuracy,
+        "updatedAt": record.get("updatedAt"),
+        "stale": age_seconds > DRIVER_LOCATION_STALE_SECONDS,
+    }
+
+
+def purge_hostess_request_locations(db: dict[str, Any], value: datetime | None = None) -> bool:
+    """Delete Hostess points as soon as their request, shift, or window ends."""
+    local_now = driver_location_now(value)
+    open_requests = {
+        str(item.get("id")): item
+        for item in db.get("hostessRequests", [])
+        if item.get("status") == HOSTESS_REQUEST_OPEN
+        and item.get("requesterType", HOSTESS_REQUESTER) == HOSTESS_REQUESTER
+    }
+    changed = False
+    for request_id in tuple(load_hostess_request_location_records(db)):
+        car_request = open_requests.get(str(request_id))
+        if not car_request or visible_hostess_request_location(db, car_request, local_now) is None:
+            if remove_hostess_request_location(db, request_id):
+                changed = True
+    return changed
+
+
+def hostess_approach_request_for_user(
+    db: dict[str, Any], request_id: str, user: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """Authorize only the requesting Hostess or the driver assigned to her."""
+    car_request = next(
+        (
+            item for item in db.setdefault("hostessRequests", [])
+            if item.get("id") == request_id
+            and item.get("status") == HOSTESS_REQUEST_OPEN
+            and item.get("requesterType", HOSTESS_REQUESTER) == HOSTESS_REQUESTER
+            and item.get("operationDate") == operation_date()
+        ),
+        None,
+    )
+    if not car_request:
+        raise APIError("Acompanhamento da Hostess não encontrado.", 404)
+    if (
+        user.get("role") == ROLE_HOSTESS
+        and car_request.get("requestedById") == user.get("id")
+        and user_has_permission(user, PERMISSION_REQUEST_HOSTESS_CAR)
+        and attendance_for(db, user["id"])
+    ):
+        return car_request, "HOSTESS"
+    if (
+        user.get("role") == ROLE_DRIVER
+        and str(user.get("driverId") or "") == str(car_request.get("assignedDriverId") or "")
+        and user_has_permission(user, PERMISSION_MANAGE_HOSTESS_SUPPORT)
+        and attendance_for(db, user["id"])
+    ):
+        return car_request, "DRIVER"
+    raise APIError("Acompanhamento da Hostess não encontrado.", 404)
+
+
+def hostess_approach_request_payload(car_request: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": car_request.get("id"),
+        "status": car_request.get("status"),
+        "requestedByName": car_request.get("requestedByName"),
+        "assignedDriverName": car_request.get("assignedDriverName"),
+        "acceptedAt": car_request.get("acceptedAt"),
+        "updatedAt": car_request.get("updatedAt"),
+    }
+
+
+def hostess_request_location_record(
+    car_request: dict[str, Any],
+    user: dict[str, Any],
+    attendance: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    latitude = finite_location_number(payload.get("latitude"), "latitude", -90, 90)
+    longitude = finite_location_number(payload.get("longitude"), "longitude", -180, 180)
+    accuracy_value = payload.get("accuracy")
+    accuracy = None if accuracy_value is None else finite_location_number(accuracy_value, "precisão", 0, 10000)
+    return {
+        "requestId": car_request["id"],
+        "userId": user["id"],
+        "attendanceId": attendance["id"],
+        "operationDate": operation_date(),
+        "latitude": round(latitude, 6),
+        "longitude": round(longitude, 6),
+        "accuracy": round(accuracy, 1) if accuracy is not None else None,
+        "updatedAt": driver_location_now().astimezone(timezone.utc).isoformat(),
+    }
+
+
 def open_hostess_requests(db: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in db.setdefault("hostessRequests", []) if item.get("status") == HOSTESS_REQUEST_OPEN]
 
 
 def clean_hostess_request(car_request: dict[str, Any]) -> dict[str, Any]:
-    """Return an internal request without its public capability credential."""
+    """Return a request summary without credentials or precise coordinates."""
     return {
         key: value
         for key, value in car_request.items()
-        if key != "publicAccessTokenHash"
+        if key not in {"publicAccessTokenHash", "requesterLocation", "latitude", "longitude", "accuracy"}
     }
 
 
@@ -2676,7 +2965,13 @@ app.config["JSON_AS_ASCII"] = False
 def location_permissions_policy(response):
     # Geolocation remains available only to this first-party application.
     response.headers.setdefault("Permissions-Policy", "geolocation=(self)")
-    if request.path.startswith("/api/public/consultant-support"):
+    if (
+        request.path.startswith("/api/public/consultant-support")
+        or (
+            request.path.startswith("/api/hostess-requests/")
+            and (request.path.endswith("/approach") or request.path.endswith("/location"))
+        )
+    ):
         # Capability responses, including indistinguishable 404s, must never
         # be retained by a shared browser or intermediary cache.
         response.headers["Cache-Control"] = "private, no-store"
@@ -2727,7 +3022,12 @@ def logout():
                 db = operational_database()
                 user = next((item for item in db.get("users", []) if item.get("id") == session.get("userId")), None)
                 driver_id = str((user or {}).get("driverId") or "").strip()
-                if driver_id and remove_driver_location(db, driver_id) and not POSTGRES_URL:
+                changed = bool(driver_id and remove_driver_location(db, driver_id))
+                if user:
+                    for car_request in db.get("hostessRequests", []):
+                        if car_request.get("requestedById") == user.get("id"):
+                            changed = remove_hostess_request_location(db, car_request.get("id")) or changed
+                if changed and not POSTGRES_URL:
                     save_database(db)
         except Exception:
             pass
@@ -3143,6 +3443,7 @@ def bootstrap():
         user = get_current_user(db)
         current_attendance = attendance_for(db, user["id"])
         reconciled = purge_driver_locations_after_cutoff(db)
+        reconciled = purge_hostess_request_locations(db) or reconciled
         if reconciled:
             save_database(db)
         settings = operation_settings_for_user(db, user)
@@ -3254,6 +3555,10 @@ def update_user(user_id: str):
             or previous_driver_id != driver_id
         ):
             remove_driver_location(db, previous_driver_id)
+        if previous_role == ROLE_HOSTESS and (role != ROLE_HOSTESS or not active):
+            for car_request in db.get("hostessRequests", []):
+                if car_request.get("requestedById") == target.get("id"):
+                    remove_hostess_request_location(db, car_request.get("id"))
         if password:
             target["passwordHash"] = generate_password_hash(password)
         if not active:
@@ -3392,6 +3697,9 @@ def delete_user(user_id: str):
         db["users"] = [item for item in db["users"] if item["id"] != target["id"]]
         if target.get("driverId"):
             remove_driver_location(db, target["driverId"])
+        for car_request in db.get("hostessRequests", []):
+            if car_request.get("requestedById") == target.get("id"):
+                remove_hostess_request_location(db, car_request.get("id"))
         log_activity(db, current_user, None, None, None, f"Usuário {target['name']} excluído.")
         for token, session in list(SESSIONS.items()):
             if session["userId"] == target["id"]:
@@ -3558,12 +3866,21 @@ def list_driver_locations():
 @app.post("/api/hostess-requests")
 def create_hostess_request():
     """A Hostess calls for one car without having to select a hotel or driver."""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        raise APIError("Envie os dados da solicitação em um objeto JSON válido.")
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
         require_permission(user, PERMISSION_REQUEST_HOSTESS_CAR, "Seu usuário não possui permissão para solicitar carro da Hostess.")
-        if not user_has_permission(user, PERMISSION_MANAGE_SETTINGS) and not attendance_for(db, user["id"]):
+        attendance = attendance_for(db, user["id"])
+        if not user_has_permission(user, PERMISSION_MANAGE_SETTINGS) and not attendance:
             raise APIError("Faça o check-in antes de solicitar um carro.", 409)
+        has_location = any(key in payload for key in ("latitude", "longitude", "accuracy"))
+        if has_location:
+            if user.get("role") != ROLE_HOSTESS or not attendance:
+                raise APIError("Faça o check-in como Hostess antes de compartilhar sua localização.", 409)
+            require_driver_location_window(db=db)
         if any(item.get("requestedById") == user["id"] for item in open_hostess_requests(db)):
             raise APIError("Você já possui uma solicitação de carro aberta.", 409)
         car_request = {
@@ -3583,6 +3900,11 @@ def create_hostess_request():
             "updatedAt": timestamp(),
         }
         db.setdefault("hostessRequests", []).insert(0, car_request)
+        if has_location:
+            save_hostess_request_location_record(
+                db,
+                hostess_request_location_record(car_request, user, attendance, payload),
+            )
         log_activity(db, user, None, None, HOSTESS_REQUEST_OPEN, f"{user['name']} solicitou um carro para a Hostess.")
         save_database(db)
         response = jsonify(request=clean_hostess_request(car_request)), 201
@@ -3590,6 +3912,76 @@ def create_hostess_request():
     # lock while the remote push provider is contacted.
     notify_hostess_car_update(db, "REQUESTED")
     return response
+
+
+@app.put("/api/hostess-requests/<request_id>/location")
+def update_hostess_request_location(request_id: str):
+    """Refresh the requesting Hostess point; it is never part of bootstrap."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise APIError("Envie os dados de localização em um objeto JSON válido.")
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        car_request, viewer = hostess_approach_request_for_user(db, request_id, user)
+        if viewer != "HOSTESS":
+            raise APIError("Apenas a Hostess que abriu o chamado pode atualizar esta localização.", 403)
+        attendance = attendance_for(db, user["id"])
+        if not attendance:
+            raise APIError("Faça o check-in antes de compartilhar sua localização.", 409)
+        driver_id = str(car_request.get("assignedDriverId") or "").strip() or None
+        require_driver_location_window(db=db, driver_id=driver_id)
+        record = hostess_request_location_record(car_request, user, attendance, payload)
+        save_hostess_request_location_record(db, record)
+        if not POSTGRES_URL:
+            save_database(db)
+        response = jsonify(location={
+            "hostessName": user.get("name") or "Hostess",
+            "updatedAt": record.get("updatedAt"),
+        })
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
+@app.get("/api/hostess-requests/<request_id>/approach")
+def hostess_request_approach(request_id: str):
+    """Show the two private points only to the accepted pair."""
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        car_request, _viewer = hostess_approach_request_for_user(db, request_id, user)
+        local_now = driver_location_now()
+        changed = purge_driver_locations_after_cutoff(db, local_now)
+        changed = purge_hostess_request_locations(db, local_now) or changed
+        if changed and not POSTGRES_URL:
+            save_database(db)
+        assigned_driver_id = str(car_request.get("assignedDriverId") or "").strip()
+        driver_location = next(
+            (
+                item for item in visible_driver_locations(db, local_now)
+                if str(item.get("driverId") or "") == assigned_driver_id
+            ),
+            None,
+        ) if assigned_driver_id else None
+        if driver_location:
+            driver_location = {
+                "driverName": driver_location.get("driverName"),
+                "latitude": driver_location.get("latitude"),
+                "longitude": driver_location.get("longitude"),
+                "accuracy": driver_location.get("accuracy"),
+                "updatedAt": driver_location.get("updatedAt"),
+                "stale": bool(driver_location.get("stale")),
+            }
+        response = jsonify(
+            request=hostess_approach_request_payload(car_request),
+            hostessLocation=visible_hostess_request_location(db, car_request, local_now),
+            driverLocation=driver_location,
+            staleAfterSeconds=DRIVER_LOCATION_STALE_SECONDS,
+            expiresAfterSeconds=DRIVER_LOCATION_EXPIRES_SECONDS,
+            **hostess_request_location_window(db, car_request, local_now),
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
 
 @app.post("/api/hostess-requests/<request_id>/close")

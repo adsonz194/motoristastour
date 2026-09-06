@@ -141,7 +141,11 @@ class DriverLocationApiTest(unittest.TestCase):
                     "user_hostess",
                     "Hostess Mapa",
                     tour_app.ROLE_HOSTESS,
-                    [tour_app.PERMISSION_VIEW_DRIVER_LOCATIONS, tour_app.PERMISSION_SHARE_OWN_LOCATION],
+                    [
+                        tour_app.PERMISSION_VIEW_DRIVER_LOCATIONS,
+                        tour_app.PERMISSION_REQUEST_HOSTESS_CAR,
+                        tour_app.PERMISSION_CHECK_IN,
+                    ],
                 ),
                 cls._account(
                     "user_viewer",
@@ -174,6 +178,15 @@ class DriverLocationApiTest(unittest.TestCase):
                     "userId": "user_no_share",
                     "status": "TRABALHANDO",
                     "operationDate": cls.OPERATION_DAY,
+                },
+                {
+                    "id": "checkin_hostess",
+                    "userId": "user_hostess",
+                    "userName": "Hostess Mapa",
+                    "role": tour_app.ROLE_HOSTESS,
+                    "status": "TRABALHANDO",
+                    "operationDate": cls.OPERATION_DAY,
+                    "checkInAt": "2026-09-05T10:00:00+00:00",
                 },
             ],
             "driverLocations": {},
@@ -937,15 +950,18 @@ class DriverLocationApiTest(unittest.TestCase):
             "driverLocationTestUntil": "2026-09-05T18:40:00+00:00",
             "driverLocationTestDriverId": "drv_one",
             "driverLocations": {"drv_one": {"latitude": -12.57, "longitude": -38.0}},
+            "hostessRequestLocations": {"hostreq_one": {"latitude": -12.58, "longitude": -38.01}},
         }
         sanitized = tour_app.postgres_state_payload(source)
         self.assertEqual(sanitized["driverLocations"], {})
+        self.assertEqual(sanitized["hostessRequestLocations"], {})
         self.assertEqual(
             sanitized["driverLocationTestUntil"],
             "2026-09-05T18:40:00+00:00",
         )
         self.assertEqual(sanitized["driverLocationTestDriverId"], "drv_one")
         self.assertIn("drv_one", source["driverLocations"])
+        self.assertIn("hostreq_one", source["hostessRequestLocations"])
 
     def test_coordinate_validation_is_atomic(self) -> None:
         malformed_start = self._request(
@@ -1256,6 +1272,90 @@ class DriverLocationApiTest(unittest.TestCase):
             set(public_driver),
             {"name", "status", "active", "lastActivity"},
         )
+
+    def test_hostess_and_assigned_driver_privately_track_their_approach(self) -> None:
+        created = self._request(
+            "token-hostess",
+            "POST",
+            "/api/hostess-requests",
+            json={"latitude": -12.5701, "longitude": -38.0012, "accuracy": 11},
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        car_request = created.get_json()["request"]
+        self._assert_no_precise_location_keys(self, created.get_json())
+
+        waiting = self._request(
+            "token-hostess",
+            "GET",
+            f"/api/hostess-requests/{car_request['id']}/approach",
+        )
+        self.assertEqual(waiting.status_code, 200, waiting.get_json())
+        self.assertEqual(waiting.headers.get("Cache-Control"), "private, no-store")
+        self.assertEqual(waiting.get_json()["hostessLocation"]["latitude"], -12.5701)
+        self.assertIsNone(waiting.get_json()["driverLocation"])
+
+        # Precise Hostess coordinates never enter generic/bootstrap data.
+        for token in ("token-hostess", "token-driver", "token-admin", "token-viewer"):
+            bootstrap = self._request(token, "GET", "/api/bootstrap")
+            self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
+            self._assert_no_precise_location_keys(self, bootstrap.get_json())
+
+        driver_session = self._start()
+        driver_update = self._update(driver_session["sharingId"])
+        self.assertEqual(driver_update.status_code, 200, driver_update.get_json())
+        accepted = self._request(
+            "token-driver",
+            "POST",
+            "/api/drivers/hostess-availability",
+            json={"available": True, "requestId": car_request["id"]},
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+
+        assigned_driver = self._request(
+            "token-driver",
+            "GET",
+            f"/api/hostess-requests/{car_request['id']}/approach",
+        )
+        self.assertEqual(assigned_driver.status_code, 200, assigned_driver.get_json())
+        pair = assigned_driver.get_json()
+        self.assertEqual(pair["request"]["assignedDriverName"], "Motorista Localizado")
+        self.assertEqual(pair["hostessLocation"]["hostessName"], "Hostess Mapa")
+        self.assertEqual(pair["driverLocation"]["driverName"], "Motorista Localizado")
+        self.assertNotIn("driverId", pair["driverLocation"])
+        self.assertNotIn("requestedById", pair["request"])
+        self.assertNotIn("assignedDriverId", pair["request"])
+
+        # No coordinator or unassigned driver can open the paired map.
+        for token in ("token-admin", "token-no-share", "token-viewer"):
+            denied = self._request(
+                token,
+                "GET",
+                f"/api/hostess-requests/{car_request['id']}/approach",
+            )
+            self.assertEqual(denied.status_code, 404, denied.get_json())
+
+        refreshed = self._request(
+            "token-hostess",
+            "PUT",
+            f"/api/hostess-requests/{car_request['id']}/location",
+            json={"latitude": -12.5698, "longitude": -38.0009, "accuracy": 7},
+        )
+        self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
+        self._assert_no_precise_location_keys(self, refreshed.get_json())
+
+        closed = self._request(
+            "token-hostess",
+            "POST",
+            f"/api/hostess-requests/{car_request['id']}/close",
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertNotIn(car_request["id"], self.database["hostessRequestLocations"])
+        unavailable = self._request(
+            "token-driver",
+            "GET",
+            f"/api/hostess-requests/{car_request['id']}/approach",
+        )
+        self.assertEqual(unavailable.status_code, 404, unavailable.get_json())
 
 
 class DriverLocationTimeZonePolicyTest(unittest.TestCase):

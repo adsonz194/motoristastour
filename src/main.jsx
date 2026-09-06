@@ -6,7 +6,7 @@ import {
   LogOut, MapPin, Menu, MoreHorizontal, Plus, Route, Settings, ShieldCheck, ShoppingCart, Trash2,
   UserCog, UserRound, Users, Warehouse, WavesLadder, X
 } from 'lucide-react';
-import { ConsultantSupportLocationPanel, DriverLocationMapPanel, DriverLocationSharingCard } from './driver-location';
+import { ConsultantSupportLocationPanel, DriverLocationMapPanel, DriverLocationSharingCard, HostessApproachLocationPanel, getCurrentBrowserLocation } from './driver-location';
 import './styles.css';
 
 const STATUS = {
@@ -554,7 +554,7 @@ function DriverHostessAvailability({ data, user, token, refresh, notify }) {
   const assignedRequester = assignedRequest ? `${isConsultantRequest(assignedRequest) ? 'o consultor' : 'a Hostess'} ${assignedRequest.requestedByName || ''}`.trim() : 'esta solicitação';
   const selectedRequest = assignedRequest || unassignedRequests.find((item) => item.id === requestId) || requests[0];
   const selectedReference = String(selectedRequest?.note || '').trim();
-  return <section className="hostess-call driver-hostess-call"><div><span>CHAMADOS DE APOIO</span><h2>{requests.length === 1 ? `${isConsultantRequest(requests[0]) ? 'Um consultor' : 'A Hostess'} solicitou um carro` : `${requests.length} solicitações abertas · ${requestSummary}`}</h2><p>{available ? `Você está atendendo ${assignedRequester}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para que a pessoa acompanhe somente o atendimento dela.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}{selectedReference && <> <strong>Referência:</strong> {selectedReference}</>}</p>{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>;
+  return <><section className="hostess-call driver-hostess-call"><div><span>CHAMADOS DE APOIO</span><h2>{requests.length === 1 ? `${isConsultantRequest(requests[0]) ? 'Um consultor' : 'A Hostess'} solicitou um carro` : `${requests.length} solicitações abertas · ${requestSummary}`}</h2><p>{available ? `Você está atendendo ${assignedRequester}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para que a pessoa acompanhe somente o atendimento dela.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}{selectedReference && <> <strong>Referência:</strong> {selectedReference}</>}</p>{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>{assignedRequest && !isConsultantRequest(assignedRequest) && <HostessApproachLocationPanel requestId={assignedRequest.id} token={token} />}</>;
 }
 
 function Flow({ counts }) {
@@ -716,6 +716,7 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
   const requests = (data.hostessRequests || []).filter((request) => !isConsultantRequest(request));
   const settings = data.operationSettings || {};
   const canCheckIn = can(user, 'CHECK_IN');
+  const checkedIn = (data.attendance || []).some((item) => item.userId === user.id);
   const canRecordTourQuantities = can(user, 'MANAGE_TOUR_QUANTITIES');
   const canRequestCar = canAny(user, ['REQUEST_HOSTESS_CAR', 'MANAGE_HOSTESS_SUPPORT']);
   const activeTours = tours.filter((tour) => !['CONCLUIDO', 'DESISTENCIA'].includes(tour.status));
@@ -731,7 +732,12 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
   const assignedDriverName = ownRequest?.assignedDriverName;
   async function requestCar() {
     setRequestSaving(true);
-    try { await api(token, '/api/hostess-requests', { method: 'POST' }); await refresh(); notify('Solicitação de carro enviada aos motoristas.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setRequestSaving(false); }
+    try {
+      const location = await getCurrentBrowserLocation();
+      await api(token, '/api/hostess-requests', { method: 'POST', body: JSON.stringify(location) });
+      await refresh();
+      notify('Solicitação enviada. Seu ponto será mostrado apenas ao motorista que aceitar.', 'success');
+    } catch (error) { notify(error.message, 'error'); } finally { setRequestSaving(false); }
   }
   async function closeRequest() {
     setRequestSaving(true);
@@ -741,7 +747,8 @@ function HostessDashboard({ data, user, token, refresh, notify }) {
     {canCheckIn && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}
     <OperationRestriction settings={settings} />
     <section className="page-title hostess-title"><div><span>PAINEL GERAL · HOSTESS</span><h1>Painel Geral</h1><p>Visualização da operação. As opções disponíveis seguem as permissões do seu usuário.</p></div>{canRecordTourQuantities && <button className="button button-primary" onClick={() => setOpen(true)}><Plus size={18} /> Quantidades de tours</button>}</section>
-    {canRequestCar && <><section className="hostess-call"><div><span>SOLICITAÇÃO DE CARRO</span><h2>{ownRequest ? assignedDriverName ? `${assignedDriverName} está em apoio` : 'Carro solicitado' : 'Precisa de um carro?'}</h2><p>{ownRequest ? assignedDriverName ? 'O motorista encerra este chamado ao finalizar o apoio. Se necessário, você também pode encerrá-lo agora.' : 'Aguarde um motorista assumir este chamado. Não é necessário informar hotel, destino ou motorista.' : openRequests.length ? 'Há outro pedido em aberto. Você pode fazer o seu próprio pedido de carro.' : 'Toque no botão para avisar os motoristas livres. Não é necessário informar hotel, destino ou motorista.'}</p></div>{ownRequest ? <button className="button button-secondary" onClick={closeRequest} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} Encerrar solicitação</button> : <button className="button button-primary" onClick={requestCar} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={18} />} <CarFront size={18} /> Solicitar carro</button>}</section>
+    {canRequestCar && <><section className="hostess-call"><div><span>SOLICITAÇÃO DE CARRO</span><h2>{ownRequest ? assignedDriverName ? `${assignedDriverName} está em apoio` : 'Carro solicitado' : 'Precisa de um carro?'}</h2><p>{ownRequest ? assignedDriverName ? 'O motorista encerra este chamado ao finalizar o apoio. Se necessário, você também pode encerrá-lo agora.' : 'Aguarde um motorista assumir este chamado. Não é necessário informar hotel, destino ou motorista.' : !checkedIn ? 'Faça o check-in para liberar a solicitação e compartilhar o ponto de encontro.' : openRequests.length ? 'Há outro pedido em aberto. Você pode fazer o seu próprio pedido de carro.' : 'Toque no botão para avisar os motoristas livres. Não é necessário informar hotel, destino ou motorista.'}</p></div>{ownRequest ? <button className="button button-secondary" onClick={closeRequest} disabled={requestSaving}>{requestSaving && <LoaderCircle className="spin" size={17} />} Encerrar solicitação</button> : <button className="button button-primary" onClick={requestCar} disabled={requestSaving || !checkedIn}>{requestSaving && <LoaderCircle className="spin" size={18} />} <CarFront size={18} /> Solicitar carro</button>}</section>
+    {ownRequest && <HostessApproachLocationPanel requestId={ownRequest.id} token={token} shareHostessLocation />}
     <section className="available-hostess-drivers"><div><h2>Motoristas em apoio à Hostess</h2><p>{openRequests.length ? 'Os motoristas desta lista estão reservados exclusivamente para este apoio.' : 'Abra uma solicitação para os motoristas responderem.'}</p></div><div>{hostessDrivers.length ? hostessDrivers.map((driver) => <span className="hostess-driver" key={driver.id}><Check size={15} /> {driver.name}</span>) : <span className="hostess-empty">Nenhum motorista assumiu o apoio ainda.</span>}</div></section></>}
     {user.role === 'HOSTESS' && can(user, 'VIEW_DRIVER_LOCATIONS') && <DriverLocationMapPanel token={token} />}
     <section className="metrics-grid hostess-general-metrics"><MetricCard icon={Route} color="teal" title="Tours normais" count={normalTours.length} sub={`${awaitingDriver.length} aguardando motorista`} /><MetricCard icon={Flag} color="purple" title="Self Gen" count={totalSelfGuide.length} sub="registros do dia" /><MetricCard icon={CarFront} color="blue" title="Em tour" count={enTour.length} sub="grupos em deslocamento" /><MetricCard icon={Check} color="green" title="Motoristas disponíveis" count={availableDrivers} sub={`${drivers.length} motoristas ativos`} /></section>

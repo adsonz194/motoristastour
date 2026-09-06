@@ -215,6 +215,11 @@ input:focus, select:focus { border-color: #197db7; box-shadow: 0 0 0 3px rgba(25
 .location-driver-dot { flex: none; width: 10px; height: 10px; background: #0b8b75; border: 2px solid #d7f3eb; border-radius: 50%; box-shadow: 0 0 0 2px #0b8b75; }
 .location-driver-list .location-stale .location-driver-dot { background: #ce781b; border-color: #fff0dc; box-shadow: 0 0 0 2px #ce781b; }
 .location-driver-list .location-stale small { color: #9b671f; }
+.location-driver-list .location-hostess .location-driver-dot { background: #5367c7; border-color: #e4e8ff; box-shadow: 0 0 0 2px #5367c7; }
+.location-driver-list .location-hostess.location-stale .location-driver-dot { background: #ce781b; border-color: #fff0dc; box-shadow: 0 0 0 2px #ce781b; }
+.hostess-approach-map { overflow: hidden; border-color: #cdd8f4; }
+.hostess-approach-map .location-map-count { color: #4054ad; background: #eef0ff; }
+.approach-location-list article > svg { flex: none; color: #718391; }
 .driver-map-empty, .driver-map-error { display: flex; justify-content: center; align-items: center; gap: 11px; min-height: 165px; padding: 24px; text-align: left; }
 .driver-map-empty { color: #708596; }
 .driver-map-empty > div { display: grid; gap: 3px; }

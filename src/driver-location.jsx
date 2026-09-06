@@ -208,6 +208,7 @@ function normalizedLocation(value) {
   return {
     driverId: String(value.driverId || ''),
     driverName: String(value.driverName || 'Motorista'),
+    kind: value.kind === 'hostess' ? 'hostess' : 'driver',
     latitude,
     longitude,
     accuracy: Number.isFinite(accuracyValue) && accuracyValue >= 0 ? accuracyValue : null,
@@ -309,6 +310,25 @@ function geolocationErrorMessage(error) {
   if (error?.code === 2) return 'O celular não conseguiu encontrar sua posição. Verifique se o GPS está ativado.';
   if (error?.code === 3) return 'O GPS demorou para responder. Tente novamente em um local com melhor sinal.';
   return 'Não foi possível obter sua localização neste aparelho.';
+}
+
+
+export function getCurrentBrowserLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Este aparelho não oferece localização pelo navegador.'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
+      }),
+      (error) => reject(new Error(geolocationErrorMessage(error))),
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+    );
+  });
 }
 
 
@@ -656,9 +676,17 @@ function DriverMapCanvas({ locations, fitRequest, ariaLabel = 'Mapa interativo c
     if (!map || !layer) return;
     layer.clearLayers();
     const markers = [];
+    const hostessLocation = locations.find((location) => location.kind === 'hostess');
+    const driverLocation = locations.find((location) => location.kind === 'driver');
+    if (hostessLocation && driverLocation) {
+      L.polyline(
+        [[hostessLocation.latitude, hostessLocation.longitude], [driverLocation.latitude, driverLocation.longitude]],
+        { color: '#4866c8', opacity: .7, weight: 3, dashArray: '7 8' }
+      ).addTo(layer);
+    }
     locations.forEach((location) => {
       const point = [location.latitude, location.longitude];
-      const color = location.stale ? '#d17a18' : '#087f72';
+      const color = location.stale ? '#d17a18' : location.kind === 'hostess' ? '#5367c7' : '#087f72';
       if (Number.isFinite(location.accuracy)) {
         L.circle(point, { radius: Math.min(location.accuracy, 500), color, fillColor: color, fillOpacity: .06, weight: 1 }).addTo(layer);
       }
@@ -783,6 +811,192 @@ export function DriverLocationMapPanel({ token }) {
     {error && <div className="driver-map-error" role="alert"><span>{error}</span><button className="text-button" type="button" onClick={() => { setLoading(!visibleLocations.length); setReloadKey((value) => value + 1); }}>Tentar novamente</button></div>}
     {!error && sharingPeriodClosed ? <div className="driver-map-empty"><ShieldCheck size={26} /><div><strong>Período de localização encerrado</strong><span>O compartilhamento dos motoristas terminou às {endLabel} (horário de Salvador).</span></div></div> : loading ? <div className="driver-map-empty" role="status"><LoaderCircle className="spin" size={25} /> Carregando localizações…</div> : !error && !visibleLocations.length ? <div className="driver-map-empty"><MapPin size={26} /><div><strong>Nenhum motorista compartilhando agora</strong><span>{hostessLocationTestActive ? `Para o teste após as 15:00, ${locationTestMode.driverName || 'o motorista selecionado'} precisa fazer check-in e ativar a localização no próprio celular.` : 'Após o check-in, o motorista precisa ativar a localização no próprio celular até as 15:00.'}</span></div></div> : visibleLocations.length ? <div className="driver-map-layout"><div className="driver-map-frame"><DriverMapCanvas locations={visibleLocations} fitRequest={fitRequest} /></div><div className="location-driver-list" aria-label="Motoristas exibidos no mapa">{visibleLocations.map((location) => <article key={location.driverId} className={location.stale ? 'location-stale' : ''}><span className="location-driver-dot" aria-hidden="true" /><div><strong>{location.driverName}</strong><small>{location.stale ? 'Sinal desatualizado' : 'Localização recente'} · {locationAge(location.updatedAt)}{Number.isFinite(location.accuracy) ? ` · ±${Math.round(location.accuracy)} m` : ''}</small></div></article>)}</div></div> : null}
     <div className="driver-map-privacy"><ShieldCheck size={15} /> Neste sistema, as coordenadas são entregues somente à Hostess autenticada. Consultores recebem apenas o motorista ligado ao próprio pedido; o fundo cartográfico é fornecido pelo OpenStreetMap.</div>
+  </section>;
+}
+
+
+function distanceBetweenLocations(first, second) {
+  if (!first || !second) return NaN;
+  const radians = (value) => value * Math.PI / 180;
+  const latitudeDelta = radians(second.latitude - first.latitude);
+  const longitudeDelta = radians(second.longitude - first.longitude);
+  const firstLatitude = radians(first.latitude);
+  const secondLatitude = radians(second.latitude);
+  const haversine = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(firstLatitude) * Math.cos(secondLatitude) * Math.sin(longitudeDelta / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+
+function distanceLabel(distance) {
+  if (!Number.isFinite(distance)) return '';
+  if (distance < 1000) return `${Math.max(0, Math.round(distance / 10) * 10)} m`;
+  return `${(distance / 1000).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km`;
+}
+
+
+function approachLocations(payload) {
+  const request = payload?.request || {};
+  const hostess = payload?.hostessLocation ? normalizedLocation({
+    ...payload.hostessLocation,
+    driverId: `hostess-${request.id || 'solicitante'}`,
+    driverName: `Hostess ${payload.hostessLocation.hostessName || request.requestedByName || ''}`.trim(),
+    kind: 'hostess'
+  }) : null;
+  const driver = payload?.driverLocation ? normalizedLocation({
+    ...payload.driverLocation,
+    driverId: `driver-${request.id || 'apoio'}`,
+    driverName: payload.driverLocation.driverName || request.assignedDriverName || 'Motorista em apoio',
+    kind: 'driver'
+  }) : null;
+  return { hostess, driver };
+}
+
+
+export function HostessApproachLocationPanel({ requestId, token, shareHostessLocation = false }) {
+  const localSharingWindow = useSalvadorSharingWindow();
+  const [request, setRequest] = useState(null);
+  const [hostessLocation, setHostessLocation] = useState(null);
+  const [driverLocation, setDriverLocation] = useState(null);
+  const [agePolicy, setAgePolicy] = useState(() => locationAgePolicy(null));
+  const [serverSharingWindow, setServerSharingWindow] = useState({ open: null, endsAt: null, locationTestModeActive: false, locationTestModeEndsAt: null });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [sharingError, setSharingError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [fitRequest, setFitRequest] = useState(0);
+  const previousDistanceRef = useRef(NaN);
+  const [movementLabel, setMovementLabel] = useState('Acompanhando aproximação');
+  const locationTestMode = useLocationTestMode(serverSharingWindow);
+
+  useEffect(() => {
+    let active = true;
+    let requestController = null;
+    async function loadApproach() {
+      if (requestController) return;
+      requestController = new AbortController();
+      try {
+        const payload = await locationApi(token, `/api/hostess-requests/${requestId}/approach`, { signal: requestController.signal });
+        if (!active) return;
+        const points = approachLocations(payload);
+        setRequest(payload.request || null);
+        setHostessLocation(points.hostess);
+        setDriverLocation(points.driver);
+        setAgePolicy(locationAgePolicy(payload));
+        setServerSharingWindow({
+          open: typeof payload.sharingWindowOpen === 'boolean' ? payload.sharingWindowOpen : null,
+          endsAt: payload.sharingEndsAt || null,
+          locationTestModeActive: payload.locationTestModeActive === true,
+          locationTestModeEndsAt: payload.locationTestModeEndsAt || null,
+          locationTestDriverId: payload.locationTestDriverId || null,
+          locationTestDriverName: payload.locationTestDriverName || null
+        });
+        setError('');
+      } catch (requestError) {
+        if (active && requestError.name !== 'AbortError') {
+          if ([401, 403, 404].includes(requestError.status)) {
+            setHostessLocation(null);
+            setDriverLocation(null);
+          }
+          setError(requestError.message);
+        }
+      } finally {
+        requestController = null;
+        if (active) setLoading(false);
+      }
+    }
+    loadApproach();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadApproach();
+    }, LOCATION_REFRESH_INTERVAL_MS);
+    const handleVisibility = () => { if (document.visibilityState === 'visible') loadApproach(); };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      active = false;
+      requestController?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [requestId, token, reloadKey]);
+
+  useEffect(() => {
+    if (!shareHostessLocation || !requestId) return undefined;
+    let active = true;
+    let watchId = null;
+    let lastSentAt = 0;
+    let inFlight = false;
+    if (!navigator.geolocation) {
+      setSharingError('Este aparelho não oferece localização pelo navegador.');
+      return undefined;
+    }
+    async function sendPosition(position) {
+      const now = Date.now();
+      if (!active || inFlight || now - lastSentAt < LOCATION_SEND_INTERVAL_MS) return;
+      inFlight = true;
+      lastSentAt = now;
+      try {
+        await locationApi(token, `/api/hostess-requests/${requestId}/location`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null
+          })
+        });
+        if (active) setSharingError('');
+      } catch (requestError) {
+        if (active) setSharingError(requestError.message);
+      } finally {
+        inFlight = false;
+      }
+    }
+    watchId = navigator.geolocation.watchPosition(
+      (position) => void sendPosition(position),
+      (geolocationError) => { if (active) setSharingError(geolocationErrorMessage(geolocationError)); },
+      { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
+    );
+    return () => {
+      active = false;
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    };
+  }, [requestId, shareHostessLocation, token]);
+
+  const allLocations = [hostessLocation, driverLocation].filter(Boolean);
+  const ageNow = useLocationAgeClock(allLocations, [agePolicy.staleAfterSeconds, agePolicy.expiresAfterSeconds]);
+  const sharingPeriodClosed = (!locationTestMode.active && !localSharingWindow.open) || serverSharingWindow.open === false;
+  const visibleLocations = sharingPeriodClosed ? [] : allLocations.map((location) => {
+    const ageState = localLocationAgeState(location, agePolicy, ageNow);
+    return ageState === 'expired' ? null : { ...location, stale: ageState === 'stale' };
+  }).filter(Boolean);
+  const visibleHostess = visibleLocations.find((location) => location.kind === 'hostess');
+  const visibleDriver = visibleLocations.find((location) => location.kind === 'driver');
+  const distance = distanceBetweenLocations(visibleHostess, visibleDriver);
+  const formattedDistance = distanceLabel(distance);
+  const movementKey = `${visibleHostess?.updatedAt || ''}|${visibleDriver?.updatedAt || ''}`;
+  useEffect(() => {
+    if (!Number.isFinite(distance)) {
+      previousDistanceRef.current = NaN;
+      setMovementLabel('Acompanhando aproximação');
+      return;
+    }
+    const previous = previousDistanceRef.current;
+    if (Number.isFinite(previous) && previous - distance >= 10) setMovementLabel('Motorista se aproximando');
+    else setMovementLabel('Acompanhando aproximação');
+    previousDistanceRef.current = distance;
+  }, [movementKey, distance]);
+
+  const assignedDriverName = request?.assignedDriverName || driverLocation?.driverName || '';
+  const endLabel = sharingEndLabel(serverSharingWindow.endsAt);
+  const heading = assignedDriverName
+    ? formattedDistance ? `${assignedDriverName} está a ${formattedDistance} da Hostess` : `${assignedDriverName} aceitou o chamado`
+    : 'Aguardando um motorista';
+  return <section className="panel driver-map-panel hostess-approach-map">
+    <div className="panel-heading"><div><h2>{heading}</h2><p>{assignedDriverName ? 'O mapa mostra a Hostess e o motorista deste chamado para acompanhar a aproximação.' : 'Sua posição ficará pronta para o motorista que aceitar este chamado.'}</p></div><div className="driver-map-heading-actions"><span className="location-map-count" aria-live="polite">{sharingPeriodClosed ? <ShieldCheck size={14} /> : <Radio size={14} />} {sharingPeriodClosed ? `Encerrado às ${endLabel}` : assignedDriverName ? movementLabel : 'Aguardando'}</span>{visibleLocations.length > 0 && <button className="text-button" type="button" onClick={() => setFitRequest((value) => value + 1)}><Navigation size={14} /> Centralizar</button>}</div></div>
+    <LocationTestModeNotice testMode={locationTestMode} />
+    {sharingError && <div className="driver-map-error" role="alert"><span>{sharingError}</span></div>}
+    {error && <div className="driver-map-error" role="alert"><span>{error}</span><button className="text-button" type="button" onClick={() => { setLoading(!visibleLocations.length); setReloadKey((value) => value + 1); }}>Tentar novamente</button></div>}
+    {!error && sharingPeriodClosed ? <div className="driver-map-empty"><ShieldCheck size={26} /><div><strong>Período de localização encerrado</strong><span>Os dois pontos ficam ocultos após {endLabel} (horário de Salvador), exceto durante o teste autorizado.</span></div></div> : loading ? <div className="driver-map-empty" role="status"><LoaderCircle className="spin" size={25} /> Preparando acompanhamento…</div> : visibleLocations.length ? <div className="driver-map-layout"><div className="driver-map-frame"><DriverMapCanvas locations={visibleLocations} fitRequest={fitRequest} ariaLabel="Mapa com a localização da Hostess e do motorista em apoio" /></div><div className="location-driver-list approach-location-list" aria-label="Pessoas deste chamado">{visibleLocations.map((location) => <article key={location.driverId} className={`${location.stale ? 'location-stale ' : ''}${location.kind === 'hostess' ? 'location-hostess' : ''}`.trim()}><span className="location-driver-dot" aria-hidden="true" /><div><strong>{location.driverName}</strong><small>{location.kind === 'hostess' ? 'Ponto de encontro' : 'Motorista em deslocamento'} · {location.stale ? 'sinal desatualizado' : locationAge(location.updatedAt)}{Number.isFinite(location.accuracy) ? ` · ±${Math.round(location.accuracy)} m` : ''}</small></div></article>)}{assignedDriverName && !visibleDriver && <article><MapPin size={17} /><div><strong>{assignedDriverName}</strong><small>Ative “Compartilhar minha localização” no celular do motorista.</small></div></article>}</div></div> : <div className="driver-map-empty"><MapPin size={26} /><div><strong>Localização ainda não disponível</strong><span>{shareHostessLocation ? 'Permita a localização deste site para enviar o ponto de encontro.' : 'A Hostess precisa manter o chamado aberto e a localização permitida.'}</span></div></div>}
+    <div className="driver-map-privacy"><ShieldCheck size={15} /> A posição da Hostess é temporária e visível apenas para ela e para o motorista que aceitou este chamado. Ela é apagada quando o atendimento termina.</div>
   </section>;
 }
 
