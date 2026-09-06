@@ -123,7 +123,9 @@ function locationTestModeMetadata(source) {
     ? source.locationTestModeActive
     : settings.locationTestModeActive === true;
   const endsAt = source?.locationTestModeEndsAt || settings.locationTestModeEndsAt || null;
-  return { active, endsAt };
+  const driverId = source?.locationTestDriverId || settings.locationTestDriverId || null;
+  const driverName = source?.locationTestDriverName || settings.locationTestDriverName || null;
+  return { active, endsAt, driverId: driverId ? String(driverId) : null, driverName };
 }
 
 
@@ -176,14 +178,22 @@ function useLocationTestMode(source) {
     active: metadata.active && deadlineIsValid && now < endsAtTimestamp,
     ended: metadata.active && (!deadlineIsValid || now >= endsAtTimestamp),
     endsAt: metadata.endsAt,
-    endLabel: sharingEndLabel(metadata.endsAt)
+    endLabel: sharingEndLabel(metadata.endsAt),
+    driverId: metadata.driverId,
+    driverName: metadata.driverName
   };
 }
 
 
-function LocationTestModeNotice({ testMode }) {
+function locationTestModeAppliesToDriver(testMode, driverId) {
+  return Boolean(testMode.active && testMode.driverId && driverId && String(testMode.driverId) === String(driverId));
+}
+
+
+function LocationTestModeNotice({ testMode, showDriverName = false }) {
   if (!testMode.active) return null;
-  return <div className="location-test-mode-notice" role="status"><Clock3 size={17} /><div><strong>Modo de teste ativo até {testMode.endLabel} (Salvador)</strong><span>Ambiente temporário: o limite normal das 15:00 está suspenso somente até esse horário.</span></div></div>;
+  const namedDriver = showDriverName && testMode.driverName ? String(testMode.driverName) : '';
+  return <div className="location-test-mode-notice" role="status"><Clock3 size={17} /><div><strong>{namedDriver ? `Teste de localização ativo para ${namedDriver}` : 'Modo de teste de localização ativo'}</strong><span>{namedDriver ? `Após as 15:00, somente ${namedDriver} poderá compartilhar, até ${testMode.endLabel} (Salvador).` : `O limite das 15:00 está suspenso somente até ${testMode.endLabel} (Salvador).`}</span></div></div>;
 }
 
 
@@ -308,6 +318,10 @@ export function DriverLocationSharingCard({ data, user, token, notify }) {
   const locationTestMode = useLocationTestMode(data);
   const attendanceForToday = attendance && (!attendance.operationDate || attendance.operationDate === sharingWindow.dateKey) ? attendance : null;
   const linkedDriver = (data.drivers || []).find((item) => String(item.id) === String(user.driverId || ''));
+  const locationTestModeForDriver = {
+    ...locationTestMode,
+    active: locationTestModeAppliesToDriver(locationTestMode, user.driverId)
+  };
   const driverCannotShare = Boolean(linkedDriver && (linkedDriver.active === false || ['FOLGA', 'ATESTADO'].includes(linkedDriver.status)));
   const watchIdRef = useRef(null);
   const sharingIdRef = useRef('');
@@ -316,8 +330,8 @@ export function DriverLocationSharingCard({ data, user, token, notify }) {
   const startRequestRef = useRef(null);
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
-  const locationTestModeRef = useRef(locationTestMode);
-  locationTestModeRef.current = locationTestMode;
+  const locationTestModeRef = useRef(locationTestModeForDriver);
+  locationTestModeRef.current = locationTestModeForDriver;
   const [state, setState] = useState('off');
   const [detail, setDetail] = useState('');
   const [lastLocation, setLastLocation] = useState(null);
@@ -328,7 +342,7 @@ export function DriverLocationSharingCard({ data, user, token, notify }) {
 
   function locationSharingClosedMessage() {
     const currentTestMode = locationTestModeRef.current;
-    if (currentTestMode.ended) {
+    if (currentTestMode.ended && currentTestMode.driverId && String(currentTestMode.driverId) === String(user.driverId || '')) {
       return `O modo de teste terminou às ${currentTestMode.endLabel} (horário de Salvador) e o compartilhamento foi encerrado.`;
     }
     return LOCATION_CUTOFF_MESSAGE;
@@ -559,7 +573,7 @@ export function DriverLocationSharingCard({ data, user, token, notify }) {
     if (!attendanceForToday && (watchIdRef.current !== null || sharingIdRef.current || state === 'starting')) void stopSharing({ quiet: true });
   }, [attendanceForToday?.id]);
   useEffect(() => {
-    if (locationTestMode.active || (sharingWindow.open && salvadorSharingWindow().open)) {
+    if (locationTestModeForDriver.active || (sharingWindow.open && salvadorSharingWindow().open)) {
       if (state === 'cutoff') {
         setState('off');
         setDetail('');
@@ -580,24 +594,24 @@ export function DriverLocationSharingCard({ data, user, token, notify }) {
       setState('cutoff');
       setDetail(locationSharingClosedMessage());
     }
-  }, [sharingWindow.open, locationTestMode.active, state]);
+  }, [sharingWindow.open, locationTestModeForDriver.active, state]);
 
   if (!attendanceForToday) return null;
   const active = ['starting', 'sharing', 'weak', 'stopping'].includes(state);
-  const cutoffReached = !locationTestMode.active && (!sharingWindow.open || state === 'cutoff');
-  const defaultDetail = locationTestMode.active
-    ? `Durante este teste temporário, você pode compartilhar até ${locationTestMode.endLabel} (horário de Salvador). Fora do modo de teste, o limite normal é 15:00.`
+  const cutoffReached = !locationTestModeForDriver.active && (!sharingWindow.open || state === 'cutoff');
+  const defaultDetail = locationTestModeForDriver.active
+    ? `Você foi selecionado para este teste e pode compartilhar até ${locationTestModeForDriver.endLabel} (horário de Salvador). Fora do modo de teste, o limite normal é 15:00.`
     : 'Após o check-in, você pode compartilhar sua posição até as 15:00 (horário de Salvador). A atualização funciona enquanto este painel estiver aberto.';
   return <section className={`location-sharing-card location-sharing-${state}`}>
     <div className="location-sharing-icon">{active ? <Navigation size={24} /> : <MapPin size={24} />}</div>
     <div className="location-sharing-copy">
       <span>LOCALIZAÇÃO DURANTE O EXPEDIENTE</span>
       <h2>{state === 'starting' ? 'Obtendo sua posição…' : state === 'stopping' ? 'Encerrando compartilhamento…' : cutoffReached ? 'Período de localização encerrado' : state === 'sharing' ? 'Localização compartilhada' : state === 'weak' ? 'Compartilhando com sinal limitado' : state === 'blocked' ? 'Localização bloqueada' : 'Compartilhamento desativado'}</h2>
-      <LocationTestModeNotice testMode={locationTestMode} />
+      <LocationTestModeNotice testMode={locationTestModeForDriver} showDriverName />
       <p aria-live="polite">{detail || defaultDetail}</p>
       {lastLocation && <small><Radio size={13} /> Atualizado {locationAge(lastLocation.updatedAt)}{Number.isFinite(lastLocation.accuracy) ? ` · precisão aproximada de ${Math.round(lastLocation.accuracy)} m` : ''}</small>}
     </div>
-    {active ? <button className="button button-secondary" type="button" onClick={() => void stopSharing()} disabled={state === 'stopping'}>{state === 'stopping' && <LoaderCircle className="spin" size={17} />} {state === 'stopping' ? 'Encerrando…' : 'Parar compartilhamento'}</button> : <button className="button button-primary" type="button" onClick={startSharing} disabled={driverCannotShare || cutoffReached}><Navigation size={17} /> {cutoffReached ? 'Período encerrado às 15:00' : 'Compartilhar minha localização'}</button>}
+    {active ? <button className="button button-secondary" type="button" onClick={() => void stopSharing()} disabled={state === 'stopping'}>{state === 'stopping' && <LoaderCircle className="spin" size={17} />} {state === 'stopping' ? 'Encerrando…' : 'Parar compartilhamento'}</button> : <button className="button button-primary" type="button" onClick={startSharing} disabled={driverCannotShare || cutoffReached}><Navigation size={17} /> {cutoffReached ? 'Período encerrado' : 'Compartilhar minha localização'}</button>}
   </section>;
 }
 
@@ -695,7 +709,9 @@ export function DriverLocationMapPanel({ token }) {
     open: null,
     endsAt: null,
     locationTestModeActive: false,
-    locationTestModeEndsAt: null
+    locationTestModeEndsAt: null,
+    locationTestDriverId: null,
+    locationTestDriverName: null
   });
   const locationTestMode = useLocationTestMode(serverSharingWindow);
 
@@ -713,7 +729,9 @@ export function DriverLocationMapPanel({ token }) {
           open: serverWindowOpen,
           endsAt: payload.sharingEndsAt || null,
           locationTestModeActive: payload.locationTestModeActive === true,
-          locationTestModeEndsAt: payload.locationTestModeEndsAt || null
+          locationTestModeEndsAt: payload.locationTestModeEndsAt || null,
+          locationTestDriverId: payload.locationTestDriverId || null,
+          locationTestDriverName: payload.locationTestDriverName || null
         });
         setAgePolicy(locationAgePolicy(payload));
         setLocations(serverWindowOpen === false ? [] : normalizedLocations(payload.locations));
@@ -748,8 +766,12 @@ export function DriverLocationMapPanel({ token }) {
   const ageNow = useLocationAgeClock(locations, [agePolicy.staleAfterSeconds, agePolicy.expiresAfterSeconds]);
   // O servidor continua autoritativo para encerrar antes, e o limite local
   // impede que uma última resposta das 14h permaneça no mapa após as 15h.
-  const sharingPeriodClosed = (!locationTestMode.active && !localSharingWindow.open) || serverSharingWindow.open === false;
-  const visibleLocations = sharingPeriodClosed ? [] : locations.map((location) => {
+  const hostessLocationTestActive = Boolean(locationTestMode.active && locationTestMode.driverId);
+  const sharingPeriodClosed = (!hostessLocationTestActive && !localSharingWindow.open) || serverSharingWindow.open === false;
+  const scopedLocations = !localSharingWindow.open && hostessLocationTestActive
+    ? locations.filter((location) => String(location.driverId) === String(locationTestMode.driverId))
+    : locations;
+  const visibleLocations = sharingPeriodClosed ? [] : scopedLocations.map((location) => {
     const ageState = localLocationAgeState(location, agePolicy, ageNow);
     return ageState === 'expired' ? null : { ...location, stale: ageState === 'stale' };
   }).filter(Boolean);
@@ -757,9 +779,9 @@ export function DriverLocationMapPanel({ token }) {
   const endLabel = sharingEndLabel(serverSharingWindow.endsAt);
   return <section className="panel driver-map-panel">
     <div className="panel-heading"><div><h2>Localização dos motoristas</h2><p>{sharingPeriodClosed ? `Período de localização encerrado às ${endLabel} (horário de Salvador).` : 'Última posição compartilhada durante o expediente. Pontos antigos desaparecem automaticamente.'}</p></div><div className="driver-map-heading-actions"><span className="location-map-count" aria-live="polite">{sharingPeriodClosed ? <ShieldCheck size={14} /> : <Radio size={14} />} {sharingPeriodClosed ? `Encerrado às ${endLabel}` : `${freshCount} ao vivo`}</span>{visibleLocations.length > 0 && <button className="text-button" type="button" onClick={() => setFitRequest((value) => value + 1)}><Navigation size={14} /> Centralizar</button>}</div></div>
-    <LocationTestModeNotice testMode={locationTestMode} />
+    <LocationTestModeNotice testMode={{ ...locationTestMode, active: hostessLocationTestActive }} showDriverName />
     {error && <div className="driver-map-error" role="alert"><span>{error}</span><button className="text-button" type="button" onClick={() => { setLoading(!visibleLocations.length); setReloadKey((value) => value + 1); }}>Tentar novamente</button></div>}
-    {!error && sharingPeriodClosed ? <div className="driver-map-empty"><ShieldCheck size={26} /><div><strong>Período de localização encerrado</strong><span>O compartilhamento dos motoristas terminou às {endLabel} (horário de Salvador).</span></div></div> : loading ? <div className="driver-map-empty" role="status"><LoaderCircle className="spin" size={25} /> Carregando localizações…</div> : !error && !visibleLocations.length ? <div className="driver-map-empty"><MapPin size={26} /><div><strong>Nenhum motorista compartilhando agora</strong><span>{locationTestMode.active ? 'Após o check-in, o motorista precisa ativar a localização no próprio celular durante esta janela temporária de teste.' : 'Após o check-in, o motorista precisa ativar a localização no próprio celular até as 15:00.'}</span></div></div> : visibleLocations.length ? <div className="driver-map-layout"><div className="driver-map-frame"><DriverMapCanvas locations={visibleLocations} fitRequest={fitRequest} /></div><div className="location-driver-list" aria-label="Motoristas exibidos no mapa">{visibleLocations.map((location) => <article key={location.driverId} className={location.stale ? 'location-stale' : ''}><span className="location-driver-dot" aria-hidden="true" /><div><strong>{location.driverName}</strong><small>{location.stale ? 'Sinal desatualizado' : 'Localização recente'} · {locationAge(location.updatedAt)}{Number.isFinite(location.accuracy) ? ` · ±${Math.round(location.accuracy)} m` : ''}</small></div></article>)}</div></div> : null}
+    {!error && sharingPeriodClosed ? <div className="driver-map-empty"><ShieldCheck size={26} /><div><strong>Período de localização encerrado</strong><span>O compartilhamento dos motoristas terminou às {endLabel} (horário de Salvador).</span></div></div> : loading ? <div className="driver-map-empty" role="status"><LoaderCircle className="spin" size={25} /> Carregando localizações…</div> : !error && !visibleLocations.length ? <div className="driver-map-empty"><MapPin size={26} /><div><strong>Nenhum motorista compartilhando agora</strong><span>{hostessLocationTestActive ? `Para o teste após as 15:00, ${locationTestMode.driverName || 'o motorista selecionado'} precisa fazer check-in e ativar a localização no próprio celular.` : 'Após o check-in, o motorista precisa ativar a localização no próprio celular até as 15:00.'}</span></div></div> : visibleLocations.length ? <div className="driver-map-layout"><div className="driver-map-frame"><DriverMapCanvas locations={visibleLocations} fitRequest={fitRequest} /></div><div className="location-driver-list" aria-label="Motoristas exibidos no mapa">{visibleLocations.map((location) => <article key={location.driverId} className={location.stale ? 'location-stale' : ''}><span className="location-driver-dot" aria-hidden="true" /><div><strong>{location.driverName}</strong><small>{location.stale ? 'Sinal desatualizado' : 'Localização recente'} · {locationAge(location.updatedAt)}{Number.isFinite(location.accuracy) ? ` · ±${Math.round(location.accuracy)} m` : ''}</small></div></article>)}</div></div> : null}
     <div className="driver-map-privacy"><ShieldCheck size={15} /> Neste sistema, as coordenadas são entregues somente à Hostess autenticada. Consultores recebem apenas o motorista ligado ao próprio pedido; o fundo cartográfico é fornecido pelo OpenStreetMap.</div>
   </section>;
 }

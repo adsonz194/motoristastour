@@ -1032,10 +1032,29 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
   const [saving, setSaving] = useState(false);
   const [savingLocationTest, setSavingLocationTest] = useState(false);
   const [locationTestClock, setLocationTestClock] = useState(Date.now);
+  const configuredLocationTestDriverId = String(settings.locationTestDriverId || '');
+  const canInspectDriverAccounts = Array.isArray(data.users);
+  const eligibleLocationTestDriverIds = new Set((data.users || [])
+    .filter((account) => account.active !== false && account.role === 'MOTORISTA' && account.driverId && (account.permissions || []).map(normalizedPermissionCode).includes('SHARE_OWN_LOCATION'))
+    .map((account) => String(account.driverId)));
+  const locationTestDrivers = [...(data.drivers || [])]
+    .filter((driver) => String(driver.id) === configuredLocationTestDriverId || (driver.active !== false && (!canInspectDriverAccounts || eligibleLocationTestDriverIds.has(String(driver.id)))))
+    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'pt-BR'));
+  const locationTestDriverIdsKey = locationTestDrivers.map((driver) => String(driver.id)).join('|');
+  const [locationTestDriverId, setLocationTestDriverId] = useState(configuredLocationTestDriverId);
   const closures = [...(data.hotelClosures || [])].sort((left, right) => right.startDate.localeCompare(left.startDate));
   const locationTestEndsAt = new Date(settings.locationTestModeEndsAt).getTime();
   const locationTestModeActive = settings.locationTestModeActive === true && Number.isFinite(locationTestEndsAt) && locationTestClock < locationTestEndsAt;
   const locationTestEndLabel = salvadorTime(settings.locationTestModeEndsAt);
+  const configuredLocationTestDriver = locationTestDrivers.find((driver) => String(driver.id) === configuredLocationTestDriverId);
+  const locationTestDriverName = settings.locationTestDriverName || configuredLocationTestDriver?.name || 'Motorista selecionado';
+  useEffect(() => {
+    if (configuredLocationTestDriverId) {
+      setLocationTestDriverId(configuredLocationTestDriverId);
+      return;
+    }
+    setLocationTestDriverId((current) => locationTestDrivers.some((driver) => String(driver.id) === current) ? current : '');
+  }, [configuredLocationTestDriverId, locationTestDriverIdsKey]);
   useEffect(() => {
     setLocationTestClock(Date.now());
     if (settings.locationTestModeActive !== true || !Number.isFinite(locationTestEndsAt)) return undefined;
@@ -1058,18 +1077,48 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
     try { await api(token, `/api/hotel-closures/${item.id}`, { method: 'DELETE' }); await refresh(); notify('Fechamento removido.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
   async function changeLocationTestMode(active) {
+    if (active && !locationTestDriverId) {
+      notify('Selecione o motorista que fará o teste de localização.', 'error');
+      return;
+    }
     setSavingLocationTest(true);
     try {
-      await api(token, '/api/operation/driver-location-test', { method: 'POST', body: JSON.stringify({ active }) });
+      const body = active ? { active: true, driverId: locationTestDriverId } : { active: false };
+      await api(token, '/api/operation/driver-location-test', { method: 'POST', body: JSON.stringify(body) });
       await refresh();
-      notify(active ? 'Modo de teste da localização ativado por 30 minutos.' : 'Modo de teste da localização encerrado.', 'success');
+      const selectedDriverName = locationTestDrivers.find((driver) => String(driver.id) === locationTestDriverId)?.name || 'motorista selecionado';
+      notify(active ? `Teste de localização de ${selectedDriverName} ativado por 30 minutos.` : 'Modo de teste da localização encerrado.', 'success');
     } catch (error) {
       notify(error.message, 'error');
     } finally {
       setSavingLocationTest(false);
     }
   }
-  return <section className="operation-settings"><div className="panel-heading"><div><h2>Hotéis, saída e testes operacionais</h2><p>Escolha o ponto padrão de saída, cadastre períodos de fechamento e controle testes temporários sem novo deploy.</p></div></div><div className="operation-settings-grid"><div className="operation-setting-card"><h3>Saída padrão da operação</h3><p>Usada quando não há hotel fechado no período atual.</p><label>Prestige de saída<select value={defaultDeparture} onChange={(event) => setDefaultDeparture(event.target.value)}><option value="BAHIA">Prestige Waves Bahia</option><option value="SELECTION">Prestige Praia do Forte Selection</option></select></label><button className="button button-secondary" onClick={saveDefault} disabled={saving}>Salvar saída padrão</button></div><form className="operation-setting-card" onSubmit={addClosure}><h3>Fechamento de hotel</h3><p>O sistema bloqueia automaticamente as funções ligadas ao hotel fechado.</p><label>Hotel fechado<select value={closure.hotel} onChange={(event) => changeHotel(event.target.value)}><option value="WAVES_BAHIA">Waves Bahia</option><option value="PRAIA_SELECTION">Praia do Forte Selection</option></select></label><div className="closure-dates"><label>Data inicial<input type="date" value={closure.startDate} onChange={(event) => setClosure({ ...closure, startDate: event.target.value })} required /></label><label>Data final<input type="date" value={closure.endDate} onChange={(event) => setClosure({ ...closure, endDate: event.target.value })} required /></label></div><label>Prestige de saída nesse período<select value={closure.departurePrestige} onChange={(event) => setClosure({ ...closure, departurePrestige: event.target.value })}><option value="BAHIA" disabled={closure.hotel === 'WAVES_BAHIA'}>Prestige Waves Bahia</option><option value="SELECTION" disabled={closure.hotel === 'PRAIA_SELECTION'}>Prestige Praia do Forte Selection</option></select></label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Adicionar fechamento</button></form><div className={classNames('operation-setting-card', 'location-test-setting-card', locationTestModeActive && 'is-active')}><div className="location-test-setting-copy"><div className="location-test-setting-title"><Clock3 size={20} /><h3>Teste temporário da localização</h3></div><div className={classNames('location-test-setting-status', locationTestModeActive && 'is-active')} role="status">{locationTestModeActive ? `Modo de teste ativo até ${locationTestEndLabel} (Salvador)` : 'Modo de teste inativo'}</div><p id="location-test-setting-help">Use somente para validar o GPS fora do horário normal. Durante 30 minutos, apenas o limite das 15:00 fica suspenso; check-in, permissão, vínculo do motorista, expiração dos pontos e privacidade continuam obrigatórios.</p></div><button className={classNames('button', locationTestModeActive ? 'button-secondary' : 'button-primary')} type="button" onClick={() => void changeLocationTestMode(!locationTestModeActive)} disabled={savingLocationTest} aria-describedby="location-test-setting-help">{savingLocationTest && <LoaderCircle className="spin" size={17} />} {locationTestModeActive ? 'Encerrar teste' : 'Ativar teste por 30 min'}</button></div></div><div className="closure-list"><h3>Períodos configurados</h3>{closures.length ? closures.map((item) => <article key={item.id}><div><strong>{item.hotel === 'WAVES_BAHIA' ? 'Waves Bahia' : 'Praia do Forte Selection'}</strong><span>{item.startDate.split('-').reverse().join('/')} até {item.endDate.split('-').reverse().join('/')} · saída: {item.departurePrestige === 'BAHIA' ? 'Prestige Waves Bahia' : 'Prestige Praia do Forte Selection'}</span></div><button className="mini-action danger-mini" onClick={() => removeClosure(item)} disabled={saving}>Remover</button></article>) : <p className="hostess-empty">Nenhum fechamento de hotel configurado.</p>}</div>{(settings.activeClosures || []).length > 0 && <div className="operation-active-note"><Building2 size={19} /><span>Hoje: {(settings.activeClosures || []).map((item) => item.hotelLabel).join(', ')} fechado. Saída pelo {settings.departureLabel}.</span></div>}</section>;
+  return <section className="operation-settings">
+    <div className="panel-heading"><div><h2>Hotéis, saída e testes operacionais</h2><p>Escolha o ponto padrão de saída, cadastre períodos de fechamento e controle testes temporários sem novo deploy.</p></div></div>
+    <div className="operation-settings-grid">
+      <div className="operation-setting-card"><h3>Saída padrão da operação</h3><p>Usada quando não há hotel fechado no período atual.</p><label>Prestige de saída<select value={defaultDeparture} onChange={(event) => setDefaultDeparture(event.target.value)}><option value="BAHIA">Prestige Waves Bahia</option><option value="SELECTION">Prestige Praia do Forte Selection</option></select></label><button className="button button-secondary" onClick={saveDefault} disabled={saving}>Salvar saída padrão</button></div>
+      <form className="operation-setting-card" onSubmit={addClosure}><h3>Fechamento de hotel</h3><p>O sistema bloqueia automaticamente as funções ligadas ao hotel fechado.</p><label>Hotel fechado<select value={closure.hotel} onChange={(event) => changeHotel(event.target.value)}><option value="WAVES_BAHIA">Waves Bahia</option><option value="PRAIA_SELECTION">Praia do Forte Selection</option></select></label><div className="closure-dates"><label>Data inicial<input type="date" value={closure.startDate} onChange={(event) => setClosure({ ...closure, startDate: event.target.value })} required /></label><label>Data final<input type="date" value={closure.endDate} onChange={(event) => setClosure({ ...closure, endDate: event.target.value })} required /></label></div><label>Prestige de saída nesse período<select value={closure.departurePrestige} onChange={(event) => setClosure({ ...closure, departurePrestige: event.target.value })}><option value="BAHIA" disabled={closure.hotel === 'WAVES_BAHIA'}>Prestige Waves Bahia</option><option value="SELECTION" disabled={closure.hotel === 'PRAIA_SELECTION'}>Prestige Praia do Forte Selection</option></select></label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Adicionar fechamento</button></form>
+      <div className={classNames('operation-setting-card', 'location-test-setting-card', locationTestModeActive && 'is-active')}>
+        <div className="location-test-setting-copy">
+          <div className="location-test-setting-title"><Clock3 size={20} /><h3>Teste temporário da localização</h3></div>
+          <div className={classNames('location-test-setting-status', locationTestModeActive && 'is-active')} role="status">{locationTestModeActive ? `Teste ativo para ${locationTestDriverName} até ${locationTestEndLabel} (Salvador)` : 'Modo de teste inativo'}</div>
+          <p id="location-test-setting-help">Escolha um motorista para validar o GPS fora do horário normal. Durante 30 minutos, somente ele poderá ultrapassar o limite das 15:00; check-in, permissão, vínculo, expiração dos pontos e privacidade continuam obrigatórios.</p>
+        </div>
+        <div className="location-test-setting-controls">
+          <label htmlFor="location-test-driver">Motorista do teste</label>
+          <select id="location-test-driver" value={locationTestDriverId} onChange={(event) => setLocationTestDriverId(event.target.value)} disabled={locationTestModeActive || savingLocationTest}>
+            <option value="">Selecione um motorista</option>
+            {locationTestDrivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}{driver.active === false ? ' (inativo)' : ''}</option>)}
+          </select>
+          {!locationTestDrivers.length && <small>Nenhum motorista ativo disponível para teste.</small>}
+          <button className={classNames('button', locationTestModeActive ? 'button-secondary' : 'button-primary')} type="button" onClick={() => void changeLocationTestMode(!locationTestModeActive)} disabled={savingLocationTest || (!locationTestModeActive && !locationTestDriverId)} aria-describedby="location-test-setting-help">{savingLocationTest && <LoaderCircle className="spin" size={17} />} {locationTestModeActive ? 'Encerrar teste' : 'Ativar teste por 30 min'}</button>
+        </div>
+      </div>
+    </div>
+    <div className="closure-list"><h3>Períodos configurados</h3>{closures.length ? closures.map((item) => <article key={item.id}><div><strong>{item.hotel === 'WAVES_BAHIA' ? 'Waves Bahia' : 'Praia do Forte Selection'}</strong><span>{item.startDate.split('-').reverse().join('/')} até {item.endDate.split('-').reverse().join('/')} · saída: {item.departurePrestige === 'BAHIA' ? 'Prestige Waves Bahia' : 'Prestige Praia do Forte Selection'}</span></div><button className="mini-action danger-mini" onClick={() => removeClosure(item)} disabled={saving}>Remover</button></article>) : <p className="hostess-empty">Nenhum fechamento de hotel configurado.</p>}</div>
+    {(settings.activeClosures || []).length > 0 && <div className="operation-active-note"><Building2 size={19} /><span>Hoje: {(settings.activeClosures || []).map((item) => item.hotelLabel).join(', ')} fechado. Saída pelo {settings.departureLabel}.</span></div>}
+  </section>;
 }
 
 function LegacySettingsPage({ data, user, token, refresh, notify }) {

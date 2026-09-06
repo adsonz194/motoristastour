@@ -377,15 +377,99 @@ def driver_location_test_until(db: dict[str, Any] | None) -> datetime | None:
     return parse_driver_location_test_until(db.get("driverLocationTestUntil"))
 
 
+def driver_location_test_driver(
+    db: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Resolve the persisted test target, failing closed if it is no longer eligible."""
+    if not isinstance(db, dict):
+        return None
+    driver_id = str(db.get("driverLocationTestDriverId") or "").strip()
+    if not driver_id:
+        return None
+    driver = next(
+        (
+            item
+            for item in db.get("drivers", [])
+            if item.get("id") == driver_id and item.get("active", True)
+        ),
+        None,
+    )
+    account = next(
+        (
+            item
+            for item in db.get("users", [])
+            if (
+                item.get("driverId") == driver_id
+                and item.get("role") == ROLE_DRIVER
+                and item.get("active", True)
+                and user_has_permission(item, PERMISSION_SHARE_OWN_LOCATION)
+            )
+        ),
+        None,
+    )
+    if not driver or not account:
+        return None
+    return driver, account
+
+
+def eligible_driver_location_test_target(
+    db: dict[str, Any], driver_id: Any
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate the driver selected by an administrator for a test window."""
+    if not isinstance(driver_id, str) or not driver_id.strip() or len(driver_id.strip()) > 128:
+        raise APIError("Selecione um motorista válido para o teste.")
+    normalized_id = driver_id.strip()
+    driver = next(
+        (item for item in db.get("drivers", []) if item.get("id") == normalized_id),
+        None,
+    )
+    if not driver:
+        raise APIError("Motorista selecionado não encontrado.", 404)
+    if not driver.get("active", True):
+        raise APIError("O motorista selecionado está inativo.", 409)
+    account = next(
+        (
+            item
+            for item in db.get("users", [])
+            if (
+                item.get("driverId") == normalized_id
+                and item.get("role") == ROLE_DRIVER
+                and item.get("active", True)
+                and user_has_permission(item, PERMISSION_SHARE_OWN_LOCATION)
+            )
+        ),
+        None,
+    )
+    if not account:
+        raise APIError(
+            "O motorista precisa ter uma conta ativa com permissão para compartilhar localização.",
+            409,
+        )
+    return driver, account
+
+
 def driver_location_window_payload(
     value: datetime | None = None,
     *,
     db: dict[str, Any] | None = None,
+    driver_id: str | None = None,
+    expose_test_driver: bool = True,
 ) -> dict[str, Any]:
-    """Describe the effective daily/test sharing window for API consumers."""
+    """Describe the effective sharing window, optionally scoped to one driver."""
     local_now = driver_location_now(value)
     test_until = driver_location_test_until(db)
-    test_mode_active = bool(test_until and local_now.astimezone(timezone.utc) < test_until)
+    test_target = driver_location_test_driver(db)
+    selected_driver = test_target[0] if test_target else None
+    selected_driver_id = str(selected_driver.get("id")) if selected_driver else None
+    test_mode_globally_active = bool(
+        test_until
+        and selected_driver_id
+        and local_now.astimezone(timezone.utc) < test_until
+    )
+    test_mode_active = bool(
+        test_mode_globally_active
+        and (driver_id is None or str(driver_id) == selected_driver_id)
+    )
     regular_window_open = local_now.time() < DRIVER_LOCATION_CUTOFF_TIME
     sharing_ends_at = DRIVER_LOCATION_SHARING_ENDS_AT
     regular_cutoff = datetime.combine(
@@ -401,6 +485,14 @@ def driver_location_window_payload(
         "sharingEndsAt": sharing_ends_at,
         "locationTestModeActive": test_mode_active,
         "locationTestModeEndsAt": test_until.isoformat() if test_mode_active else None,
+        "locationTestDriverId": (
+            selected_driver_id if test_mode_active and expose_test_driver else None
+        ),
+        "locationTestDriverName": (
+            str(selected_driver.get("name") or "Motorista")
+            if test_mode_active and expose_test_driver and selected_driver
+            else None
+        ),
     }
 
 
@@ -408,19 +500,25 @@ def driver_location_window_is_open(
     value: datetime | None = None,
     *,
     db: dict[str, Any] | None = None,
+    driver_id: str | None = None,
 ) -> bool:
     """Allow precise positions before 15:00 or during an explicit test window."""
-    return bool(driver_location_window_payload(value, db=db)["sharingWindowOpen"])
+    return bool(
+        driver_location_window_payload(value, db=db, driver_id=driver_id)[
+            "sharingWindowOpen"
+        ]
+    )
 
 
 def require_driver_location_window(
     value: datetime | None = None,
     *,
     db: dict[str, Any] | None = None,
+    driver_id: str | None = None,
 ) -> None:
-    if not driver_location_window_is_open(value, db=db):
+    if not driver_location_window_is_open(value, db=db, driver_id=driver_id):
         raise APIError(
-            "A localização pode ser compartilhada somente após o check-in e antes das 15:00, no horário da Bahia.",
+            "A localização pode ser compartilhada somente após o check-in, antes das 15:00 ou quando este motorista estiver selecionado para teste.",
             409,
         )
 
@@ -462,7 +560,33 @@ def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dic
         "toursClosed": HOTEL_WAVES_BAHIA in closed_hotels and HOTEL_PRAIA_SELECTION in closed_hotels,
         "locationTestModeActive": location_window["locationTestModeActive"],
         "locationTestModeEndsAt": location_window["locationTestModeEndsAt"],
+        "locationTestDriverId": location_window["locationTestDriverId"],
+        "locationTestDriverName": location_window["locationTestDriverName"],
     }
+
+
+def operation_settings_for_user(db: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    """Hide the selected test driver's identity from unrelated bootstrap users."""
+    settings = active_operation_settings(db)
+    selected_driver_id = settings.get("locationTestDriverId")
+    may_view_target = bool(
+        user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+        or (
+            user.get("role") == ROLE_HOSTESS
+            and user_has_permission(user, PERMISSION_VIEW_DRIVER_LOCATIONS)
+        )
+        or (
+            user.get("role") == ROLE_DRIVER
+            and selected_driver_id
+            and str(user.get("driverId") or "") == str(selected_driver_id)
+        )
+    )
+    if not may_view_target:
+        settings["locationTestModeActive"] = False
+        settings["locationTestModeEndsAt"] = None
+        settings["locationTestDriverId"] = None
+        settings["locationTestDriverName"] = None
+    return settings
 
 
 def require_tours_open(db: dict[str, Any]) -> None:
@@ -942,6 +1066,7 @@ def reset_operational_data(db: dict[str, Any], message: str) -> None:
     current_time = timestamp()
     db["operationDate"] = operation_date()
     db.pop("driverLocationTestUntil", None)
+    db.pop("driverLocationTestDriverId", None)
     db["tours"] = []
     db["transfers"] = []
     db["hostessRequests"] = []
@@ -1879,13 +2004,39 @@ def clear_driver_locations(db: dict[str, Any]) -> None:
 
 
 def purge_driver_locations_after_cutoff(db: dict[str, Any], value: datetime | None = None) -> bool:
-    """Remove precise positions once the daily sharing window has closed."""
-    if driver_location_window_is_open(value, db=db):
-        return False
-    if not load_driver_location_records(db):
-        return False
-    clear_driver_locations(db)
-    return True
+    """Reconcile expired test state and retain only its selected driver after 15:00."""
+    local_now = driver_location_now(value)
+    deadline = driver_location_test_until(db)
+    target = driver_location_test_driver(db)
+    test_active = bool(
+        deadline
+        and target
+        and local_now.astimezone(timezone.utc) < deadline
+    )
+    changed = False
+
+    if ("driverLocationTestUntil" in db or "driverLocationTestDriverId" in db) and not test_active:
+        db.pop("driverLocationTestUntil", None)
+        db.pop("driverLocationTestDriverId", None)
+        changed = True
+
+    if local_now.time() < DRIVER_LOCATION_CUTOFF_TIME:
+        return changed
+
+    records = load_driver_location_records(db)
+    if not records:
+        return changed
+
+    if not test_active or not target:
+        clear_driver_locations(db)
+        return True
+
+    selected_driver_id = str(target[0]["id"])
+    for driver_id in tuple(records):
+        if driver_id != selected_driver_id:
+            remove_driver_location(db, driver_id)
+            changed = True
+    return changed
 
 
 def current_driver_for_location(db: dict[str, Any], user: dict[str, Any], *, require_attendance: bool) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -1904,11 +2055,10 @@ def current_driver_for_location(db: dict[str, Any], user: dict[str, Any], *, req
         raise APIError("Sua situação está como folga ou atestado. Faça o check-in para compartilhar a localização.", 409)
     if require_attendance:
         local_now = driver_location_now()
-        if not driver_location_window_is_open(local_now, db=db):
-            removed = purge_driver_locations_after_cutoff(db, local_now)
-            if removed and not POSTGRES_URL:
-                save_database(db)
-        require_driver_location_window(local_now, db=db)
+        reconciled = purge_driver_locations_after_cutoff(db, local_now)
+        if reconciled:
+            save_database(db)
+        require_driver_location_window(local_now, db=db, driver_id=driver["id"])
     return driver, attendance
 
 
@@ -1937,8 +2087,14 @@ def location_timestamp(value: Any) -> datetime | None:
 def visible_driver_locations(db: dict[str, Any], value: datetime | None = None) -> list[dict[str, Any]]:
     """Return fresh, on-duty positions without exposing attendance/user IDs."""
     local_now = driver_location_now(value)
-    if not driver_location_window_is_open(local_now, db=db):
+    location_window = driver_location_window_payload(local_now, db=db)
+    if not location_window["sharingWindowOpen"]:
         return []
+    selected_driver_id = (
+        location_window.get("locationTestDriverId")
+        if local_now.time() >= DRIVER_LOCATION_CUTOFF_TIME
+        else None
+    )
     now = local_now.astimezone(timezone.utc)
     drivers = {item["id"]: item for item in db.get("drivers", []) if item.get("active", True)}
     accounts = {
@@ -1949,6 +2105,8 @@ def visible_driver_locations(db: dict[str, Any], value: datetime | None = None) 
     result = []
     for driver_id, record in load_driver_location_records(db).items():
         if not isinstance(record, dict):
+            continue
+        if selected_driver_id and driver_id != selected_driver_id:
             continue
         driver = drivers.get(driver_id)
         account = accounts.get(driver_id)
@@ -2750,10 +2908,20 @@ def public_consultant_support_request(request_id: str):
             request.headers.get(PUBLIC_SUPPORT_ACCESS_HEADER),
         )
         local_now = driver_location_now()
-        location_window = driver_location_window_payload(local_now, db=db)
-        removed = purge_driver_locations_after_cutoff(db, local_now)
-        if removed and not POSTGRES_URL:
+        reconciled = purge_driver_locations_after_cutoff(db, local_now)
+        if reconciled:
             save_database(db)
+        assigned_driver_id = (
+            str(car_request.get("assignedDriverId") or "")
+            if car_request.get("status") == HOSTESS_REQUEST_OPEN
+            else ""
+        )
+        location_window = driver_location_window_payload(
+            local_now,
+            db=db,
+            driver_id=assigned_driver_id,
+            expose_test_driver=False,
+        )
         response = jsonify(
             request=public_consultant_support_request_payload(car_request),
             location=visible_location_for_consultant_request(db, car_request, local_now),
@@ -2765,7 +2933,56 @@ def public_consultant_support_request(request_id: str):
         return response
 
 
-def dashboard_readonly_data(db: dict[str, Any], settings: dict[str, Any]) -> dict[str, Any]:
+def activity_payload_for_user(
+    activity: dict[str, Any], user: dict[str, Any]
+) -> dict[str, Any]:
+    """Redact a test target from history when the viewer cannot see that target."""
+    payload = dict(activity)
+    audit = payload.get("audit")
+    if not isinstance(audit, dict) or audit.get("action") not in {
+        "DRIVER_LOCATION_TEST_ENABLED",
+        "DRIVER_LOCATION_TEST_DISABLED",
+    }:
+        return payload
+
+    clean_audit = dict(audit)
+    may_view_all_targets = bool(
+        user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+        or (
+            user.get("role") == ROLE_HOSTESS
+            and user_has_permission(user, PERMISSION_VIEW_DRIVER_LOCATIONS)
+        )
+    )
+    if may_view_all_targets:
+        payload["audit"] = clean_audit
+        return payload
+
+    own_driver_id = (
+        str(user.get("driverId") or "") if user.get("role") == ROLE_DRIVER else ""
+    )
+    current_driver_id = str(clean_audit.get("driverId") or "")
+    previous_driver_id = str(clean_audit.get("previousDriverId") or "")
+    current_is_self = bool(own_driver_id and current_driver_id == own_driver_id)
+    previous_is_self = bool(own_driver_id and previous_driver_id == own_driver_id)
+
+    if not current_is_self:
+        clean_audit.pop("driverId", None)
+        clean_audit.pop("driverName", None)
+        if clean_audit.get("action") == "DRIVER_LOCATION_TEST_ENABLED":
+            actor_name = str(
+                payload.get("actorName") or payload.get("userName") or "Uma conta autorizada"
+            )
+            payload["message"] = f"{actor_name} ativou um teste temporário de localização."
+    if not previous_is_self:
+        clean_audit.pop("previousDriverId", None)
+        clean_audit.pop("previousDriverName", None)
+    payload["audit"] = clean_audit
+    return payload
+
+
+def dashboard_readonly_data(
+    db: dict[str, Any], settings: dict[str, Any], user: dict[str, Any]
+) -> dict[str, Any]:
     """The operational snapshot used by a dashboard-only account.
 
     It intentionally excludes user accounts, check-in records, push device
@@ -2808,7 +3025,13 @@ def dashboard_readonly_data(db: dict[str, Any], settings: dict[str, Any]) -> dic
             {"id": item.get("id"), "name": item.get("name"), "active": bool(item.get("active", True))}
             for item in db.get("destinations", [])
         ],
-        "activities": [{key: value for key, value in item.items() if key in activity_fields} for item in db.get("activities", [])],
+        "activities": [
+            activity_payload_for_user(
+                {key: value for key, value in item.items() if key in activity_fields},
+                user,
+            )
+            for item in db.get("activities", [])
+        ],
         # A dashboard-only account cannot open, close or respond to a Hostess
         # call, therefore it receives an empty collection rather than request
         # ownership information.
@@ -2830,7 +3053,7 @@ def bootstrap_data_for_user(
     # explicit list was reduced to only VIEW_DASHBOARD cannot inherit controls
     # or extra account information from their previous role.
     if permissions == {PERMISSION_VIEW_DASHBOARD}:
-        return dashboard_readonly_data(db, settings)
+        return dashboard_readonly_data(db, settings, user)
 
     data: dict[str, Any] = {
         "operationDate": db["operationDate"],
@@ -2838,7 +3061,7 @@ def bootstrap_data_for_user(
     }
 
     if PERMISSION_VIEW_DASHBOARD in permissions:
-        data.update(dashboard_readonly_data(db, settings))
+        data.update(dashboard_readonly_data(db, settings, user))
 
     tour_permissions = {
         PERMISSION_VIEW_PRESTIGE,
@@ -2878,7 +3101,9 @@ def bootstrap_data_for_user(
     if permissions & {PERMISSION_VIEW_CARTS, PERMISSION_MANAGE_TOURS}:
         data["carts"] = db.get("carts", [])
     if permissions & {PERMISSION_VIEW_HISTORY, PERMISSION_MANAGE_SETTINGS}:
-        data["activities"] = db.get("activities", [])
+        data["activities"] = [
+            activity_payload_for_user(item, user) for item in db.get("activities", [])
+        ]
     if permissions & {PERMISSION_VIEW_REPORTS}:
         data["tours"] = db.get("tours", [])
         data["drivers"] = db.get("drivers", [])
@@ -2917,7 +3142,10 @@ def bootstrap():
         db = operational_database()
         user = get_current_user(db)
         current_attendance = attendance_for(db, user["id"])
-        settings = active_operation_settings(db)
+        reconciled = purge_driver_locations_after_cutoff(db)
+        if reconciled:
+            save_database(db)
+        settings = operation_settings_for_user(db, user)
         data = bootstrap_data_for_user(db, user, current_attendance, settings)
         return jsonify(
             user=clean_user(user),
@@ -3233,7 +3461,7 @@ def start_own_driver_location_sharing():
         return jsonify(
             sharingId=location["sharingId"],
             startedAt=started_at,
-            **driver_location_window_payload(db=db),
+            **driver_location_window_payload(db=db, driver_id=driver["id"]),
         ), 201
 
 
@@ -3278,7 +3506,7 @@ def update_own_driver_location():
                 "accuracy": location["accuracy"],
                 "updatedAt": updated_at,
             },
-            **driver_location_window_payload(db=db),
+            **driver_location_window_payload(db=db, driver_id=driver["id"]),
         )
 
 
@@ -3297,7 +3525,11 @@ def stop_own_driver_location():
             driver = next((item for item in db.get("drivers", []) if item.get("id") == driver_id), None)
             log_activity(db, user, None, None, None, f"{driver.get('name', user['name']) if driver else user['name']} encerrou o compartilhamento de localização.")
             save_database(db)
-        return jsonify(ok=True, removed=removed, **driver_location_window_payload(db=db))
+        return jsonify(
+            ok=True,
+            removed=removed,
+            **driver_location_window_payload(db=db, driver_id=driver_id),
+        )
 
 
 @app.get("/api/driver-locations")
@@ -3309,10 +3541,10 @@ def list_driver_locations():
             raise APIError("Somente uma Hostess autenticada pode consultar a localização dos motoristas.", 403)
         require_permission(user, PERMISSION_VIEW_DRIVER_LOCATIONS, "Seu usuário não possui permissão para ver a localização dos motoristas.")
         local_now = driver_location_now()
-        location_window = driver_location_window_payload(local_now, db=db)
-        removed = purge_driver_locations_after_cutoff(db, local_now)
-        if removed and not POSTGRES_URL:
+        reconciled = purge_driver_locations_after_cutoff(db, local_now)
+        if reconciled:
             save_database(db)
+        location_window = driver_location_window_payload(local_now, db=db)
         response = jsonify(
             locations=visible_driver_locations(db, local_now),
             staleAfterSeconds=DRIVER_LOCATION_STALE_SECONDS,
@@ -3895,7 +4127,7 @@ def delete_hotel_closure(closure_id: str):
 
 @app.post("/api/operation/driver-location-test")
 def update_driver_location_test_mode():
-    """Enable a persisted 30-minute GPS test window or end it immediately."""
+    """Enable a persisted 30-minute GPS test for one driver, or end it."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or type(payload.get("active")) is not bool:
         raise APIError("Informe se o modo de teste de localização deve ser ativado ou encerrado.")
@@ -3907,27 +4139,67 @@ def update_driver_location_test_mode():
         local_now = driver_location_now()
 
         if payload["active"]:
+            driver, _account = eligible_driver_location_test_target(
+                db, payload.get("driverId")
+            )
+            previous_window = driver_location_window_payload(local_now, db=db)
+            previous_driver_id = str(db.get("driverLocationTestDriverId") or "").strip() or None
+            previous_driver = next(
+                (
+                    item
+                    for item in db.get("drivers", [])
+                    if item.get("id") == previous_driver_id
+                ),
+                None,
+            )
+            renewing_same_active_target = bool(
+                previous_window["locationTestModeActive"]
+                and previous_driver_id == driver["id"]
+            )
             test_until = (
                 local_now.astimezone(timezone.utc)
                 + timedelta(minutes=DRIVER_LOCATION_TEST_DURATION_MINUTES)
             ).isoformat()
             db["driverLocationTestUntil"] = test_until
+            db["driverLocationTestDriverId"] = driver["id"]
+            if local_now.time() >= DRIVER_LOCATION_CUTOFF_TIME:
+                if renewing_same_active_target:
+                    purge_driver_locations_after_cutoff(db, local_now)
+                elif load_driver_location_records(db):
+                    # Changing (or restarting) the target must not revive a
+                    # sharing session created for another test window.
+                    clear_driver_locations(db)
             message = (
-                f"{user['name']} ativou o modo de teste da localização por "
+                f"{user['name']} ativou o teste de localização de {driver['name']} por "
                 f"{DRIVER_LOCATION_TEST_DURATION_MINUTES} minutos."
             )
             audit = {
                 "action": "DRIVER_LOCATION_TEST_ENABLED",
                 "durationMinutes": DRIVER_LOCATION_TEST_DURATION_MINUTES,
                 "endsAt": test_until,
+                "driverId": driver["id"],
+                "driverName": driver["name"],
+                "previousDriverId": previous_driver_id,
+                "previousDriverName": previous_driver.get("name") if previous_driver else None,
             }
         else:
             previous_until = db.pop("driverLocationTestUntil", None)
+            previous_driver_id = db.pop("driverLocationTestDriverId", None)
+            previous_driver = next(
+                (
+                    item
+                    for item in db.get("drivers", [])
+                    if item.get("id") == previous_driver_id
+                ),
+                None,
+            )
             purge_driver_locations_after_cutoff(db, local_now)
             message = f"{user['name']} encerrou o modo de teste da localização."
             audit = {
                 "action": "DRIVER_LOCATION_TEST_DISABLED",
                 "previousEndsAt": previous_until,
+                "previousDriverId": previous_driver_id,
+                "previousDriverName": previous_driver.get("name") if previous_driver else None,
             }
 
         log_activity(db, user, None, None, None, message, audit=audit)

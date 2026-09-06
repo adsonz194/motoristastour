@@ -235,12 +235,20 @@ class DriverLocationApiTest(unittest.TestCase):
             headers=headers,
         )
 
-    def _set_location_test_mode(self, active: bool, token: str = "token-admin"):
+    def _set_location_test_mode(
+        self,
+        active: bool,
+        token: str = "token-admin",
+        driver_id: str | None = "drv_one",
+    ):
+        payload = {"active": active}
+        if active and driver_id is not None:
+            payload["driverId"] = driver_id
         return self._request(
             token,
             "POST",
             "/api/operation/driver-location-test",
-            json={"active": active},
+            json=payload,
         )
 
     @staticmethod
@@ -438,6 +446,7 @@ class DriverLocationApiTest(unittest.TestCase):
 
     def test_test_mode_deadline_is_fail_closed_when_absent_or_malformed(self) -> None:
         self.assertNotIn("driverLocationTestUntil", tour_app.initial_database())
+        self.assertNotIn("driverLocationTestDriverId", tour_app.initial_database())
         self.assertEqual(
             tour_app.parse_driver_location_test_until("2026-09-05T16:30:00-03:00"),
             datetime(2026, 9, 5, 19, 30, tzinfo=timezone.utc),
@@ -484,17 +493,55 @@ class DriverLocationApiTest(unittest.TestCase):
                 "/api/operation/driver-location-test",
                 json={"active": "true"},
             )
+            missing_driver = self._set_location_test_mode(True, driver_id=None)
+            unknown_driver = self._set_location_test_mode(True, driver_id="drv_missing")
+            ineligible_driver = self._set_location_test_mode(True, driver_id="drv_no_share")
             self.assertEqual(unauthenticated.status_code, 401, unauthenticated.get_json())
             self.assertEqual(denied.status_code, 403, denied.get_json())
             self.assertEqual(invalid.status_code, 400, invalid.get_json())
+            self.assertEqual(missing_driver.status_code, 400, missing_driver.get_json())
+            self.assertEqual(unknown_driver.status_code, 404, unknown_driver.get_json())
+            self.assertEqual(ineligible_driver.status_code, 409, ineligible_driver.get_json())
 
             enabled = self._set_location_test_mode(True)
             self.assertEqual(enabled.status_code, 200, enabled.get_json())
             expected_until = "2026-09-05T18:40:00+00:00"
             self.assertEqual(self.database["driverLocationTestUntil"], expected_until)
+            self.assertEqual(self.database["driverLocationTestDriverId"], "drv_one")
             settings = enabled.get_json()["operationSettings"]
             self.assertTrue(settings["locationTestModeActive"])
             self.assertEqual(settings["locationTestModeEndsAt"], expected_until)
+            self.assertEqual(settings["locationTestDriverId"], "drv_one")
+            self.assertEqual(settings["locationTestDriverName"], "Motorista Localizado")
+
+            for token in ("token-admin", "token-hostess", "token-driver"):
+                bootstrap = self._request(token, "GET", "/api/bootstrap")
+                self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
+                visible_settings = bootstrap.get_json()["data"]["operationSettings"]
+                self.assertTrue(visible_settings["locationTestModeActive"])
+                self.assertEqual(visible_settings["locationTestDriverId"], "drv_one")
+                if token in {"token-admin", "token-driver"}:
+                    test_activity = bootstrap.get_json()["data"]["activities"][0]
+                    self.assertEqual(test_activity["audit"]["driverId"], "drv_one")
+                    self.assertIn("Motorista Localizado", test_activity["message"])
+            for token in ("token-viewer", "token-no-share"):
+                bootstrap = self._request(token, "GET", "/api/bootstrap")
+                self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
+                hidden_settings = bootstrap.get_json()["data"]["operationSettings"]
+                self.assertFalse(hidden_settings["locationTestModeActive"])
+                self.assertIsNone(hidden_settings["locationTestModeEndsAt"])
+                self.assertIsNone(hidden_settings["locationTestDriverId"])
+                self.assertIsNone(hidden_settings["locationTestDriverName"])
+            hidden_activity = self._request(
+                "token-viewer", "GET", "/api/bootstrap"
+            ).get_json()["data"]["activities"][0]
+            encoded_hidden_activity = json.dumps(hidden_activity, ensure_ascii=False)
+            self.assertNotIn("drv_one", encoded_hidden_activity)
+            self.assertNotIn("Motorista Localizado", encoded_hidden_activity)
+            self.assertEqual(
+                hidden_activity["audit"]["action"],
+                "DRIVER_LOCATION_TEST_ENABLED",
+            )
 
             # The override suspends only the time cutoff. Role, grant and
             # active-attendance checks remain mandatory.
@@ -513,6 +560,18 @@ class DriverLocationApiTest(unittest.TestCase):
             self.assertEqual(no_permission.status_code, 403, no_permission.get_json())
             self.assertEqual(wrong_role.status_code, 403, wrong_role.get_json())
 
+            no_share_account = next(
+                item for item in self.database["users"] if item["id"] == "user_no_share"
+            )
+            no_share_account["permissions"].append(tour_app.PERMISSION_SHARE_OWN_LOCATION)
+            not_selected = self._request(
+                "token-no-share",
+                "POST",
+                "/api/drivers/me/location-sharing",
+                json={"attendanceId": "checkin_no_share"},
+            )
+            self.assertEqual(not_selected.status_code, 409, not_selected.get_json())
+
             attendance = self.database["attendance"].pop(0)
             without_checkin = self._request(
                 "token-driver",
@@ -526,6 +585,8 @@ class DriverLocationApiTest(unittest.TestCase):
             session = self._start()
             self.assertTrue(session["locationTestModeActive"])
             self.assertEqual(session["locationTestModeEndsAt"], expected_until)
+            self.assertEqual(session["locationTestDriverId"], "drv_one")
+            self.assertEqual(session["locationTestDriverName"], "Motorista Localizado")
             self.assertEqual(session["sharingEndsAt"], "2026-09-05T15:40:00-03:00")
             updated = self._update(session["sharingId"])
             self.assertEqual(updated.status_code, 200, updated.get_json())
@@ -535,6 +596,8 @@ class DriverLocationApiTest(unittest.TestCase):
             self.assertEqual(hostess.status_code, 200, hostess.get_json())
             self.assertEqual(len(hostess.get_json()["locations"]), 1)
             self.assertTrue(hostess.get_json()["locationTestModeActive"])
+            self.assertEqual(hostess.get_json()["locationTestDriverId"], "drv_one")
+            self.assertEqual(hostess.get_json()["locationTestDriverName"], "Motorista Localizado")
             for token in ("token-driver", "token-admin"):
                 forbidden = self._request(token, "GET", "/api/driver-locations")
                 self.assertEqual(forbidden.status_code, 403, forbidden.get_json())
@@ -557,6 +620,8 @@ class DriverLocationApiTest(unittest.TestCase):
             self.assertEqual(tracked.status_code, 200, tracked.get_json())
             self.assertIsNotNone(tracked.get_json()["location"])
             self.assertTrue(tracked.get_json()["locationTestModeActive"])
+            self.assertIsNone(tracked.get_json()["locationTestDriverId"])
+            self.assertIsNone(tracked.get_json()["locationTestDriverName"])
 
             forbidden_stop = self._set_location_test_mode(False, token="token-hostess")
             self.assertEqual(forbidden_stop.status_code, 403, forbidden_stop.get_json())
@@ -566,9 +631,12 @@ class DriverLocationApiTest(unittest.TestCase):
             disabled = self._set_location_test_mode(False)
             self.assertEqual(disabled.status_code, 200, disabled.get_json())
             self.assertNotIn("driverLocationTestUntil", self.database)
+            self.assertNotIn("driverLocationTestDriverId", self.database)
             self.assertEqual(self.database["driverLocations"], {})
             self.assertFalse(disabled.get_json()["operationSettings"]["locationTestModeActive"])
             self.assertIsNone(disabled.get_json()["operationSettings"]["locationTestModeEndsAt"])
+            self.assertIsNone(disabled.get_json()["operationSettings"]["locationTestDriverId"])
+            self.assertIsNone(disabled.get_json()["operationSettings"]["locationTestDriverName"])
             delayed_callback = self._update(session["sharingId"])
             self.assertEqual(delayed_callback.status_code, 409, delayed_callback.get_json())
 
@@ -598,6 +666,8 @@ class DriverLocationApiTest(unittest.TestCase):
             expired_callback = self._update(session["sharingId"])
             self.assertEqual(expired_callback.status_code, 409, expired_callback.get_json())
             self.assertEqual(self.database["driverLocations"], {})
+            self.assertNotIn("driverLocationTestUntil", self.database)
+            self.assertNotIn("driverLocationTestDriverId", self.database)
 
             # Starting a new session has the same centralized purge behavior.
             self.database["driverLocations"]["drv_one"] = stored_point
@@ -629,6 +699,156 @@ class DriverLocationApiTest(unittest.TestCase):
                 "wrong-capability",
             )
             self.assertEqual(wrong_capability.status_code, 404, wrong_capability.get_json())
+
+    def test_test_selection_scopes_after_hours_but_not_the_regular_window(self) -> None:
+        second_account = next(
+            item for item in self.database["users"] if item["id"] == "user_no_share"
+        )
+        second_account["permissions"] = tour_app.default_permissions_for_role(
+            tour_app.ROLE_DRIVER
+        )
+
+        # Before 15:00 the test selection does not restrict ordinary sharing.
+        with self._at_salvador_time(14, 30, 0):
+            enabled = self._set_location_test_mode(True, driver_id="drv_one")
+            self.assertEqual(enabled.status_code, 200, enabled.get_json())
+            second_start = self._request(
+                "token-no-share",
+                "POST",
+                "/api/drivers/me/location-sharing",
+                json={"attendanceId": "checkin_no_share"},
+            )
+            self.assertEqual(second_start.status_code, 201, second_start.get_json())
+
+        # A fresh after-hours activation for A invalidates prior ordinary
+        # sessions. Only A may create a new one.
+        with self._at_salvador_time(15, 10, 0):
+            enabled = self._set_location_test_mode(True, driver_id="drv_one")
+            self.assertEqual(enabled.status_code, 200, enabled.get_json())
+            self.assertEqual(self.database["driverLocations"], {})
+            blocked_second = self._request(
+                "token-no-share",
+                "POST",
+                "/api/drivers/me/location-sharing",
+                json={"attendanceId": "checkin_no_share"},
+            )
+            self.assertEqual(blocked_second.status_code, 409, blocked_second.get_json())
+
+            first_session = self._start()
+            first_update = self._update(first_session["sharingId"])
+            self.assertEqual(first_update.status_code, 200, first_update.get_json())
+
+            # A consultant assigned to B cannot infer A's test selection or
+            # receive either driver's precise point.
+            support_request, access_token = self._create_public_support_request()
+            accepted = self._request(
+                "token-no-share",
+                "POST",
+                "/api/drivers/hostess-availability",
+                json={"available": True, "requestId": support_request["id"]},
+            )
+            self.assertEqual(accepted.status_code, 200, accepted.get_json())
+            point_time = tour_app.driver_location_now().astimezone(timezone.utc).isoformat()
+            self.database["driverLocations"]["drv_no_share"] = {
+                "driverId": "drv_no_share",
+                "attendanceId": "checkin_no_share",
+                "sharingId": "location_not_selected",
+                "operationDate": self.OPERATION_DAY,
+                "latitude": -12.5,
+                "longitude": -38.1,
+                "accuracy": 9.0,
+                "startedAt": point_time,
+                "updatedAt": point_time,
+            }
+            public = self._public_support_status(support_request["id"], access_token)
+            self.assertEqual(public.status_code, 200, public.get_json())
+            public_payload = public.get_json()
+            self.assertIsNone(public_payload["location"])
+            self.assertFalse(public_payload["sharingWindowOpen"])
+            self.assertFalse(public_payload["locationTestModeActive"])
+            self.assertIsNone(public_payload["locationTestDriverId"])
+            self.assertIsNone(public_payload["locationTestDriverName"])
+            self.assertEqual(set(self.database["driverLocations"]), {"drv_one"})
+
+            # Switching A -> B after cutoff removes A's point/session and B
+            # must explicitly start sharing. Renewing B keeps that new session.
+            switched = self._set_location_test_mode(True, driver_id="drv_no_share")
+            self.assertEqual(switched.status_code, 200, switched.get_json())
+            switched_settings = switched.get_json()["operationSettings"]
+            self.assertEqual(switched_settings["locationTestDriverId"], "drv_no_share")
+            self.assertEqual(switched_settings["locationTestDriverName"], "Motorista Sem Permissão")
+            self.assertEqual(self.database["driverLocations"], {})
+            rejected_old_session = self._update(first_session["sharingId"])
+            self.assertEqual(rejected_old_session.status_code, 409, rejected_old_session.get_json())
+
+            second_start = self._request(
+                "token-no-share",
+                "POST",
+                "/api/drivers/me/location-sharing",
+                json={"attendanceId": "checkin_no_share"},
+            )
+            self.assertEqual(second_start.status_code, 201, second_start.get_json())
+            second_update = self._request(
+                "token-no-share",
+                "PUT",
+                "/api/drivers/me/location",
+                json={
+                    "attendanceId": "checkin_no_share",
+                    "sharingId": second_start.get_json()["sharingId"],
+                    "latitude": -12.55,
+                    "longitude": -38.05,
+                    "accuracy": 8,
+                },
+            )
+            self.assertEqual(second_update.status_code, 200, second_update.get_json())
+            renewed = self._set_location_test_mode(True, driver_id="drv_no_share")
+            self.assertEqual(renewed.status_code, 200, renewed.get_json())
+            self.assertIn("drv_no_share", self.database["driverLocations"])
+
+            hostess = self._request("token-hostess", "GET", "/api/driver-locations")
+            self.assertEqual(hostess.status_code, 200, hostess.get_json())
+            self.assertEqual(
+                [item["driverId"] for item in hostess.get_json()["locations"]],
+                ["drv_no_share"],
+            )
+
+            audit = self.database["activities"][0]["audit"]
+            self.assertEqual(audit["action"], "DRIVER_LOCATION_TEST_ENABLED")
+            self.assertEqual(audit["driverId"], "drv_no_share")
+            self.assertEqual(audit["previousDriverId"], "drv_no_share")
+
+    def test_test_target_must_remain_active_and_linked(self) -> None:
+        driver = next(item for item in self.database["drivers"] if item["id"] == "drv_one")
+        account = next(item for item in self.database["users"] if item["id"] == "user_driver")
+
+        with self._at_salvador_time(15, 5, 0):
+            driver["active"] = False
+            inactive = self._set_location_test_mode(True, driver_id="drv_one")
+            self.assertEqual(inactive.status_code, 409, inactive.get_json())
+            driver["active"] = True
+
+            account["role"] = tour_app.ROLE_VIEWER
+            unlinked_role = self._set_location_test_mode(True, driver_id="drv_one")
+            self.assertEqual(unlinked_role.status_code, 409, unlinked_role.get_json())
+            account["role"] = tour_app.ROLE_DRIVER
+
+            enabled = self._set_location_test_mode(True, driver_id="drv_one")
+            self.assertEqual(enabled.status_code, 200, enabled.get_json())
+            session = self._start()
+            self.assertEqual(self._update(session["sharingId"]).status_code, 200)
+
+            # Deactivating the linked account invalidates the persisted target.
+            # The next protected read clears both metadata and precise points.
+            account["active"] = False
+            hostess = self._request("token-hostess", "GET", "/api/driver-locations")
+            self.assertEqual(hostess.status_code, 200, hostess.get_json())
+            payload = hostess.get_json()
+            self.assertEqual(payload["locations"], [])
+            self.assertFalse(payload["locationTestModeActive"])
+            self.assertIsNone(payload["locationTestDriverId"])
+            self.assertNotIn("driverLocationTestUntil", self.database)
+            self.assertNotIn("driverLocationTestDriverId", self.database)
+            self.assertEqual(self.database["driverLocations"], {})
 
     def test_checkin_after_15h_does_not_open_a_location_window(self) -> None:
         self.database["attendance"] = [
@@ -715,6 +935,7 @@ class DriverLocationApiTest(unittest.TestCase):
         source = {
             "operationDate": self.OPERATION_DAY,
             "driverLocationTestUntil": "2026-09-05T18:40:00+00:00",
+            "driverLocationTestDriverId": "drv_one",
             "driverLocations": {"drv_one": {"latitude": -12.57, "longitude": -38.0}},
         }
         sanitized = tour_app.postgres_state_payload(source)
@@ -723,6 +944,7 @@ class DriverLocationApiTest(unittest.TestCase):
             sanitized["driverLocationTestUntil"],
             "2026-09-05T18:40:00+00:00",
         )
+        self.assertEqual(sanitized["driverLocationTestDriverId"], "drv_one")
         self.assertIn("drv_one", source["driverLocations"])
 
     def test_coordinate_validation_is_atomic(self) -> None:
@@ -796,11 +1018,13 @@ class DriverLocationApiTest(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.get_json())
         self.assertIn("drv_one", self.database["driverLocations"])
         self.database["driverLocationTestUntil"] = "2026-09-05T23:59:00+00:00"
+        self.database["driverLocationTestDriverId"] = "drv_one"
 
         reset = self._request("token-admin", "POST", "/api/operation/reset")
         self.assertEqual(reset.status_code, 200, reset.get_json())
         self.assertEqual(self.database["driverLocations"], {})
         self.assertNotIn("driverLocationTestUntil", self.database)
+        self.assertNotIn("driverLocationTestDriverId", self.database)
         self.assertEqual(self.database["attendance"], [])
         self.assertTrue(all(driver["status"] == tour_app.DRIVER_LEAVE for driver in self.database["drivers"]))
 

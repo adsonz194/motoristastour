@@ -127,9 +127,12 @@ input:focus, select:focus { border-color: #197db7; box-shadow: 0 0 0 3px rgba(25
 .location-test-setting-status { justify-self: start; padding: 5px 8px; color: #526c7e; background: #e9f1f5; border-radius: 999px; font-size: 11px; font-weight: 800; }
 .location-test-setting-status.is-active { color: #75480c; background: #ffeab2; }
 .operation-setting-card .location-test-setting-copy p { max-width: 780px; margin: 0; }
-.location-test-setting-card > .button { flex: none; align-self: center; white-space: nowrap; }
+.location-test-setting-controls { display: grid; flex: 0 1 330px; min-width: min(100%, 280px); gap: 7px; }
+.location-test-setting-controls label { color: #35516e; font-size: 12px; font-weight: 800; }
+.location-test-setting-controls small { color: #8a5a17; font-size: 11px; font-weight: 700; }
+.location-test-setting-controls .button { width: 100%; justify-content: center; white-space: nowrap; }
 .closure-list { margin-top: 21px; }.closure-list h3 { margin-bottom: 10px; }.closure-list article { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-top: 1px solid #e5edf2; }.closure-list article strong, .closure-list article span { display: block; }.closure-list article span { margin-top: 3px; color: #60768e; font-size: 13px; }.operation-active-note { display: flex; gap: 9px; align-items: center; margin-top: 16px; padding: 12px 14px; border-radius: 10px; color: #805114; background: #fff5df; font-size: 13px; font-weight: 700; }
-@media (max-width: 760px) { .hostess-call, .available-hostess-drivers { align-items: flex-start; flex-direction: column; }.available-hostess-drivers > div:last-child { justify-content: flex-start; }.operation-settings { padding: 18px; }.operation-settings-grid { grid-template-columns: 1fr; }.closure-dates { grid-template-columns: 1fr; }.location-test-setting-card { align-items: stretch; flex-direction: column; gap: 15px; }.operation-setting-card .button { width: 100%; justify-content: center; } }
+@media (max-width: 760px) { .hostess-call, .available-hostess-drivers { align-items: flex-start; flex-direction: column; }.available-hostess-drivers > div:last-child { justify-content: flex-start; }.operation-settings { padding: 18px; }.operation-settings-grid { grid-template-columns: 1fr; }.closure-dates { grid-template-columns: 1fr; }.location-test-setting-card { align-items: stretch; flex-direction: column; gap: 15px; }.location-test-setting-controls { flex-basis: auto; min-width: 0; }.operation-setting-card .button { width: 100%; justify-content: center; } }
 
 /* Apoios avulsos: um motorista em apoio nunca deve parecer livre para um tour. */
 .support-create-card, .support-active-section { overflow: hidden; margin-bottom: 18px; border: 1px solid #d8e6ef; border-radius: 15px; background: #fff; box-shadow: 0 8px 22px rgba(17, 54, 84, .05); }
