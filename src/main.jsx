@@ -1034,27 +1034,51 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
   const [locationTestClock, setLocationTestClock] = useState(Date.now);
   const configuredLocationTestDriverId = String(settings.locationTestDriverId || '');
   const canInspectDriverAccounts = Array.isArray(data.users);
-  const eligibleLocationTestDriverIds = new Set((data.users || [])
-    .filter((account) => account.active !== false && account.role === 'MOTORISTA' && account.driverId && (account.permissions || []).map(normalizedPermissionCode).includes('SHARE_OWN_LOCATION'))
-    .map((account) => String(account.driverId)));
-  const locationTestDrivers = [...(data.drivers || [])]
-    .filter((driver) => String(driver.id) === configuredLocationTestDriverId || (driver.active !== false && (!canInspectDriverAccounts || eligibleLocationTestDriverIds.has(String(driver.id)))))
-    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'pt-BR'));
-  const locationTestDriverIdsKey = locationTestDrivers.map((driver) => String(driver.id)).join('|');
+  const driversById = new Map((data.drivers || []).map((driver) => [String(driver.id), driver]));
+  const locationTestDriverOptions = canInspectDriverAccounts
+    ? (data.users || [])
+      .filter((account) => account.active !== false && account.role === 'MOTORISTA')
+      .map((account) => {
+        const driverId = String(account.driverId || '');
+        const driver = driversById.get(driverId);
+        const hasLocationPermission = (account.permissions || []).map(normalizedPermissionCode).includes('SHARE_OWN_LOCATION');
+        let unavailableReason = '';
+        if (!driverId) unavailableReason = 'sem vínculo com cadastro de motorista';
+        else if (!driver) unavailableReason = 'cadastro de motorista não encontrado';
+        else if (driver.active === false) unavailableReason = 'cadastro de motorista inativo';
+        else if (!hasLocationPermission) unavailableReason = 'sem permissão de localização';
+        return {
+          key: String(account.id || driverId || account.username),
+          driverId,
+          name: String(driver?.name || account.name || account.username || 'Motorista'),
+          eligible: !unavailableReason,
+          unavailableReason
+        };
+      })
+    : [...(data.drivers || [])].map((driver) => ({
+      key: String(driver.id),
+      driverId: String(driver.id),
+      name: String(driver.name || 'Motorista'),
+      eligible: driver.active !== false,
+      unavailableReason: driver.active === false ? 'cadastro de motorista inativo' : ''
+    }));
+  locationTestDriverOptions.sort((left, right) => left.name.localeCompare(right.name, 'pt-BR'));
+  const eligibleLocationTestDrivers = locationTestDriverOptions.filter((option) => option.eligible);
+  const locationTestDriverOptionsKey = locationTestDriverOptions.map((option) => `${option.key}:${option.driverId}:${option.eligible}`).join('|');
   const [locationTestDriverId, setLocationTestDriverId] = useState(configuredLocationTestDriverId);
   const closures = [...(data.hotelClosures || [])].sort((left, right) => right.startDate.localeCompare(left.startDate));
   const locationTestEndsAt = new Date(settings.locationTestModeEndsAt).getTime();
   const locationTestModeActive = settings.locationTestModeActive === true && Number.isFinite(locationTestEndsAt) && locationTestClock < locationTestEndsAt;
   const locationTestEndLabel = salvadorTime(settings.locationTestModeEndsAt);
-  const configuredLocationTestDriver = locationTestDrivers.find((driver) => String(driver.id) === configuredLocationTestDriverId);
+  const configuredLocationTestDriver = locationTestDriverOptions.find((option) => option.driverId === configuredLocationTestDriverId);
   const locationTestDriverName = settings.locationTestDriverName || configuredLocationTestDriver?.name || 'Motorista selecionado';
   useEffect(() => {
     if (configuredLocationTestDriverId) {
       setLocationTestDriverId(configuredLocationTestDriverId);
       return;
     }
-    setLocationTestDriverId((current) => locationTestDrivers.some((driver) => String(driver.id) === current) ? current : '');
-  }, [configuredLocationTestDriverId, locationTestDriverIdsKey]);
+    setLocationTestDriverId((current) => eligibleLocationTestDrivers.some((option) => option.driverId === current) ? current : '');
+  }, [configuredLocationTestDriverId, locationTestDriverOptionsKey]);
   useEffect(() => {
     setLocationTestClock(Date.now());
     if (settings.locationTestModeActive !== true || !Number.isFinite(locationTestEndsAt)) return undefined;
@@ -1086,7 +1110,7 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
       const body = active ? { active: true, driverId: locationTestDriverId } : { active: false };
       await api(token, '/api/operation/driver-location-test', { method: 'POST', body: JSON.stringify(body) });
       await refresh();
-      const selectedDriverName = locationTestDrivers.find((driver) => String(driver.id) === locationTestDriverId)?.name || 'motorista selecionado';
+      const selectedDriverName = eligibleLocationTestDrivers.find((option) => option.driverId === locationTestDriverId)?.name || 'motorista selecionado';
       notify(active ? `Teste de localização de ${selectedDriverName} ativado por 30 minutos.` : 'Modo de teste da localização encerrado.', 'success');
     } catch (error) {
       notify(error.message, 'error');
@@ -1109,9 +1133,9 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
           <label htmlFor="location-test-driver">Motorista do teste</label>
           <select id="location-test-driver" value={locationTestDriverId} onChange={(event) => setLocationTestDriverId(event.target.value)} disabled={locationTestModeActive || savingLocationTest}>
             <option value="">Selecione um motorista</option>
-            {locationTestDrivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}{driver.active === false ? ' (inativo)' : ''}</option>)}
+            {locationTestDriverOptions.map((option) => <option key={option.key} value={option.eligible ? option.driverId : `unavailable:${option.key}`} disabled={!option.eligible}>{option.name}{option.unavailableReason ? ` — ${option.unavailableReason}` : ''}</option>)}
           </select>
-          {!locationTestDrivers.length && <small>Nenhum motorista ativo disponível para teste.</small>}
+          {!locationTestDriverOptions.length ? <small>Nenhum usuário Motorista ativo foi encontrado.</small> : <small>{eligibleLocationTestDrivers.length} de {locationTestDriverOptions.length} motorista{locationTestDriverOptions.length === 1 ? '' : 's'} ativo{locationTestDriverOptions.length === 1 ? '' : 's'} pode{eligibleLocationTestDrivers.length === 1 ? '' : 'm'} iniciar o teste. Os demais aparecem com o motivo do bloqueio.</small>}
           <button className={classNames('button', locationTestModeActive ? 'button-secondary' : 'button-primary')} type="button" onClick={() => void changeLocationTestMode(!locationTestModeActive)} disabled={savingLocationTest || (!locationTestModeActive && !locationTestDriverId)} aria-describedby="location-test-setting-help">{savingLocationTest && <LoaderCircle className="spin" size={17} />} {locationTestModeActive ? 'Encerrar teste' : 'Ativar teste por 30 min'}</button>
         </div>
       </div>
