@@ -951,10 +951,12 @@ class DriverLocationApiTest(unittest.TestCase):
             "driverLocationTestDriverId": "drv_one",
             "driverLocations": {"drv_one": {"latitude": -12.57, "longitude": -38.0}},
             "hostessRequestLocations": {"hostreq_one": {"latitude": -12.58, "longitude": -38.01}},
+            "mobileApiSessions": {"token_hash": {"userId": "user_driver"}},
         }
         sanitized = tour_app.postgres_state_payload(source)
         self.assertEqual(sanitized["driverLocations"], {})
         self.assertEqual(sanitized["hostessRequestLocations"], {})
+        self.assertEqual(sanitized["mobileApiSessions"], {})
         self.assertEqual(
             sanitized["driverLocationTestUntil"],
             "2026-09-05T18:40:00+00:00",
@@ -962,6 +964,7 @@ class DriverLocationApiTest(unittest.TestCase):
         self.assertEqual(sanitized["driverLocationTestDriverId"], "drv_one")
         self.assertIn("drv_one", source["driverLocations"])
         self.assertIn("hostreq_one", source["hostessRequestLocations"])
+        self.assertIn("token_hash", source["mobileApiSessions"])
 
     def test_coordinate_validation_is_atomic(self) -> None:
         malformed_start = self._request(

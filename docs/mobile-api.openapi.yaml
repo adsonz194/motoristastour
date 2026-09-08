@@ -1,0 +1,555 @@
+openapi: 3.1.0
+info:
+  title: Motoristas Tour Mobile API
+  version: 1.0.0
+  description: API autenticada para aplicativos Android, com as mesmas regras e permissões do painel web.
+servers:
+  - url: https://motoristastour.onrender.com/api/mobile/v1
+    description: Produção
+tags:
+  - name: Autenticação
+    description: Entrada, identidade e encerramento de sessão do aplicativo.
+  - name: Sincronização
+    description: Estado operacional filtrado para a conta autenticada.
+  - name: Presença e localização
+    description: Check-in, GPS, mapas e janela autorizada de rastreamento.
+  - name: Chamados
+    description: Solicitações da Hostess, consultores e apoios operacionais.
+  - name: Operação
+    description: Tours, transferências e configurações do dia.
+  - name: Cadastros
+    description: Usuários, motoristas e consultores.
+  - name: Público
+    description: Consulta geral e chamado do consultor por credencial temporária.
+paths:
+  /health:
+    get:
+      tags: [Autenticação]
+      summary: Verifica a disponibilidade e a versão da API
+      security: []
+      responses:
+        '200': {description: API disponível, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}}}}
+  /openapi.yaml:
+    get:
+      tags: [Autenticação]
+      summary: Baixa este contrato OpenAPI
+      security: []
+      responses:
+        '200': {description: Contrato YAML}
+  /auth/login:
+    post:
+      tags: [Autenticação]
+      summary: Autentica uma instalação Android
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MobileLogin'}
+      responses:
+        '200': {description: Token móvel criado, content: {application/json: {schema: {$ref: '#/components/schemas/MobileSession'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auth/me:
+    get:
+      tags: [Autenticação]
+      summary: Retorna a conta autenticada e suas permissões
+      responses:
+        '200': {description: Conta autenticada, content: {application/json: {schema: {type: object}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auth/logout:
+    post:
+      tags: [Autenticação]
+      summary: Revoga o token desta instalação e encerra seu compartilhamento de localização
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /bootstrap:
+    get:
+      tags: [Sincronização]
+      summary: Carrega o usuário, permissões e os dados visíveis para seu perfil
+      responses:
+        '200': {description: Estado inicial filtrado pelas permissões, content: {application/json: {schema: {$ref: '#/components/schemas/Bootstrap'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /public/driver-status:
+    get:
+      tags: [Público]
+      summary: Lista nomes e estados genéricos dos motoristas sem coordenadas
+      security: []
+      responses:
+        '200': {description: Painel público sanitizado}
+  /public/consultant-support/options:
+    get:
+      tags: [Público]
+      summary: Lista consultores ativos para abertura de chamado
+      security: []
+      responses:
+        '200': {description: Opções públicas do formulário}
+  /public/consultant-support-requests:
+    post:
+      tags: [Público]
+      summary: Abre um chamado de consultor e devolve sua credencial temporária uma única vez
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consultantId]
+              properties:
+                consultantId: {type: string}
+                note: {type: string, maxLength: 500}
+      responses:
+        '201': {description: Chamado e accessToken temporário}
+  /public/consultant-support-requests/{requestId}:
+    get:
+      tags: [Público]
+      summary: Acompanha somente o motorista ligado ao chamado do consultor
+      security:
+        - supportAccessToken: []
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200': {description: Resumo do chamado e posição permitida}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /attendance/check-in:
+    post:
+      tags: [Presença e localização]
+      summary: Registra o check-in do usuário no dia operacional
+      responses:
+        '200': {description: Check-in já existente}
+        '201': {description: Check-in criado}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /drivers/me/location-sharing:
+    post:
+      tags: [Presença e localização]
+      summary: Inicia a sessão de GPS do motorista após o check-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [attendanceId]
+              properties:
+                attendanceId: {type: string}
+      responses:
+        '201': {description: Sessão de localização criada}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      tags: [Presença e localização]
+      summary: Encerra e apaga a posição do motorista
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+  /drivers/me/location:
+    put:
+      tags: [Presença e localização]
+      summary: Atualiza a última posição do motorista
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DriverLocationUpdate'}
+      responses:
+        '200': {description: Último ponto atualizado}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /driver-locations:
+    get:
+      tags: [Presença e localização]
+      summary: Lista posições permitidas no mapa global da Hostess
+      responses:
+        '200': {description: Posições recentes e janela de funcionamento}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /hostess-requests:
+    post:
+      tags: [Chamados]
+      summary: Abre uma solicitação de carro da Hostess com ponto de encontro
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Coordinates'}
+      responses:
+        '201': {description: Solicitação criada}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /hostess-requests/{requestId}/location:
+    put:
+      tags: [Chamados]
+      summary: Atualiza o ponto da Hostess que abriu o chamado
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Coordinates'}
+      responses:
+        '200': {description: Ponto atualizado}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /hostess-requests/{requestId}/approach:
+    get:
+      tags: [Chamados]
+      summary: Retorna os dois pontos do chamado para a Hostess e o motorista designado
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200': {description: "Posição da Hostess, do motorista e janela de funcionamento"}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /hostess-requests/{requestId}/close:
+    post:
+      tags: [Chamados]
+      summary: Encerra a solicitação e apaga o ponto da Hostess
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200': {description: Solicitação encerrada}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /drivers/hostess-availability:
+    post:
+      tags: [Chamados]
+      summary: Motorista assume ou encerra um chamado da Hostess/consultor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [available]
+              properties:
+                available: {type: boolean}
+                requestId: {type: string, description: Obrigatório ao assumir quando houver mais de um chamado}
+      responses:
+        '200': {description: Disponibilidade atualizada}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /driver-supports:
+    post:
+      tags: [Chamados]
+      summary: Inicia um apoio operacional de motorista
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                driverId: {type: string}
+                location: {type: string}
+                note: {type: string, maxLength: 500}
+      responses:
+        '201': {description: Apoio iniciado}
+  /driver-supports/{supportId}/close:
+    post:
+      tags: [Chamados]
+      summary: Encerra um apoio operacional
+      parameters:
+        - in: path
+          name: supportId
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Apoio encerrado}
+  /tours:
+    post:
+      tags: [Operação]
+      summary: Cria um tour detalhado ou registra quantidade, conforme o corpo e a permissão
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '201': {description: Tour ou lançamentos criados}
+  /tours/hostess:
+    post:
+      tags: [Operação]
+      summary: Registra quantidades de tours e Self Gen por Ola
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity, selfGeanQuantity, wave]
+              properties:
+                quantity: {type: integer, minimum: 0, maximum: 30}
+                selfGeanQuantity: {type: integer, minimum: 0, maximum: 30}
+                wave: {$ref: '#/components/schemas/Wave'}
+      responses:
+        '201': {description: Lançamentos criados}
+  /tours/hostess/selection:
+    patch:
+      tags: [Operação]
+      summary: Altera a Ola dos lançamentos selecionados
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/TourSelection'}}}
+      responses:
+        '200': {description: Lançamentos alterados}
+    delete:
+      tags: [Operação]
+      summary: Exclui lançamentos ainda não iniciados
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tourIds]
+              properties:
+                tourIds: {type: array, items: {type: string}}
+      responses:
+        '200': {description: Lançamentos excluídos}
+  /tours/{tourId}/action:
+    post:
+      tags: [Operação]
+      summary: Executa uma transição operacional de tour
+      parameters: [{$ref: '#/components/parameters/TourId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [action], additionalProperties: true}}}
+      responses:
+        '200': {description: Tour atualizado}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /transfers:
+    post:
+      tags: [Operação]
+      summary: Cria um convite/traslado Waves
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '201': {description: Traslado criado}
+  /transfers/{transferId}/action:
+    post:
+      tags: [Operação]
+      summary: Inicia, conclui ou registra desistência de um traslado
+      parameters:
+        - in: path
+          name: transferId
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [action]}}}
+      responses:
+        '200': {description: Traslado atualizado}
+  /users:
+    post:
+      tags: [Cadastros]
+      summary: Cria um usuário
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '201': {description: Usuário criado}
+  /users/{userId}:
+    put:
+      tags: [Cadastros]
+      summary: Atualiza usuário, perfil e permissões
+      parameters: [{$ref: '#/components/parameters/UserId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '200': {description: Usuário atualizado}
+    delete:
+      tags: [Cadastros]
+      summary: Exclui um usuário
+      parameters: [{$ref: '#/components/parameters/UserId'}]
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+  /drivers:
+    post:
+      tags: [Cadastros]
+      summary: Cria um motorista
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '201': {description: Motorista criado}
+  /drivers/{driverId}:
+    put:
+      tags: [Cadastros]
+      summary: Atualiza um motorista
+      parameters: [{$ref: '#/components/parameters/DriverId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '200': {description: Motorista atualizado}
+    delete:
+      tags: [Cadastros]
+      summary: Exclui um motorista
+      parameters: [{$ref: '#/components/parameters/DriverId'}]
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+  /consultants:
+    post:
+      tags: [Cadastros]
+      summary: Cria um consultor
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '201': {description: Consultor criado}
+  /consultants/{consultantId}:
+    put:
+      tags: [Cadastros]
+      summary: Atualiza um consultor
+      parameters: [{$ref: '#/components/parameters/ConsultantId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '200': {description: Consultor atualizado}
+    delete:
+      tags: [Cadastros]
+      summary: Exclui um consultor
+      parameters: [{$ref: '#/components/parameters/ConsultantId'}]
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+  /operation/departure-prestige:
+    post:
+      tags: [Operação]
+      summary: Altera o Prestige padrão de saída
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [departurePrestige]}}}
+      responses:
+        '200': {description: Configuração atualizada}
+  /hotel-closures:
+    post:
+      tags: [Operação]
+      summary: Cadastra um período de fechamento de hotel
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '201': {description: Fechamento criado}
+  /hotel-closures/{closureId}:
+    delete:
+      tags: [Operação]
+      summary: Remove um período de fechamento
+      parameters:
+        - in: path
+          name: closureId
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+  /operation/driver-location-test:
+    post:
+      tags: [Presença e localização]
+      summary: Ativa ou encerra o teste temporário para um motorista selecionado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [active]
+              properties:
+                active: {type: boolean}
+                driverId: {type: string}
+      responses:
+        '200': {description: Modo de teste atualizado}
+  /operation/reset:
+    post:
+      tags: [Operação]
+      summary: Zera os dados do dia operacional
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Token mta_ retornado pelo login móvel.
+    supportAccessToken:
+      type: apiKey
+      in: header
+      name: X-Support-Access-Token
+      description: Credencial retornada ao abrir o chamado público do consultor.
+  parameters:
+    RequestId: {in: path, name: requestId, required: true, schema: {type: string}}
+    TourId: {in: path, name: tourId, required: true, schema: {type: string}}
+    UserId: {in: path, name: userId, required: true, schema: {type: string}}
+    DriverId: {in: path, name: driverId, required: true, schema: {type: string}}
+    ConsultantId: {in: path, name: consultantId, required: true, schema: {type: string}}
+  responses:
+    Ok: {description: Operação concluída, content: {application/json: {schema: {type: object}}}}
+    BadRequest: {description: Corpo ou valor inválido, content: {application/json: {schema: {$ref: '#/components/schemas/ApiError'}}}}
+    Unauthorized: {description: "Token ausente, inválido ou expirado", content: {application/json: {schema: {$ref: '#/components/schemas/ApiError'}}}}
+    Forbidden: {description: Conta sem a permissão exigida, content: {application/json: {schema: {$ref: '#/components/schemas/ApiError'}}}}
+    NotFound: {description: Recurso não encontrado ou não visível para esta conta, content: {application/json: {schema: {$ref: '#/components/schemas/ApiError'}}}}
+    Conflict: {description: A regra operacional impede a ação neste momento, content: {application/json: {schema: {$ref: '#/components/schemas/ApiError'}}}}
+  schemas:
+    Health:
+      type: object
+      required: [ok, apiVersion, serverTime, authentication]
+      properties:
+        ok: {type: boolean}
+        apiVersion: {type: string, const: v1}
+        serverTime: {type: string, format: date-time}
+        authentication: {type: string, const: Bearer}
+    MobileLogin:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}
+        deviceId: {type: string, maxLength: 200, description: "UUID estável da instalação; se omitido, persistir o valor retornado"}
+        deviceName: {type: string, maxLength: 120, example: Samsung Galaxy A54}
+    MobileSession:
+      type: object
+      required: [token, tokenType, expiresAt, deviceId, apiVersion, basePath, user]
+      properties:
+        token: {type: string, writeOnly: true}
+        tokenType: {type: string, const: Bearer}
+        expiresAt: {type: string, format: date-time}
+        expiresInSeconds: {type: integer}
+        deviceId: {type: string}
+        apiVersion: {type: string, const: v1}
+        basePath: {type: string, const: /api/mobile/v1}
+        user: {type: object, additionalProperties: true}
+    Bootstrap:
+      type: object
+      required: [user, data, permissionsCatalog, states, driverStates]
+      properties:
+        user: {type: object, additionalProperties: true}
+        data: {type: object, additionalProperties: true}
+        permissionsCatalog: {type: array, items: {type: object}}
+        rolePermissionDefaults: {type: object, additionalProperties: true}
+        states: {type: object, additionalProperties: true}
+        driverStates: {type: object, additionalProperties: true}
+        attendance: {type: [object, 'null'], additionalProperties: true}
+        waves: {type: object, additionalProperties: true}
+    Coordinates:
+      type: object
+      required: [latitude, longitude]
+      properties:
+        latitude: {type: number, minimum: -90, maximum: 90}
+        longitude: {type: number, minimum: -180, maximum: 180}
+        accuracy: {type: [number, 'null'], minimum: 0, maximum: 10000}
+    DriverLocationUpdate:
+      allOf:
+        - {$ref: '#/components/schemas/Coordinates'}
+        - type: object
+          required: [attendanceId, sharingId]
+          properties:
+            attendanceId: {type: string}
+            sharingId: {type: string}
+    TourSelection:
+      type: object
+      required: [tourIds, wave]
+      properties:
+        tourIds: {type: array, items: {type: string}}
+        wave: {$ref: '#/components/schemas/Wave'}
+    Wave:
+      type: string
+      enum: [WAVE_1, WAVE_2]
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+security:
+  - bearerAuth: []

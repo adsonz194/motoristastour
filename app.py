@@ -34,6 +34,7 @@ except ImportError:  # Keeps the app usable until the production dependency is i
 
 ROOT = Path(__file__).parent
 STATIC_DIR = ROOT / "static"
+DOCS_DIR = ROOT / "docs"
 DATA_DIR = Path(os.getenv("TOUR_DATA_DIR", str(ROOT / "data")))
 DATABASE_PATH = DATA_DIR / "database.json"
 POSTGRES_URL = os.getenv("DATABASE_URL", "").strip()
@@ -43,6 +44,9 @@ VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
 VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "").strip()
 DB_LOCK = threading.RLock()
 SESSIONS: dict[str, dict[str, Any]] = {}
+MOBILE_API_TOKEN_PREFIX = "mta_"
+MOBILE_API_TOKEN_TTL_DAYS = 30
+MOBILE_API_MAX_SESSIONS_PER_USER = 8
 
 ROLE_ADMIN = "ADMIN"
 ROLE_DRIVER = "MOTORISTA"
@@ -636,6 +640,8 @@ def initial_database() -> dict[str, Any]:
         "driverLocations": {},
         # The Hostess point is temporary and tied to one open car request.
         "hostessRequestLocations": {},
+        # Native-app bearer tokens are stored only as SHA-256 digests.
+        "mobileApiSessions": {},
         # Local development keeps push subscriptions here. Production keeps
         # them in their own PostgreSQL table so device endpoints never enter
         # the operational state blob.
@@ -729,13 +735,27 @@ def ensure_postgres_schema(connection: Any) -> None:
     """)
     connection.execute("CREATE INDEX IF NOT EXISTS tour_control_hostess_locations_operation_idx ON tour_control_hostess_request_locations (operation_date)")
     connection.execute("INSERT INTO tour_control_schema (schema_version) VALUES (3) ON CONFLICT DO NOTHING")
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS tour_control_mobile_api_sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            device_name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL
+        )
+    """)
+    connection.execute("CREATE INDEX IF NOT EXISTS tour_control_mobile_sessions_user_idx ON tour_control_mobile_api_sessions (user_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS tour_control_mobile_sessions_expiry_idx ON tour_control_mobile_api_sessions (expires_at)")
+    connection.execute("INSERT INTO tour_control_schema (schema_version) VALUES (4) ON CONFLICT DO NOTHING")
 
 
 def postgres_state_payload(db: dict[str, Any]) -> dict[str, Any]:
-    """Keep precise device locations out of the generic operational JSONB."""
+    """Keep precise locations and mobile session digests out of operational JSONB."""
     payload = dict(db)
     payload["driverLocations"] = {}
     payload["hostessRequestLocations"] = {}
+    payload["mobileApiSessions"] = {}
     return payload
 
 
@@ -1178,6 +1198,9 @@ def operational_database() -> dict[str, Any]:
     if not isinstance(db.get("hostessRequestLocations"), dict) or (POSTGRES_URL and db.get("hostessRequestLocations")):
         db["hostessRequestLocations"] = {}
         schema_updated = True
+    if not isinstance(db.get("mobileApiSessions"), dict) or (POSTGRES_URL and db.get("mobileApiSessions")):
+        db["mobileApiSessions"] = {}
+        schema_updated = True
     for car_request in db["hostessRequests"]:
         for field, default in (
             ("requesterType", HOSTESS_REQUESTER),
@@ -1337,6 +1360,7 @@ def safe_database(db: dict[str, Any]) -> dict[str, Any]:
     result.pop("pushSubscriptions", None)
     result.pop("driverLocations", None)
     result.pop("hostessRequestLocations", None)
+    result.pop("mobileApiSessions", None)
     return result
 
 
@@ -1354,6 +1378,169 @@ def password_matches(password: str, stored: str) -> bool:
     if stored.startswith(("scrypt:", "pbkdf2:")):
         return check_password_hash(stored, password)
     return verify_legacy_scrypt(password, stored)
+
+
+def mobile_api_token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def mobile_api_expiry(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def mobile_api_session_for_token(db: dict[str, Any], token: str) -> dict[str, Any] | None:
+    """Resolve a native-app token without ever persisting its plaintext value."""
+    if not token.startswith(MOBILE_API_TOKEN_PREFIX) or len(token) > 256:
+        return None
+    token_hash = mobile_api_token_digest(token)
+    if not POSTGRES_URL:
+        record = db.setdefault("mobileApiSessions", {}).get(token_hash)
+    else:
+        connection = None
+        try:
+            connection = postgres_connection()
+            with connection:
+                ensure_postgres_schema(connection)
+                row = connection.execute("""
+                    SELECT token_hash, user_id, device_id, device_name, created_at, expires_at
+                    FROM tour_control_mobile_api_sessions
+                    WHERE token_hash = %s
+                """, (token_hash,)).fetchone()
+            record = {
+                "tokenHash": row[0],
+                "userId": row[1],
+                "deviceId": row[2],
+                "deviceName": row[3],
+                "createdAt": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                "expiresAt": row[5].isoformat() if hasattr(row[5], "isoformat") else str(row[5]),
+            } if row else None
+        finally:
+            if connection is not None:
+                connection.close()
+    expires_at = mobile_api_expiry((record or {}).get("expiresAt"))
+    if not record or not expires_at or expires_at <= datetime.now(timezone.utc):
+        return None
+    return record
+
+
+def save_mobile_api_session(db: dict[str, Any], record: dict[str, Any]) -> None:
+    if not POSTGRES_URL:
+        db.setdefault("mobileApiSessions", {})[record["tokenHash"]] = record
+        return
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            connection.execute("""
+                INSERT INTO tour_control_mobile_api_sessions (
+                    token_hash, user_id, device_id, device_name, created_at, expires_at
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                record["tokenHash"], record["userId"], record["deviceId"],
+                record["deviceName"], record["createdAt"], record["expiresAt"],
+            ))
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def delete_mobile_api_session(db: dict[str, Any], token: str) -> dict[str, Any] | None:
+    if not token.startswith(MOBILE_API_TOKEN_PREFIX) or len(token) > 256:
+        return None
+    token_hash = mobile_api_token_digest(token)
+    record = mobile_api_session_for_token(db, token)
+    if not POSTGRES_URL:
+        removed = db.setdefault("mobileApiSessions", {}).pop(token_hash, None)
+        return removed or record
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            connection.execute(
+                "DELETE FROM tour_control_mobile_api_sessions WHERE token_hash = %s",
+                (token_hash,),
+            )
+        return record
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def delete_mobile_api_sessions_for_user(db: dict[str, Any], user_id: Any) -> bool:
+    normalized_user_id = str(user_id or "")
+    if not normalized_user_id:
+        return False
+    if not POSTGRES_URL:
+        sessions = db.setdefault("mobileApiSessions", {})
+        keys = [key for key, item in sessions.items() if item.get("userId") == normalized_user_id]
+        for key in keys:
+            sessions.pop(key, None)
+        return bool(keys)
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            cursor = connection.execute(
+                "DELETE FROM tour_control_mobile_api_sessions WHERE user_id = %s",
+                (normalized_user_id,),
+            )
+        return bool(cursor.rowcount)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def prepare_mobile_api_device_session(db: dict[str, Any], user_id: str, device_id: str) -> None:
+    """Expire old tokens, rotate this installation, and cap active devices."""
+    now = datetime.now(timezone.utc)
+    if not POSTGRES_URL:
+        sessions = db.setdefault("mobileApiSessions", {})
+        retained = {
+            key: item for key, item in sessions.items()
+            if mobile_api_expiry(item.get("expiresAt"))
+            and mobile_api_expiry(item.get("expiresAt")) > now
+            and not (item.get("userId") == user_id and item.get("deviceId") == device_id)
+        }
+        user_sessions = sorted(
+            ((key, item) for key, item in retained.items() if item.get("userId") == user_id),
+            key=lambda pair: str(pair[1].get("createdAt") or ""),
+            reverse=True,
+        )
+        for key, _item in user_sessions[MOBILE_API_MAX_SESSIONS_PER_USER - 1:]:
+            retained.pop(key, None)
+        db["mobileApiSessions"] = retained
+        return
+    connection = None
+    try:
+        connection = postgres_connection()
+        with connection:
+            ensure_postgres_schema(connection)
+            connection.execute("DELETE FROM tour_control_mobile_api_sessions WHERE expires_at <= CURRENT_TIMESTAMP")
+            connection.execute(
+                "DELETE FROM tour_control_mobile_api_sessions WHERE user_id = %s AND device_id = %s",
+                (user_id, device_id),
+            )
+            connection.execute("""
+                DELETE FROM tour_control_mobile_api_sessions
+                WHERE token_hash IN (
+                    SELECT token_hash FROM tour_control_mobile_api_sessions
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    OFFSET %s
+                )
+            """, (user_id, MOBILE_API_MAX_SESSIONS_PER_USER - 1))
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def find(items: list[dict[str, Any]], item_id: str, label: str) -> dict[str, Any]:
@@ -1432,13 +1619,27 @@ def require_admin(user: dict[str, Any]) -> None:
 def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     session = SESSIONS.get(token)
-    if not session or session["expiresAt"] < datetime.now(timezone.utc):
+    if session and session["expiresAt"] < datetime.now(timezone.utc):
         SESSIONS.pop(token, None)
+        session = None
+    if not session:
+        session = mobile_api_session_for_token(db, token)
+    if not session:
         raise APIError("Sessão inválida ou expirada.", 401)
     user = next((item for item in db["users"] if item["id"] == session["userId"] and item["active"]), None)
     if not user:
         raise APIError("Usuário sem acesso.", 401)
     return user
+
+
+def remove_user_precise_locations(db: dict[str, Any], user: dict[str, Any]) -> bool:
+    """Stop device location sharing when either web or native app logs out."""
+    driver_id = str(user.get("driverId") or "").strip()
+    changed = bool(driver_id and remove_driver_location(db, driver_id))
+    for car_request in db.get("hostessRequests", []):
+        if car_request.get("requestedById") == user.get("id"):
+            changed = remove_hostess_request_location(db, car_request.get("id")) or changed
+    return changed
 
 
 def log_activity(
@@ -2965,6 +3166,10 @@ app.config["JSON_AS_ASCII"] = False
 def location_permissions_policy(response):
     # Geolocation remains available only to this first-party application.
     response.headers.setdefault("Permissions-Policy", "geolocation=(self)")
+    if request.path.startswith("/api/mobile/v1/"):
+        response.headers["X-API-Version"] = "v1"
+        if not request.path.endswith(("/health", "/openapi.yaml")):
+            response.headers["Cache-Control"] = "private, no-store"
     if (
         request.path.startswith("/api/public/consultant-support")
         or (
@@ -3038,6 +3243,113 @@ def logout():
 def auth_me():
     with DB_LOCK:
         return jsonify(user=clean_user(get_current_user(operational_database())))
+
+
+@app.get("/api/mobile/v1/health")
+def mobile_api_health():
+    response = jsonify(
+        ok=True,
+        apiVersion="v1",
+        serverTime=timestamp(),
+        authentication="Bearer",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/mobile/v1/openapi.yaml")
+def mobile_api_openapi():
+    response = send_from_directory(DOCS_DIR, "mobile-api.openapi.yaml", mimetype="application/yaml")
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@app.post("/api/mobile/v1/auth/login")
+def mobile_api_login():
+    """Create a persistent, revocable token for one Android installation."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise APIError("Envie usuário, senha e identificação do aparelho em um objeto JSON válido.")
+    username = str(payload.get("username", "")).strip().lower()
+    password = str(payload.get("password", ""))
+    device_name = str(payload.get("deviceName") or "Android").strip()
+    device_id = str(payload.get("deviceId") or "").strip()
+    if not username or not password:
+        raise APIError("Informe usuário e senha.")
+    if len(device_name) > 120 or len(device_id) > 200:
+        raise APIError("A identificação do aparelho é inválida.")
+    if not device_id:
+        device_id = f"install_{secrets.token_urlsafe(18)}"
+
+    with DB_LOCK:
+        db = operational_database()
+        user = next(
+            (item for item in db["users"] if item["username"].lower() == username and item.get("active", True)),
+            None,
+        )
+        if not user or not password_matches(password, user["passwordHash"]):
+            raise APIError("Usuário ou senha inválidos.", 401)
+        password_upgraded = not user["passwordHash"].startswith(("scrypt:", "pbkdf2:"))
+        if password_upgraded:
+            user["passwordHash"] = generate_password_hash(password)
+
+        prepare_mobile_api_device_session(db, user["id"], device_id)
+        token = f"{MOBILE_API_TOKEN_PREFIX}{secrets.token_urlsafe(48)}"
+        created_at = datetime.now(timezone.utc)
+        expires_at = created_at + timedelta(days=MOBILE_API_TOKEN_TTL_DAYS)
+        save_mobile_api_session(db, {
+            "tokenHash": mobile_api_token_digest(token),
+            "userId": user["id"],
+            "deviceId": device_id,
+            "deviceName": device_name or "Android",
+            "createdAt": created_at.isoformat(),
+            "expiresAt": expires_at.isoformat(),
+        })
+        if not POSTGRES_URL or password_upgraded:
+            save_database(db)
+        response = jsonify(
+            token=token,
+            tokenType="Bearer",
+            expiresAt=expires_at.isoformat(),
+            expiresInSeconds=MOBILE_API_TOKEN_TTL_DAYS * 24 * 60 * 60,
+            deviceId=device_id,
+            apiVersion="v1",
+            basePath="/api/mobile/v1",
+            user=clean_user(user),
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
+@app.get("/api/mobile/v1/auth/me")
+def mobile_api_me():
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        response = jsonify(apiVersion="v1", user=clean_user(user))
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
+@app.post("/api/mobile/v1/auth/logout")
+def mobile_api_logout():
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    with DB_LOCK:
+        db = operational_database()
+        mobile_session = mobile_api_session_for_token(db, token)
+        if not mobile_session:
+            raise APIError("Sessão móvel inválida ou expirada.", 401)
+        user = next(
+            (item for item in db.get("users", []) if item.get("id") == mobile_session.get("userId")),
+            None,
+        )
+        delete_mobile_api_session(db, token)
+        changed = remove_user_precise_locations(db, user) if user else False
+        if not POSTGRES_URL and (mobile_session or changed):
+            save_database(db)
+        response = jsonify(ok=True)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
 
 @app.get("/api/push/config")
@@ -3561,9 +3873,11 @@ def update_user(user_id: str):
                     remove_hostess_request_location(db, car_request.get("id"))
         if password:
             target["passwordHash"] = generate_password_hash(password)
+            delete_mobile_api_sessions_for_user(db, target["id"])
         if not active:
             # An inactive account must no longer receive operational pushes.
             delete_user_push_subscriptions(db, target["id"])
+            delete_mobile_api_sessions_for_user(db, target["id"])
         permission_note = "" if permissions == previous_permissions else f" Permissões: {len(previous_permissions)} → {len(permissions)}."
         log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.{permission_note}")
         save_database(db)
@@ -3706,6 +4020,7 @@ def delete_user(user_id: str):
                 SESSIONS.pop(token, None)
         db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
         delete_user_push_subscriptions(db, target["id"])
+        delete_mobile_api_sessions_for_user(db, target["id"])
         save_database(db)
         return jsonify(ok=True)
 
@@ -4608,6 +4923,25 @@ def reset_operation():
         reset_operational_data(db, f"Operação zerada manualmente por {user['name']}.")
         save_database(db)
         return jsonify(ok=True, operationDate=db["operationDate"])
+
+
+def register_mobile_api_aliases() -> None:
+    """Expose every authenticated site capability under the stable mobile v1 prefix."""
+    excluded_prefixes = ("/api/auth/", "/api/mobile/")
+    for rule in list(app.url_map.iter_rules()):
+        if not rule.rule.startswith("/api/") or rule.rule.startswith(excluded_prefixes):
+            continue
+        mobile_rule = f"/api/mobile/v1{rule.rule.removeprefix('/api')}"
+        methods = sorted(set(rule.methods or ()) - {"HEAD", "OPTIONS"})
+        app.add_url_rule(
+            mobile_rule,
+            endpoint=f"mobile_v1_alias_{rule.endpoint}",
+            view_func=app.view_functions[rule.endpoint],
+            methods=methods,
+        )
+
+
+register_mobile_api_aliases()
 
 
 @app.get("/")

@@ -14,7 +14,13 @@ python -m venv .venv
 
 No macOS ou Linux, ative o ambiente virtual antes de executar os dois últimos comandos. Abra `http://localhost:4174`.
 
-Em desenvolvimento, sem `DATABASE_URL`, os dados são salvos em `data/database.json`. Em produção, configure `DATABASE_URL` para usar PostgreSQL; o sistema cria automaticamente as tabelas `tour_control_state`, `tour_control_schema` e `tour_control_driver_locations`. As posições dos motoristas ficam separadas do restante do estado operacional para permitir atualizações frequentes sem regravar todo o painel.
+Em desenvolvimento, sem `DATABASE_URL`, os dados são salvos em `data/database.json`. Em produção, configure `DATABASE_URL` para usar PostgreSQL; o sistema cria automaticamente as tabelas necessárias para o estado operacional, localizações e sessões móveis. As posições e os tokens Android ficam separados do restante do estado operacional para permitir atualizações frequentes e revogação segura.
+
+## API para aplicativo Android
+
+A API móvel versionada usa a base `https://motoristastour.onrender.com/api/mobile/v1`. Ela fornece login persistente e revogável por aparelho e espelha todas as rotas autenticadas do painel, mantendo no servidor as mesmas permissões e regras operacionais. Comece por `POST /auth/login` e depois carregue `GET /bootstrap` com o cabeçalho `Authorization: Bearer mta_...`.
+
+O guia de integração, exemplo Retrofit/Kotlin, fluxo de GPS e tabela de rotas estão em [`docs/ANDROID_API.md`](docs/ANDROID_API.md). O contrato OpenAPI está em [`docs/mobile-api.openapi.yaml`](docs/mobile-api.openapi.yaml) e também é servido pela aplicação em `/api/mobile/v1/openapi.yaml`.
 
 ## Publicação no Render
 
