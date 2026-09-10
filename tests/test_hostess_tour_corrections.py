@@ -112,8 +112,33 @@ class HostessTourCorrectionsApiTest(unittest.TestCase):
             tour = next(item for item in self.database["tours"] if item["id"] == tour_id)
             self.assertEqual(tour["wave"], "WAVE_2")
             self.assertEqual(tour["scheduledTime"], "11:00")
+        self.assertEqual(next(item for item in self.database["tours"] if item["id"] == "tour_1")["slotLabel"], "Tour 1")
+        self.assertEqual(next(item for item in self.database["tours"] if item["id"] == "tour_2")["slotLabel"], "Self Gen 1")
         self.assertIn("2 lançamentos", self.database["activities"][0]["message"])
         self.assertIn("2ª Ola", self.database["activities"][0]["message"])
+
+    def test_second_wave_restarts_tour_and_self_gen_numbering(self) -> None:
+        first = self.client.post(
+            "/api/tours/hostess",
+            headers={"Authorization": "Bearer token-hostess"},
+            json={"quantity": 2, "selfGeanQuantity": 1, "wave": "WAVE_2"},
+        )
+        second = self.client.post(
+            "/api/tours/hostess",
+            headers={"Authorization": "Bearer token-hostess"},
+            json={"quantity": 1, "selfGeanQuantity": 1, "wave": "WAVE_2"},
+        )
+
+        self.assertEqual(first.status_code, 201, first.get_json())
+        self.assertEqual(
+            [item["slotLabel"] for item in first.get_json()["tours"]],
+            ["Tour 1", "Tour 2", "Self Gen 1"],
+        )
+        self.assertEqual(second.status_code, 201, second.get_json())
+        self.assertEqual(
+            [item["slotLabel"] for item in second.get_json()["tours"]],
+            ["Tour 3", "Self Gen 2"],
+        )
 
     def test_selection_is_atomic_when_a_tour_has_already_started(self) -> None:
         response = self._request(

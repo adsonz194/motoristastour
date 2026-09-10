@@ -2887,6 +2887,72 @@ def confirm_quantity_tour_start(db: dict[str, Any], tour: dict[str, Any], consul
     })
 
 
+def quantity_slot_number(tour: dict[str, Any]) -> int | None:
+    """Return the numeric part of a Hostess quantity slot label."""
+    label = str(tour.get("slotLabel") or "").strip()
+    prefix = "Self Gen " if tour.get("selfGuide") else "Tour "
+    if not label.startswith(prefix):
+        return None
+    try:
+        number = int(label.removeprefix(prefix))
+    except ValueError:
+        return None
+    return number if number > 0 else None
+
+
+def renumber_open_quantity_tours(db: dict[str, Any], waves: set[str]) -> None:
+    """Keep editable Hostess slots sequential inside each Ola and category."""
+    for wave in waves:
+        if wave not in TRANSFER_SCHEDULES:
+            continue
+        for self_guide in (False, True):
+            wave_slots = [
+                item for item in db.get("tours", [])
+                if item.get("wave") == wave
+                and bool(item.get("selfGuide")) == self_guide
+                and item.get("slotLabel")
+            ]
+            editable = [
+                item for item in wave_slots
+                if item.get("requiresDetails")
+                and item.get("status") == STATE_AVAILABLE
+                and not item.get("allocations")
+            ]
+            reserved = {
+                number for item in wave_slots if item not in editable
+                if (number := quantity_slot_number(item)) is not None
+            }
+            editable.sort(key=lambda item: (
+                quantity_slot_number(item) or 10_000,
+                str(item.get("createdAt") or ""),
+                str(item.get("id") or ""),
+            ))
+            next_number = 1
+            prefix = "Self Gen" if self_guide else "Tour"
+            for item in editable:
+                while next_number in reserved:
+                    next_number += 1
+                label = f"{prefix} {next_number}"
+                item["slotLabel"] = label
+                item["groupName"] = label
+                reserved.add(next_number)
+                next_number += 1
+
+
+def next_quantity_slot_number(db: dict[str, Any], wave: str, self_guide: bool) -> int:
+    used = {
+        number for item in db.get("tours", [])
+        if item.get("wave") == wave
+        and bool(item.get("selfGuide")) == self_guide
+        and item.get("slotLabel")
+        if (number := quantity_slot_number(item)) is not None
+    }
+    number = 1
+    while number in used:
+        number += 1
+    return number
+
+
 def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, wave: Any, self_gean_quantity: Any = 0, allow_when_tours_closed: bool = False) -> list[dict[str, Any]]:
     """Register normal tours and Self Gen tours as separate operational slots."""
     if not allow_when_tours_closed:
@@ -2904,13 +2970,19 @@ def create_tour_slots(db: dict[str, Any], user: dict[str, Any], quantity: Any, w
         raise APIError("Informe as quantidades de tours e Self Gen. O total deve ficar entre 1 e 30.")
     if wave not in TRANSFER_SCHEDULES:
         raise APIError("Selecione a 1ª ou a 2ª Ola do tour.")
+    renumber_open_quantity_tours(db, {wave})
     created_at = timestamp()
-    existing = sum(1 for item in db["tours"] if item.get("requiresDetails"))
+    next_tour_number = next_quantity_slot_number(db, wave, False)
+    next_self_gen_number = next_quantity_slot_number(db, wave, True)
     tours = []
     for offset in range(total_quantity):
-        number = existing + offset + 1
         is_self_gean = offset >= quantity
-        label = f"Self Gen {offset - quantity + 1}" if is_self_gean else f"Tour {number}"
+        if is_self_gean:
+            label = f"Self Gen {next_self_gen_number}"
+            next_self_gen_number += 1
+        else:
+            label = f"Tour {next_tour_number}"
+            next_tour_number += 1
         tour = {"id": new_id("tour"), "groupName": label, "slotLabel": label, "people": 0, "selfGuide": is_self_gean, "consultantId": None, "wave": wave, "scheduledTime": TRANSFER_SCHEDULES[wave]["tourTime"], "status": STATE_AVAILABLE, "phase": active_operation_settings(db)["departureLabel"], "requiresDetails": True, "registeredBy": user["role"], "createdAt": created_at, "updatedAt": created_at, "allocations": []}
         db["tours"].insert(0, tour)
         tours.append(tour)
@@ -3952,11 +4024,37 @@ def change_hostess_tour_wave():
             raise APIError(f"Os lançamentos selecionados já estão na {TRANSFER_SCHEDULES[wave]['label']}.", 409)
 
         previous_waves = {tour.get("wave") for tour in changed}
+        renumber_open_quantity_tours(db, {wave, *previous_waves})
+        used_numbers = {
+            self_guide: {
+                number for item in db.get("tours", [])
+                if item not in changed
+                and item.get("wave") == wave
+                and bool(item.get("selfGuide")) == self_guide
+                and item.get("slotLabel")
+                if (number := quantity_slot_number(item)) is not None
+            }
+            for self_guide in (False, True)
+        }
         updated_at = timestamp()
-        for tour in changed:
+        for tour in sorted(changed, key=lambda item: (
+            bool(item.get("selfGuide")),
+            quantity_slot_number(item) or 10_000,
+            str(item.get("createdAt") or ""),
+            str(item.get("id") or ""),
+        )):
+            self_guide = bool(tour.get("selfGuide"))
+            number = 1
+            while number in used_numbers[self_guide]:
+                number += 1
+            label = f"{'Self Gen' if self_guide else 'Tour'} {number}"
             tour["wave"] = wave
             tour["scheduledTime"] = TRANSFER_SCHEDULES[wave]["tourTime"]
+            tour["slotLabel"] = label
+            tour["groupName"] = label
             tour["updatedAt"] = updated_at
+            used_numbers[self_guide].add(number)
+        renumber_open_quantity_tours(db, {item for item in previous_waves if item != wave})
 
         if len(previous_waves) == 1:
             previous_wave = next(iter(previous_waves))
@@ -3983,7 +4081,9 @@ def delete_hostess_tour_selection():
         selected_ids = {tour["id"] for tour in tours}
         normal_count = sum(1 for tour in tours if not tour.get("selfGuide"))
         self_gen_count = len(tours) - normal_count
+        affected_waves = {tour.get("wave") for tour in tours}
         db["tours"] = [tour for tour in db.get("tours", []) if tour["id"] not in selected_ids]
+        renumber_open_quantity_tours(db, affected_waves)
         details = []
         if normal_count:
             details.append(f"{normal_count} tour{'s' if normal_count != 1 else ''}")
