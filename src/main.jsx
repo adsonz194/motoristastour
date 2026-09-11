@@ -1443,14 +1443,20 @@ function ConsultantDriverPanel() {
   }
   const requestClosed = publicSupportRequestIsClosed(activeRequest);
   const identityId = identityType === 'SELF_GEN' ? selfGenId : consultantId;
+  const identityOptions = identityType === 'SELF_GEN' ? selfGens : consultants;
+  const identityName = identityOptions.find((person) => String(person.id) === String(identityId))?.name || '';
+  const normalizeIdentityName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR');
   const eligibleTours = tours.filter((tour) => {
     if (Boolean(tour.selfGuide) !== (identityType === 'SELF_GEN') || tour.requestOpen) return false;
     const expectedStatus = routeStage === 'PRESTIGE' ? 'DISPONIVEL' : routeStage === 'CASA' ? ['NA_CASA', 'AGUARDANDO_CASA'] : 'AGUARDANDO_DESTINO';
     if (Array.isArray(expectedStatus) ? !expectedStatus.includes(tour.status) : tour.status !== expectedStatus) return false;
     const linkedId = identityType === 'SELF_GEN' ? tour.selfGenId : tour.consultantId;
-    return routeStage === 'PRESTIGE' ? (!linkedId || linkedId === identityId) : linkedId === identityId;
+    const linkedName = identityType === 'SELF_GEN' ? tour.selfGenName : tour.consultantName;
+    const identityMatches = linkedId
+      ? String(linkedId) === String(identityId)
+      : Boolean(normalizeIdentityName(linkedName)) && normalizeIdentityName(linkedName) === normalizeIdentityName(identityName);
+    return routeStage === 'PRESTIGE' ? ((!linkedId && !linkedName) || identityMatches) : identityMatches;
   });
-  const identityOptions = identityType === 'SELF_GEN' ? selfGens : consultants;
 
   return <main className="consultant-public-page">
     <header className="consultant-public-header"><Logo /><a href="/" className="public-login-link"><LockKeyhole size={16} /> Acesso da equipe</a></header>
@@ -1465,9 +1471,9 @@ function ConsultantDriverPanel() {
       <form className="consultant-support-form" onSubmit={requestSupport}>
         <label>Tipo de responsável<select value={identityType} onChange={(event) => { setIdentityType(event.target.value); setTourId(''); }} disabled={optionsLoading || requestSaving}><option value="CONSULTANT">Consultor</option><option value="SELF_GEN">Self Gen</option></select></label>
         <label>Seu nome<select value={identityId} onChange={(event) => { identityType === 'SELF_GEN' ? setSelfGenId(event.target.value) : setConsultantId(event.target.value); setTourId(''); }} required disabled={optionsLoading || requestSaving}><option value="">Selecione o nome</option>{identityOptions.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label>
-        <label>Local do pedido<select value={routeStage} onChange={(event) => { setRouteStage(event.target.value); setTourId(''); }} disabled={requestSaving}><option value="PRESTIGE">Prestige</option><option value="CASA">Casa</option><option value="GALERIA_EXIT">Saída da Galeria</option></select></label>
+        <div className="consultant-route-field"><span>Local do pedido</span><div className="consultant-route-options" role="group" aria-label="Local do pedido">{[['PRESTIGE', 'Prestige'], ['CASA', 'Casa — buscar hóspedes'], ['GALERIA_EXIT', 'Galeria — levar ao destino']].map(([value, label]) => <button key={value} type="button" className={classNames('consultant-route-option', routeStage === value && 'active')} aria-pressed={routeStage === value} onClick={() => { setRouteStage(value); setTourId(''); setDestinationId(''); }} disabled={requestSaving}>{label}</button>)}</div></div>
         {routeStage !== 'GALERIA_EXIT' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving}><option value="WAVES">Waves</option><option value="SELECTION">Selection</option></select></label>}
-        <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">Não há Tour disponível para este nome e esta etapa.</small>}</label>
+        <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">{routeStage === 'CASA' ? 'Nenhum Tour deste nome está aguardando busca na Casa.' : routeStage === 'GALERIA_EXIT' ? 'Nenhum Tour deste nome está aguardando saída da Galeria.' : 'Não há Tour disponível para este nome e esta etapa.'}</small>}</label>
         {routeStage === 'GALERIA_EXIT' && <label>Destino<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required disabled={requestSaving}><option value="">Selecione o destino</option>{destinations.map((destination) => <option value={destination.id} key={destination.id}>{destination.name}</option>)}</select></label>}
         <label>Referência para o motorista (opcional)<textarea value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Ex.: próximo à recepção" maxLength="300" rows="2" disabled={requestSaving} /></label>
         {optionsError && <div className="consultant-support-form-error" role="alert"><span>{optionsError}</span><button className="text-button" type="button" onClick={loadOptions}>Tentar novamente</button></div>}

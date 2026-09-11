@@ -265,6 +265,12 @@ input:focus, select:focus { border-color: #197db7; box-shadow: 0 0 0 3px rgba(25
 .consultant-support-request-copy small svg { flex: none; color: #167d70; }
 .consultant-support-form { display: grid; gap: 11px; padding: 17px; background: rgba(255, 255, 255, .92); border: 1px solid #dce9ee; border-radius: 10px; }
 .consultant-support-form label { display: grid; gap: 6px; color: #324f64; font-size: 11px; font-weight: 800; }
+.consultant-route-field { display: grid; gap: 7px; color: #324f64; font-size: 11px; font-weight: 800; }
+.consultant-route-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.consultant-route-option { min-height: 44px; padding: 8px; color: #31566d; background: #f4f9fb; border: 1px solid #cadce5; border-radius: 8px; font: inherit; font-size: 10px; font-weight: 800; cursor: pointer; }
+.consultant-route-option:hover { border-color: #55aeb4; }
+.consultant-route-option.active { color: #fff; background: #087f88; border-color: #087f88; box-shadow: 0 4px 12px rgba(8, 127, 136, .2); }
+.consultant-route-option:disabled { cursor: not-allowed; opacity: .65; }
 .consultant-support-form select, .consultant-support-form textarea { width: 100%; min-height: 42px; padding: 9px 10px; color: #193b51; background: #fff; border: 1px solid #cadce5; border-radius: 8px; font: inherit; }
 .consultant-support-form textarea { min-height: 72px; resize: vertical; line-height: 1.45; }
 .consultant-support-form .button { min-height: 43px; justify-content: center; }
@@ -283,6 +289,7 @@ input:focus, select:focus { border-color: #197db7; box-shadow: 0 0 0 3px rgba(25
   .consultant-support-request { grid-template-columns: 1fr; gap: 18px; padding: 17px; }
   .consultant-support-request-copy h2 { font-size: 20px; }
   .consultant-support-form { padding: 14px; }
+  .consultant-route-options { grid-template-columns: 1fr; }
   .consultant-support-form-error { align-items: flex-start; flex-direction: column; }
   .consultant-support-map-layout { grid-template-columns: 1fr; }
   .consultant-support-reset .button { width: 100%; justify-content: center; }

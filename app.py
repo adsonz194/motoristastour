@@ -2966,6 +2966,25 @@ def confirm_quantity_tour_start(
     })
 
 
+def normalized_identity_name(value: Any) -> str:
+    """Normalize a displayed identity name for legacy Tour links."""
+    return " ".join(str(value or "").split()).casefold()
+
+
+def tour_identity_matches(
+    tour: dict[str, Any],
+    identity: dict[str, Any],
+    identity_id_field: str,
+    identity_name_field: str,
+) -> bool:
+    """Match current ID links and older Tours that only stored the name."""
+    linked_identity_id = str(tour.get(identity_id_field) or "").strip()
+    if linked_identity_id:
+        return linked_identity_id == str(identity.get("id") or "").strip()
+    linked_identity_name = normalized_identity_name(tour.get(identity_name_field))
+    return bool(linked_identity_name) and linked_identity_name == normalized_identity_name(identity.get("name"))
+
+
 def quantity_slot_number(tour: dict[str, Any]) -> int | None:
     """Return the numeric part of a Hostess quantity slot label."""
     label = str(tour.get("slotLabel") or "").strip()
@@ -3733,11 +3752,26 @@ def create_public_consultant_support_request():
                     )
             if bool(tour.get("selfGuide")) != (identity_type == SELF_GEN_REQUESTER):
                 raise APIError("Escolha um número de Tour compatível com Consultor ou Self Gen.", 409)
-            linked_identity_id = tour.get(identity_id_field)
+            linked_identity_id = str(tour.get(identity_id_field) or "").strip()
+            linked_identity_name = normalized_identity_name(tour.get(identity_name_field))
+            identity_name = normalized_identity_name(identity.get("name"))
+            identity_matches = tour_identity_matches(
+                tour,
+                identity,
+                identity_id_field,
+                identity_name_field,
+            )
             if linked_identity_id and linked_identity_id != identity["id"]:
                 raise APIError("Este número de Tour já está ligado a outro nome.", 409)
-            if route_stage != "PRESTIGE" and not linked_identity_id:
+            if not linked_identity_id and linked_identity_name and linked_identity_name != identity_name:
+                raise APIError("Este número de Tour já está ligado a outro nome.", 409)
+            if route_stage != "PRESTIGE" and not identity_matches:
                 raise APIError("Este Tour ainda não foi ligado a esse nome no Prestige.", 409)
+            if route_stage != "PRESTIGE" and not linked_identity_id:
+                # Repair legacy Tours that kept the responsible name but not the
+                # newer stable ID, so Casa and Galeria remain selectable.
+                tour[identity_id_field] = identity["id"]
+                tour[identity_name_field] = identity["name"]
             if route_stage == "PRESTIGE":
                 confirm_quantity_tour_start(
                     db,

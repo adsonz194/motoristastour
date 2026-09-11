@@ -253,6 +253,75 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(tour["status"], tour_app.STATE_FINAL_DESTINATION)
         self.assertEqual(tour["destinationId"], destination_id)
 
+    def test_house_request_accepts_legacy_tour_linked_only_by_consultant_name(self) -> None:
+        tour = self._tour("tour_house", "Tour 03", status=tour_app.STATE_WAITING_HOME)
+        tour.update({
+            "requiresDetails": False,
+            "consultantName": "  DIMITRI ",
+            "phase": "Casa",
+        })
+        self.database["tours"] = [tour]
+
+        options = self.client.get("/api/public/consultant-support/options")
+        self.assertEqual(options.status_code, 200, options.get_json())
+        option = options.get_json()["tours"][0]
+        self.assertIsNone(option["consultantId"])
+        self.assertEqual(option["consultantName"], "  DIMITRI ")
+
+        created = self.client.post("/api/public/consultant-support-requests", json={
+            "identityType": "CONSULTANT",
+            "consultantId": "con_dimitri",
+            "tourId": "tour_house",
+            "routeStage": "CASA",
+            "guestLocation": "SELECTION",
+        })
+        self.assertEqual(created.status_code, 201, created.get_json())
+        self.assertEqual(tour["consultantId"], "con_dimitri")
+        self.assertEqual(tour["consultantName"], "Dimitri")
+
+        started = self.client.post(
+            f"/api/consultant-tour-requests/{created.get_json()['request']['id']}/start",
+            headers=self.auth("token-driver"),
+        )
+        self.assertEqual(started.status_code, 200, started.get_json())
+        self.assertEqual(started.get_json()["action"], "pickup-home")
+        self.assertEqual(tour["status"], tour_app.STATE_IN_TOUR)
+
+    def test_gallery_request_accepts_legacy_tour_linked_only_by_consultant_name(self) -> None:
+        tour = self._tour("tour_gallery_legacy", "Tour 04", status=tour_app.STATE_WAITING_DESTINATION)
+        tour.update({
+            "requiresDetails": False,
+            "consultantName": "Dimitri",
+            "phase": "Galeria",
+        })
+        self.database["tours"] = [tour]
+        destination_id = self.database["destinations"][0]["id"]
+
+        created = self.client.post("/api/public/consultant-support-requests", json={
+            "identityType": "CONSULTANT",
+            "consultantId": "con_dimitri",
+            "tourId": "tour_gallery_legacy",
+            "routeStage": "GALERIA_EXIT",
+            "destinationId": destination_id,
+        })
+        self.assertEqual(created.status_code, 201, created.get_json())
+        self.assertEqual(tour["consultantId"], "con_dimitri")
+
+    def test_later_stage_does_not_accept_tour_linked_to_another_name(self) -> None:
+        tour = self._tour("tour_other", "Tour 05", status=tour_app.STATE_WAITING_HOME)
+        tour.update({"consultantName": "Outra Pessoa", "phase": "Casa"})
+        self.database["tours"] = [tour]
+
+        created = self.client.post("/api/public/consultant-support-requests", json={
+            "identityType": "CONSULTANT",
+            "consultantId": "con_dimitri",
+            "tourId": "tour_other",
+            "routeStage": "CASA",
+            "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 409, created.get_json())
+        self.assertIn("outro nome", created.get_json()["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
