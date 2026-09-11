@@ -3893,7 +3893,7 @@ def create_public_consultant_support_request():
             guest_location = str(payload.get("guestLocation") or "").strip().upper()
             if route_stage not in CONSULTANT_ROUTE_STAGES:
                 raise APIError("Selecione Prestige, Casa ou Saída da Galeria.")
-            if route_stage != "GALERIA_EXIT" and guest_location not in CONSULTANT_GUEST_LOCATIONS:
+            if route_stage == "PRESTIGE" and guest_location not in CONSULTANT_GUEST_LOCATIONS:
                 raise APIError("Informe se o hóspede está no Waves ou no Selection.")
             tour = find(db.get("tours", []), tour_id, "Tour")
             expected_states = {
@@ -3959,16 +3959,16 @@ def create_public_consultant_support_request():
                     raise APIError("Esse destino está inativo.", 409)
             stage_label = CONSULTANT_ROUTE_STAGES[route_stage]
             location_label = (
-                stage_label
-                if route_stage == "GALERIA_EXIT"
-                else f"{stage_label} {CONSULTANT_GUEST_LOCATIONS[guest_location]}"
+                f"{stage_label} {CONSULTANT_GUEST_LOCATIONS[guest_location]}"
+                if route_stage == "PRESTIGE"
+                else stage_label
             )
             route_fields = {
                 "tourId": tour["id"],
                 "tourLabel": tour.get("slotLabel") or tour.get("groupName") or "Tour",
                 "routeStage": route_stage,
                 "routeStageLabel": stage_label,
-                "guestLocation": guest_location if route_stage != "GALERIA_EXIT" else None,
+                "guestLocation": guest_location if route_stage == "PRESTIGE" else None,
                 "guestLocationLabel": location_label,
                 "destinationId": destination.get("id") if destination else None,
                 "destinationName": destination.get("name") if destination else None,

@@ -1444,7 +1444,7 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
           selfGenId: identityType === 'SELF_GEN' ? selfGenId : undefined,
           tourId,
           routeStage,
-          guestLocation: routeStage === 'GALERIA_EXIT' ? undefined : guestLocation,
+          guestLocation: routeStage === 'PRESTIGE' ? guestLocation : undefined,
           destinationId: routeStage === 'GALERIA_EXIT' ? destinationId : undefined,
           note: reference.trim()
         })
@@ -1524,11 +1524,11 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
       <ConsultantSupportLocationPanel requestId={requestAccess.requestId} accessToken={requestAccess.accessToken} authToken={token} initialRequest={activeRequest} onRequestChange={handleRequestChange} onUnavailable={handleRequestUnavailable} />
       {requestClosed && <div className="consultant-support-reset"><button className="button button-primary" type="button" onClick={startAnotherRequest}><HandHeart size={17} /> Fazer novo pedido</button></div>}
     </> : <section className="consultant-support-request">
-      <div className="consultant-support-request-copy"><span>SOLICITAR CARRINHO</span><h2>Onde o hóspede está?</h2><p>Escolha o número do seu Tour e o trecho que precisa de motorista.</p><small><ShieldCheck size={15} /> Esta conta mostra somente os Tours vinculados a {user?.name || 'este consultor'}.</small></div>
+      <div className="consultant-support-request-copy"><span>SOLICITAR CARRINHO</span><h2>{routeStage === 'PRESTIGE' ? 'Onde o hóspede está?' : routeStage === 'CASA' ? 'Buscar hóspedes na Casa' : 'Para onde o hóspede vai?'}</h2><p>Escolha o número do seu Tour e o trecho que precisa de motorista.</p><small><ShieldCheck size={15} /> Esta conta mostra somente os Tours vinculados a {user?.name || 'este consultor'}.</small></div>
       <form className="consultant-support-form" onSubmit={requestSupport}>
         <div className="consultant-identity-lock"><ShieldCheck size={18} /><div><span>Consultor conectado</span><strong>{identityName || user?.name || 'Consultor'}</strong></div></div>
         <div className="consultant-route-field"><span>Local do pedido</span><div className="consultant-route-options" role="group" aria-label="Local do pedido">{[['PRESTIGE', 'Prestige'], ['CASA', 'Casa — buscar hóspedes'], ['GALERIA_EXIT', 'Galeria — levar ao destino']].map(([value, label]) => <button key={value} type="button" className={classNames('consultant-route-option', routeStage === value && 'active')} aria-pressed={routeStage === value} onClick={() => { setRouteStage(value); setTourId(''); setDestinationId(''); }} disabled={requestSaving}>{label}</button>)}</div></div>
-        {routeStage !== 'GALERIA_EXIT' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving}><option value="WAVES">Waves</option><option value="SELECTION">Selection</option></select></label>}
+        {routeStage === 'PRESTIGE' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving}><option value="WAVES">Waves</option><option value="SELECTION">Selection</option></select></label>}
         <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">{routeStage === 'CASA' ? 'Nenhum Tour deste nome está aguardando busca na Casa.' : routeStage === 'GALERIA_EXIT' ? 'Nenhum Tour deste nome está aguardando saída da Galeria.' : 'Não há Tour disponível para este nome e esta etapa.'}</small>}</label>
         {routeStage === 'GALERIA_EXIT' && <label>Destino<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required disabled={requestSaving}><option value="">Selecione o destino</option>{destinations.map((destination) => <option value={destination.id} key={destination.id}>{destination.name}</option>)}</select></label>}
         <label>Referência para o motorista (opcional)<textarea value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Ex.: próximo à recepção" maxLength="300" rows="2" disabled={requestSaving} /></label>

@@ -285,9 +285,10 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "consultantId": "con_dimitri",
             "tourId": "tour_house",
             "routeStage": "CASA",
-            "guestLocation": "SELECTION",
         })
         self.assertEqual(created.status_code, 201, created.get_json())
+        self.assertIsNone(created.get_json()["request"]["guestLocation"])
+        self.assertEqual(created.get_json()["request"]["guestLocationLabel"], "Casa")
         self.assertEqual(tour["consultantId"], "con_dimitri")
         self.assertEqual(tour["consultantName"], "Dimitri")
 
@@ -329,7 +330,6 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "consultantId": "con_dimitri",
             "tourId": "tour_other",
             "routeStage": "CASA",
-            "guestLocation": "WAVES",
         })
         self.assertEqual(created.status_code, 409, created.get_json())
         self.assertIn("outro nome", created.get_json()["error"])
@@ -374,9 +374,10 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         house = self.client.post("/api/consultant/support-requests", headers=headers, json={
             "tourId": "tour_01",
             "routeStage": "CASA",
-            "guestLocation": "SELECTION",
         })
         self.assertEqual(house.status_code, 201, house.get_json())
+        self.assertIsNone(house.get_json()["request"]["guestLocation"])
+        self.assertEqual(house.get_json()["request"]["guestLocationLabel"], "Casa")
         house_request_id = house.get_json()["request"]["id"]
         self.assertEqual(
             self.client.post(f"/api/consultant-tour-requests/{house_request_id}/start", headers=self.auth("token-driver")).status_code,
