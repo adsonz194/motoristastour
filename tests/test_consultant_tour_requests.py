@@ -199,7 +199,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         deleted = self.client.delete(f"/api/self-gens/{self_gen_id}", headers=self.auth("token-admin"))
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
 
-    def test_operator_selects_driver_then_colleague_corrects_assignment(self) -> None:
+    def test_operator_selects_driver_before_starting_request(self) -> None:
         created = self.client.post("/api/public/consultant-support-requests", json={
             "identityType": "CONSULTANT",
             "consultantId": "con_dimitri",
@@ -217,54 +217,11 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(started.status_code, 200, started.get_json())
         self.assertEqual(started.get_json()["request"]["assignedDriverId"], "drv_two")
         self.assertEqual(self.database["tours"][0]["allocations"][0]["driverId"], "drv_two")
-
-        corrected = self.client.patch(
-            f"/api/consultant-tour-requests/{request_id}/driver",
-            headers=self.auth("token-driver-two"),
-            json={"driverId": "drv_one"},
-        )
-        self.assertEqual(corrected.status_code, 200, corrected.get_json())
-        self.assertEqual(corrected.get_json()["request"]["assignedDriverId"], "drv_one")
-        self.assertEqual(self.database["tours"][0]["allocations"][0]["driverId"], "drv_one")
         drivers = {item["id"]: item for item in self.database["drivers"]}
-        self.assertEqual(drivers["drv_one"]["status"], tour_app.DRIVER_IN_TOUR)
-        self.assertEqual(drivers["drv_two"]["status"], tour_app.DRIVER_AVAILABLE)
-        self.assertEqual(drivers["drv_one"]["toursStarted"], 1)
-        self.assertEqual(drivers["drv_two"]["toursStarted"], 0)
-
-    def test_driver_can_cancel_mistaken_start_and_request_returns_to_queue(self) -> None:
-        created = self.client.post("/api/public/consultant-support-requests", json={
-            "identityType": "CONSULTANT",
-            "consultantId": "con_dimitri",
-            "tourId": "tour_01",
-            "routeStage": "PRESTIGE",
-            "guestLocation": "WAVES",
-        })
-        request_id = created.get_json()["request"]["id"]
-        started = self.client.post(
-            f"/api/consultant-tour-requests/{request_id}/start",
-            headers=self.auth("token-driver"),
-            json={"driverId": "drv_one"},
-        )
-        self.assertEqual(started.status_code, 200, started.get_json())
-        cart_id = self.database["tours"][0]["allocations"][0]["cartId"]
-
-        cancelled = self.client.post(
-            f"/api/consultant-tour-requests/{request_id}/cancel",
-            headers=self.auth("token-driver-two"),
-        )
-        self.assertEqual(cancelled.status_code, 200, cancelled.get_json())
-        tour = self.database["tours"][0]
-        self.assertEqual(tour["status"], tour_app.STATE_AVAILABLE)
-        self.assertEqual(tour["pendingConsultantRequestId"], request_id)
-        self.assertEqual(tour["allocations"], [])
-        self.assertEqual(cancelled.get_json()["request"]["status"], tour_app.HOSTESS_REQUEST_OPEN)
-        self.assertIsNone(cancelled.get_json()["request"]["assignedDriverId"])
-        driver = next(item for item in self.database["drivers"] if item["id"] == "drv_one")
-        cart = next(item for item in self.database["carts"] if item["id"] == cart_id)
-        self.assertEqual(driver["status"], tour_app.DRIVER_AVAILABLE)
-        self.assertEqual(driver["toursStarted"], 0)
-        self.assertEqual(cart["status"], "DISPONIVEL")
+        self.assertEqual(drivers["drv_one"]["status"], tour_app.DRIVER_AVAILABLE)
+        self.assertEqual(drivers["drv_two"]["status"], tour_app.DRIVER_IN_TOUR)
+        self.assertEqual(drivers["drv_one"]["toursStarted"], 0)
+        self.assertEqual(drivers["drv_two"]["toursStarted"], 1)
 
     def test_gallery_exit_request_requires_and_applies_selected_destination(self) -> None:
         tour = self._tour("tour_gallery", "Tour 02", status=tour_app.STATE_WAITING_DESTINATION)

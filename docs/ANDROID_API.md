@@ -93,8 +93,6 @@ Todas as rotas autenticadas do site possuem um endereço equivalente com o prefi
 | Excluir lançamentos | `DELETE /tours/hostess/selection` |
 | Executar etapa de tour | `POST /tours/{tourId}/action` |
 | Iniciar pedido com o motorista selecionado | `POST /consultant-tour-requests/{requestId}/start` |
-| Corrigir somente o motorista atribuído | `PATCH /consultant-tour-requests/{requestId}/driver` |
-| Cancelar atribuição e devolver o pedido à fila | `POST /consultant-tour-requests/{requestId}/cancel` |
 | Criar/alterar usuários | `POST /users`, `PUT /users/{userId}` |
 | Criar/alterar motoristas | `POST /drivers`, `PUT /drivers/{driverId}` |
 | Criar/alterar consultores | `POST /consultants`, `PUT /consultants/{consultantId}` |
@@ -112,7 +110,7 @@ O servidor não confia no aplicativo para autorização. Cada rota continua vali
 
 As rotas `/public/*` não usam o token da conta. O acompanhamento do consultor exige no cabeçalho `X-Support-Access-Token` a credencial devolvida uma única vez na criação daquele pedido.
 
-O pedido público recebe `identityType` (`CONSULTANT` ou `SELF_GEN`), o ID do nome selecionado, `tourId` e `routeStage`. Em Prestige ou Casa, envie também `guestLocation` (`WAVES` ou `SELECTION`). Na saída da Galeria, envie `destinationId`. O servidor liga o nome ao número do Tour. Para iniciar, envie `{"driverId":"..."}` em `/consultant-tour-requests/{requestId}/start`; o motorista, o consultor, o Self Gen e o destino não precisam ser redigitados. Enquanto o Tour ainda não avançou para outra etapa, a equipe pode corrigir o motorista com `PATCH .../driver` ou cancelar a atribuição com `POST .../cancel` para devolver o mesmo pedido à fila.
+O pedido público recebe `identityType` (`CONSULTANT` ou `SELF_GEN`), o ID do nome selecionado, `tourId` e `routeStage`. Em Prestige ou Casa, envie também `guestLocation` (`WAVES` ou `SELECTION`). Na saída da Galeria, envie `destinationId`. O servidor liga o nome ao número do Tour. Para iniciar, envie `{"driverId":"..."}` em `/consultant-tour-requests/{requestId}/start`; o consultor, o Self Gen e o destino não precisam ser redigitados.
 
 ## Localização no Android
 

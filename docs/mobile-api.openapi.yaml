@@ -330,31 +330,6 @@ paths:
       responses:
         '200': {description: Tour atualizado e pedido associado ao motorista}
         '409': {$ref: '#/components/responses/Conflict'}
-  /consultant-tour-requests/{requestId}/driver:
-    patch:
-      tags: [Operação]
-      summary: Corrige o motorista de um pedido iniciado sem alterar Tour, consultor ou carrinho
-      parameters: [{$ref: '#/components/parameters/RequestId'}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [driverId]
-              properties:
-                driverId: {type: string}
-      responses:
-        '200': {description: Motorista da atribuição corrigido}
-        '409': {$ref: '#/components/responses/Conflict'}
-  /consultant-tour-requests/{requestId}/cancel:
-    post:
-      tags: [Operação]
-      summary: Cancela uma saída incorreta e devolve o mesmo pedido à fila
-      parameters: [{$ref: '#/components/parameters/RequestId'}]
-      responses:
-        '200': {description: Atribuição cancelada e pedido reaberto}
-        '409': {$ref: '#/components/responses/Conflict'}
   /transfers:
     post:
       tags: [Operação]
