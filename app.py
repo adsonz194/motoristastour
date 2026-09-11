@@ -2689,7 +2689,10 @@ def clean_hostess_request(car_request: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in car_request.items()
-        if key not in {"publicAccessTokenHash", "requesterLocation", "latitude", "longitude", "accuracy"}
+        if key not in {
+            "publicAccessTokenHash", "requesterLocation", "latitude", "longitude", "accuracy",
+            "routeStartSnapshot", "tourUpdatedAtAfterStart",
+        }
     }
 
 
@@ -3872,17 +3875,20 @@ def public_consultant_support_request(request_id: str):
 
 @app.post("/api/consultant-tour-requests/<request_id>/start")
 def start_consultant_tour_request(request_id: str):
-    """Let the signed-in driver start a pre-filled route with one tap."""
+    """Start a pre-filled route with the driver selected by the operating team."""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        raise APIError("Envie os dados do motorista em um objeto JSON válido.")
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
         require_permission(user, PERMISSION_MANAGE_TOURS, "Seu usuário não possui permissão para iniciar tours.")
-        driver_id = str(user.get("driverId") or "").strip()
+        driver_id = str(payload.get("driverId") or user.get("driverId") or "").strip()
         if not driver_id:
-            raise APIError("Seu usuário não está vinculado a um cadastro de motorista.", 409)
+            raise APIError("Selecione o motorista que está com este Tour.", 409)
         driver = find(db.get("drivers", []), driver_id, "Motorista")
         if not driver.get("active", True) or driver.get("status") != DRIVER_AVAILABLE or not driver_has_checked_in(db, driver_id):
-            raise APIError("Faça check-in e fique disponível antes de iniciar este atendimento.", 409)
+            raise APIError(f"{driver['name']} precisa estar com check-in feito e disponível para iniciar este atendimento.", 409)
         car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
         if not is_consultant_route_request(car_request):
             raise APIError("Esta solicitação não está ligada a um Tour.", 409)
@@ -3906,6 +3912,13 @@ def start_consultant_tour_request(request_id: str):
             raise APIError("O Tour não está mais na etapa em que o carrinho foi solicitado.", 409)
 
         before_route = tour_route_snapshot(db, tour)
+        tour_before_start = json.loads(json.dumps(tour))
+        drivers_before_start = {
+            item["id"]: json.loads(json.dumps(item)) for item in db.get("drivers", [])
+        }
+        carts_before_start = {
+            item["id"]: json.loads(json.dumps(item)) for item in db.get("carts", [])
+        }
         apply_action(db, user, tour, action, action_payload, route_request_id=car_request["id"])
         after_route = tour_route_snapshot(db, tour)
         if action in ROUTE_AUDIT_ACTIONS and (
@@ -3914,12 +3927,32 @@ def start_consultant_tour_request(request_id: str):
         ):
             log_tour_route_change(db, user, tour, action, before_route, after_route)
         completed_at = timestamp()
+        touched_driver_ids = {
+            *(str(item.get("driverId") or "") for item in tour_before_start.get("allocations", [])),
+            *(str(item.get("driverId") or "") for item in tour.get("allocations", [])),
+        } - {""}
+        touched_cart_ids = {
+            *(str(item.get("cartId") or "") for item in tour_before_start.get("allocations", [])),
+            *(str(item.get("cartId") or "") for item in tour.get("allocations", [])),
+        } - {""}
         car_request.update({
             "status": HOSTESS_REQUEST_IN_PROGRESS,
             "assignedDriverId": driver["id"],
             "assignedDriverName": driver["name"],
             "acceptedAt": completed_at,
             "completedAction": action,
+            "routeStartSnapshot": {
+                "tour": tour_before_start,
+                "drivers": {
+                    item_id: drivers_before_start[item_id]
+                    for item_id in touched_driver_ids if item_id in drivers_before_start
+                },
+                "carts": {
+                    item_id: carts_before_start[item_id]
+                    for item_id in touched_cart_ids if item_id in carts_before_start
+                },
+            },
+            "tourUpdatedAtAfterStart": tour.get("updatedAt"),
             "updatedAt": completed_at,
         })
         tour.pop("pendingConsultantRequestId", None)
@@ -3930,6 +3963,177 @@ def start_consultant_tour_request(request_id: str):
             tour=tour,
             action=action,
         )
+    notify_operation_update(db, "TOURS")
+    return response
+
+
+def editable_started_route_request(
+    db: dict[str, Any], request_id: str
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Resolve a just-started route while it is still safe to correct."""
+    car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
+    if not is_consultant_route_request(car_request):
+        raise APIError("Esta solicitação não está ligada a um Tour.", 409)
+    if car_request.get("status") != HOSTESS_REQUEST_IN_PROGRESS:
+        raise APIError("Este pedido não possui uma atribuição iniciada para corrigir.", 409)
+    snapshot = car_request.get("routeStartSnapshot")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("tour"), dict):
+        raise APIError("Esta atribuição é antiga e não possui dados seguros para correção.", 409)
+    tour = find(db.get("tours", []), car_request.get("tourId"), "Tour")
+    if tour.get("updatedAt") != car_request.get("tourUpdatedAtAfterStart"):
+        raise APIError("Este Tour já avançou de etapa e não pode mais ter a saída cancelada. Corrija pela etapa atual.", 409)
+    return car_request, tour, snapshot
+
+
+@app.patch("/api/consultant-tour-requests/<request_id>/driver")
+def change_consultant_tour_request_driver(request_id: str):
+    """Replace only the incorrectly assigned driver, retaining Tour and cart."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise APIError("Envie os dados do motorista em um objeto JSON válido.")
+    driver_id = str(payload.get("driverId") or "").strip()
+    if not driver_id:
+        raise APIError("Selecione o motorista correto.")
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_permission(user, PERMISSION_MANAGE_TOURS, "Seu usuário não possui permissão para corrigir motoristas de tours.")
+        car_request, tour, snapshot = editable_started_route_request(db, request_id)
+        previous_driver_id = str(car_request.get("assignedDriverId") or "")
+        if driver_id == previous_driver_id:
+            raise APIError("Selecione outro motorista para fazer a correção.")
+        previous_driver = find(db.get("drivers", []), previous_driver_id, "Motorista anterior")
+        driver = find(db.get("drivers", []), driver_id, "Motorista")
+        if not driver.get("active", True) or driver.get("status") != DRIVER_AVAILABLE or not driver_has_checked_in(db, driver_id):
+            raise APIError(f"{driver['name']} precisa estar com check-in feito e disponível.", 409)
+        if driver.get("hostessAvailable") or driver.get("status") in {DRIVER_HOSTESS_SUPPORT, DRIVER_SUPPORT}:
+            raise APIError(f"{driver['name']} está reservado para outro apoio.", 409)
+
+        allocation = next(
+            (item for item in tour.get("allocations", []) if item.get("driverId") == previous_driver_id),
+            None,
+        )
+        if not allocation:
+            raise APIError("O motorista atribuído não está mais neste Tour. Atualize o painel.", 409)
+
+        snapshot_drivers = snapshot.setdefault("drivers", {})
+        if driver_id not in snapshot_drivers:
+            snapshot_drivers[driver_id] = json.loads(json.dumps(driver))
+
+        completed_action = car_request.get("completedAction")
+        if completed_action == "start":
+            previous_driver["toursStarted"] = max(0, int(previous_driver.get("toursStarted") or 0) - 1)
+        if completed_action in {"pickup-home", "join-home"}:
+            previous_driver["homePickups"] = max(0, int(previous_driver.get("homePickups") or 0) - 1)
+        release_hostess_driver(db, previous_driver)
+        update_driver(
+            db,
+            driver_id,
+            DRIVER_DESTINATION if car_request.get("routeStage") == "GALERIA_EXIT" else DRIVER_IN_TOUR,
+            tours=completed_action == "start",
+            home_pickup=completed_action in {"pickup-home", "join-home"},
+        )
+        allocation["driverId"] = driver_id
+        corrected_at = timestamp()
+        tour["updatedAt"] = corrected_at
+        car_request.update({
+            "assignedDriverId": driver_id,
+            "assignedDriverName": driver["name"],
+            "correctedAt": corrected_at,
+            "correctedById": user["id"],
+            "correctedByName": user["name"],
+            "tourUpdatedAtAfterStart": corrected_at,
+            "updatedAt": corrected_at,
+        })
+        log_activity(
+            db,
+            user,
+            tour,
+            tour.get("status"),
+            tour.get("status"),
+            f"{user['name']} corrigiu o motorista de {tour.get('groupName', 'Tour')}: {previous_driver['name']} → {driver['name']}.",
+            audit={
+                "type": "DRIVER_ASSIGNMENT_CORRECTION",
+                "action": "CHANGE_ROUTE_REQUEST_DRIVER",
+                "tourName": tour.get("groupName", "Tour"),
+                "previousDriverName": previous_driver["name"],
+                "driverName": driver["name"],
+            },
+        )
+        save_database(db)
+        response = jsonify(request=clean_hostess_request(car_request), tour=tour)
+    notify_operation_update(db, "TOURS")
+    return response
+
+
+@app.post("/api/consultant-tour-requests/<request_id>/cancel")
+def cancel_consultant_tour_request_start(request_id: str):
+    """Undo a mistaken start and put the same request back in the queue."""
+    with DB_LOCK:
+        db = operational_database()
+        user = get_current_user(db)
+        require_permission(user, PERMISSION_MANAGE_TOURS, "Seu usuário não possui permissão para cancelar atribuições de tours.")
+        car_request, tour, snapshot = editable_started_route_request(db, request_id)
+        tour_snapshot = snapshot["tour"]
+        driver_snapshots = snapshot.get("drivers", {})
+        cart_snapshots = snapshot.get("carts", {})
+
+        for driver_id in driver_snapshots:
+            other_assignment = active_driver_assignment(db, driver_id)
+            if other_assignment and other_assignment.get("id") != tour.get("id"):
+                driver = next((item for item in db.get("drivers", []) if item.get("id") == driver_id), None)
+                raise APIError(
+                    f"{(driver or {}).get('name', 'Um motorista desta correção')} já foi atribuído a outro Tour. Altere somente o motorista deste pedido em vez de cancelar a saída.",
+                    409,
+                )
+
+        tour.clear()
+        tour.update(json.loads(json.dumps(tour_snapshot)))
+        restored_at = timestamp()
+        tour["updatedAt"] = restored_at
+        drivers_by_id = {item.get("id"): item for item in db.get("drivers", [])}
+        for driver_id, driver_snapshot in driver_snapshots.items():
+            driver = drivers_by_id.get(driver_id)
+            if driver:
+                driver.clear()
+                driver.update(json.loads(json.dumps(driver_snapshot)))
+        carts_by_id = {item.get("id"): item for item in db.get("carts", [])}
+        for cart_id, cart_snapshot in cart_snapshots.items():
+            cart = carts_by_id.get(cart_id)
+            if cart:
+                cart.clear()
+                cart.update(json.loads(json.dumps(cart_snapshot)))
+
+        previous_driver_name = car_request.get("assignedDriverName") or "Motorista"
+        car_request.update({
+            "status": HOSTESS_REQUEST_OPEN,
+            "assignedDriverId": None,
+            "assignedDriverName": None,
+            "acceptedAt": None,
+            "cancelledAssignmentAt": restored_at,
+            "cancelledAssignmentById": user["id"],
+            "cancelledAssignmentByName": user["name"],
+            "updatedAt": restored_at,
+        })
+        car_request.pop("completedAction", None)
+        car_request.pop("routeStartSnapshot", None)
+        car_request.pop("tourUpdatedAtAfterStart", None)
+        log_activity(
+            db,
+            user,
+            tour,
+            tour.get("status"),
+            tour.get("status"),
+            f"{user['name']} cancelou a atribuição incorreta de {previous_driver_name} em {tour.get('groupName', 'Tour')}; o pedido voltou a aguardar motorista.",
+            audit={
+                "type": "DRIVER_ASSIGNMENT_CORRECTION",
+                "action": "CANCEL_ROUTE_REQUEST_START",
+                "tourName": tour.get("groupName", "Tour"),
+                "previousDriverName": previous_driver_name,
+            },
+        )
+        save_database(db)
+        response = jsonify(request=clean_hostess_request(car_request), tour=tour)
     notify_operation_update(db, "TOURS")
     return response
 
@@ -4118,9 +4322,9 @@ def bootstrap_data_for_user(
         data["drivers"] = db.get("drivers", [])
         data["carts"] = db.get("carts", [])
 
-    if permissions & {PERMISSION_REQUEST_HOSTESS_CAR, PERMISSION_MANAGE_HOSTESS_SUPPORT}:
+    if permissions & {PERMISSION_REQUEST_HOSTESS_CAR, PERMISSION_MANAGE_HOSTESS_SUPPORT, PERMISSION_MANAGE_TOURS}:
         requests_for_user = db.get("hostessRequests", [])
-        if user.get("role") == ROLE_HOSTESS or PERMISSION_MANAGE_HOSTESS_SUPPORT not in permissions:
+        if user.get("role") == ROLE_HOSTESS or not permissions & {PERMISSION_MANAGE_HOSTESS_SUPPORT, PERMISSION_MANAGE_TOURS}:
             requests_for_user = [
                 item for item in requests_for_user
                 if item.get("requesterType", HOSTESS_REQUESTER) not in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}
