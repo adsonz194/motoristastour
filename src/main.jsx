@@ -42,7 +42,11 @@ const CLOSED_SUPPORT_STATUSES = new Set(['ENCERRADO', 'CONCLUIDO', 'FECHADO', 'C
 const CONSULTANT_SUPPORT_SESSION_KEY = 'iberostar-consultant-support-access-v1';
 
 function isConsultantRequest(request) {
-  return String(request?.requesterType || '').trim().toUpperCase() === 'CONSULTANT';
+  return ['CONSULTANT', 'SELF_GEN'].includes(String(request?.requesterType || '').trim().toUpperCase());
+}
+
+function isTourRouteRequest(request) {
+  return Boolean(request?.tourId && isConsultantRequest(request));
 }
 
 function publicSupportRequestIsClosed(request) {
@@ -461,7 +465,7 @@ function MetricCard({ icon: Icon, color, title, count, sub }) {
 
 function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenhum grupo nesta etapa.' }) {
   const toursClosed = Boolean(data.operationSettings?.toursClosed);
-  const consultant = (tour) => tour.consultantName || data.consultants.find((item) => item.id === tour.consultantId)?.name || 'Sem consultor';
+  const consultant = (tour) => tour.selfGenName || (data.selfGens || []).find((item) => item.id === tour.selfGenId)?.name || tour.consultantName || data.consultants.find((item) => item.id === tour.consultantId)?.name || (tour.selfGuide ? 'Self Gen não informado' : 'Sem consultor');
   const driverDetails = (tour) => {
     const names = (items) => items.map((item) => data.drivers.find((driver) => driver.id === item.driverId)?.name).filter(Boolean).join(', ') || '—';
     if (tour.status !== 'NA_CASA') return { active: names(tour.allocations || []), returned: '', cartsAtHome: tour.requiredCartCount || (tour.allocations || []).length };
@@ -470,6 +474,7 @@ function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenh
     return { active: names(staying), returned: names(returned), cartsAtHome: staying.length };
   };
   const actionFor = (tour) => {
+    if (tour.pendingConsultantRequestId) return null;
     if (tour.status === 'DISPONIVEL') return toursClosed ? null : 'start';
     if (tour.status === 'EM_TOUR') return tour.phase === 'Casa → Galeria' ? 'deliver-gallery' : 'arrived-home';
     if (tour.status === 'NA_CASA') {
@@ -489,12 +494,13 @@ function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenh
     // pode assumir ou corrigir qualquer tour. O servidor registra quem fez cada alteração.
     // VIEW_DASHBOARD, por sua vez, continua estritamente em modo de visualização.
     const canOperate = can(user, 'MANAGE_TOURS');
-    const team = consultantName !== 'Sem consultor' && driverInfo.active !== '—' ? `${consultantName} com ${driverInfo.active}` : '';
+    const responsibleMissing = ['Sem consultor', 'Self Gen não informado'].includes(consultantName);
+    const team = !responsibleMissing && driverInfo.active !== '—' ? `${consultantName} com ${driverInfo.active}` : '';
     const isOnInitialRoute = tour.status === 'EM_TOUR' && tour.phase !== 'Casa → Galeria' && !(tour.allocations || []).some((allocation) => allocation.homeDecision);
     const canCorrectToHome = tour.status === 'EM_TOUR' && tour.phase === 'Casa → Galeria';
     const canChangeDestination = tour.status === 'EM_DESTINO_FINAL';
     const canWithdraw = tour.status === 'DISPONIVEL';
-    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Ola não definida'} · {tour.scheduledTime || '—'}</small>{consultantName !== 'Sem consultor' && <small className="mobile-consultant">Consultor: {consultantName}</small>}{team && <small className="tour-team">{team}</small>}{tour.selfGuide && <small className="self-guide">Self Gen</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{canOperate && isOnInitialRoute && <button className="mini-action secondary" onClick={() => onAction(tour, 'deliver-gallery')}>Chegou direto à Galeria</button>}{canOperate && canCorrectToHome && <button className="mini-action secondary" onClick={() => onAction(tour, 'correct-to-home')}>{actionMeta['correct-to-home'].label}</button>}{canOperate && tour.status === 'NA_CASA' && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Trocar motoristas</button>}{canOperate && canChangeDestination && <button className="mini-action secondary" onClick={() => onAction(tour, 'change-destination')}>{actionMeta['change-destination'].label}</button>}{canOperate && canWithdraw && <button className="mini-action danger-mini" onClick={() => onAction(tour, 'withdraw')}>Desistência</button>}{canOperate && action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}</td></tr>;
+    return <tr key={tour.id}><td><div className="name-cell"><Avatar name={consultantName} color="pink" /><span>{consultantName}</span></div></td><td><strong>{tour.groupName}</strong><small className="schedule-info">{WAVES[tour.wave]?.label || 'Ola não definida'} · {tour.scheduledTime || '—'}</small>{!responsibleMissing && <small className="mobile-consultant">{tour.selfGuide ? 'Self Gen' : 'Consultor'}: {consultantName}</small>}{team && <small className="tour-team">{team}</small>}{tour.selfGuide && <small className="self-guide">Self Gen</small>}{tour.pendingConsultantRequestId && <small className="route-request-pending"><MapPin size={13} /> Pedido: {tour.routeRequestLocation || 'local informado'}{tour.routeRequestDestinationName ? ` → ${tour.routeRequestDestinationName}` : ''}</small>}{tour.status === 'NA_CASA' && <div className="home-presence"><House size={14} /><span><b>NA CASA COM O CASAL:</b> {driverInfo.active}</span></div>}{tour.status === 'NA_CASA' && driverInfo.returned !== '—' && <small className="returned-driver">VOLTOU AO PRESTIGE: {driverInfo.returned}</small>}</td><td>{tour.people || '—'}</td><td>{driverInfo.cartsAtHome || '—'}</td><td><strong>{driverInfo.active}</strong>{driverInfo.returned && driverInfo.returned !== '—' && <small className="schedule-info">Retornou ao Prestige: {driverInfo.returned}</small>}</td><td><StatusPill status={tour.status} /></td><td className="actions-cell">{canOperate && isOnInitialRoute && <button className="mini-action secondary" onClick={() => onAction(tour, 'deliver-gallery')}>Chegou direto à Galeria</button>}{canOperate && canCorrectToHome && <button className="mini-action secondary" onClick={() => onAction(tour, 'correct-to-home')}>{actionMeta['correct-to-home'].label}</button>}{canOperate && tour.status === 'NA_CASA' && !tour.pendingConsultantRequestId && <button className="mini-action secondary" onClick={() => onAction(tour, 'return-prestige')}>Trocar motoristas</button>}{canOperate && canChangeDestination && !tour.pendingConsultantRequestId && <button className="mini-action secondary" onClick={() => onAction(tour, 'change-destination')}>{actionMeta['change-destination'].label}</button>}{canOperate && canWithdraw && !tour.pendingConsultantRequestId && <button className="mini-action danger-mini" onClick={() => onAction(tour, 'withdraw')}>Desistência</button>}{canOperate && action && <button className="mini-action" onClick={() => onAction(tour, action)}>{actionMeta[action].label}</button>}{canOperate && tour.pendingConsultantRequestId && <span className="request-awaiting">Aguardando motorista</span>}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -533,28 +539,43 @@ function DriverHostessAvailability({ data, user, token, refresh, notify }) {
     setRequestId((current) => unassignedRequests.some((item) => item.id === current) ? current : (unassignedRequests[0]?.id || ''));
   }, [availableRequestIds]);
   if (!requests.length) return null;
-  const canAnswer = checkedIn && driver?.active && driver?.status === 'DISPONIVEL' && !driver?.hostessAvailable && Boolean(requestId);
+  const selectedRequest = assignedRequest || unassignedRequests.find((item) => item.id === requestId) || requests[0];
+  const routeRequest = isTourRouteRequest(selectedRequest);
+  const canAnswer = checkedIn && driver?.active && driver?.status === 'DISPONIVEL' && !driver?.hostessAvailable && Boolean(selectedRequest?.id);
   const available = Boolean(driver?.hostessAvailable);
   async function setAvailability(nextAvailability) {
     setSaving(true);
     try {
       const result = await api(token, '/api/drivers/hostess-availability', { method: 'POST', body: JSON.stringify(nextAvailability ? { available: true, requestId } : { available: false }) });
+      if (nextAvailability) window.dispatchEvent(new Event('motoristastour:start-driver-location'));
       await refresh();
       notify(nextAvailability ? 'Você assumiu a solicitação de apoio.' : result.request ? 'Seu apoio foi encerrado e a solicitação foi fechada.' : 'Seu apoio foi encerrado.', 'success');
+    } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+  }
+  async function startRoute() {
+    if (!selectedRequest?.id) return;
+    setSaving(true);
+    try {
+      const result = await api(token, `/api/consultant-tour-requests/${selectedRequest.id}/start`, { method: 'POST' });
+      window.dispatchEvent(new Event('motoristastour:start-driver-location'));
+      await refresh();
+      const success = result.action === 'start' ? 'Tour iniciado.' : result.action === 'assign-destination' ? 'Saída para o destino iniciada.' : 'Busca na Casa iniciada.';
+      notify(`${success} O pedido já foi ligado ao número do Tour.`, 'success');
     } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
   const requestLabel = (item) => {
     const note = String(item.note || '').trim();
     const reference = note ? ` · ${note.length > 65 ? `${note.slice(0, 62)}…` : note}` : '';
-    return `${isConsultantRequest(item) ? 'Consultor' : 'Hostess'} ${item.requestedByName || 'não identificado'} · ${time(item.createdAt)}${reference}`;
+    if (isTourRouteRequest(item)) return `${item.tourLabel || 'Tour'} · ${item.requestedByName || 'não identificado'} · ${item.guestLocationLabel || item.routeStageLabel || 'local não informado'}${item.destinationName ? ` → ${item.destinationName}` : ''}`;
+    return `${isConsultantRequest(item) ? (item.requesterType === 'SELF_GEN' ? 'Self Gen' : 'Consultor') : 'Hostess'} ${item.requestedByName || 'não identificado'} · ${time(item.createdAt)}${reference}`;
   };
   const consultantRequestCount = requests.filter(isConsultantRequest).length;
   const hostessRequestCount = requests.length - consultantRequestCount;
-  const requestSummary = [hostessRequestCount && `${hostessRequestCount} da Hostess`, consultantRequestCount && `${consultantRequestCount} de consultor${consultantRequestCount === 1 ? '' : 'es'}`].filter(Boolean).join(' e ');
-  const assignedRequester = assignedRequest ? `${isConsultantRequest(assignedRequest) ? 'o consultor' : 'a Hostess'} ${assignedRequest.requestedByName || ''}`.trim() : 'esta solicitação';
-  const selectedRequest = assignedRequest || unassignedRequests.find((item) => item.id === requestId) || requests[0];
+  const requestSummary = [hostessRequestCount && `${hostessRequestCount} da Hostess`, consultantRequestCount && `${consultantRequestCount} de consultor/Self Gen`].filter(Boolean).join(' e ');
+  const assignedRequester = assignedRequest ? `${isConsultantRequest(assignedRequest) ? 'a pessoa' : 'a Hostess'} ${assignedRequest.requestedByName || ''}`.trim() : 'esta solicitação';
   const selectedReference = String(selectedRequest?.note || '').trim();
-  return <><section className="hostess-call driver-hostess-call"><div><span>CHAMADOS DE APOIO</span><h2>{requests.length === 1 ? `${isConsultantRequest(requests[0]) ? 'Um consultor' : 'A Hostess'} solicitou um carro` : `${requests.length} solicitações abertas · ${requestSummary}`}</h2><p>{available ? `Você está atendendo ${assignedRequester}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para que a pessoa acompanhe somente o atendimento dela.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}{selectedReference && <> <strong>Referência:</strong> {selectedReference}</>}</p>{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>{assignedRequest && !isConsultantRequest(assignedRequest) && <HostessApproachLocationPanel requestId={assignedRequest.id} token={token} />}</>;
+  const startLabel = selectedRequest?.routeStage === 'PRESTIGE' ? 'Iniciar tour' : selectedRequest?.routeStage === 'CASA' ? 'Iniciar busca na Casa' : 'Iniciar destino';
+  return <><section className={classNames('hostess-call', 'driver-hostess-call', routeRequest && 'tour-route-call')}><div><span>{routeRequest ? 'PEDIDO VINCULADO AO TOUR' : 'CHAMADOS DE APOIO'}</span><h2>{routeRequest ? `${selectedRequest.tourLabel || 'Tour'} · ${selectedRequest.requestedByName || 'Responsável'}` : requests.length === 1 ? `${isConsultantRequest(requests[0]) ? 'Um consultor ou Self Gen' : 'A Hostess'} solicitou um carro` : `${requests.length} solicitações abertas · ${requestSummary}`}</h2>{routeRequest ? <div className="route-request-details"><strong><MapPin size={16} /> {selectedRequest.guestLocationLabel || selectedRequest.routeStageLabel}</strong>{selectedRequest.destinationName && <span>Destino: {selectedRequest.destinationName}</span>}<small>O consultor e o número do Tour já estão preenchidos. Toque apenas em “{startLabel}”.</small></div> : <p>{available ? `Você está atendendo ${assignedRequester}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para que a pessoa acompanhe somente o atendimento dela.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}{selectedReference && <> <strong> Referência:</strong> {selectedReference}</>}</p>}{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : routeRequest ? <button className="button button-primary" onClick={startRoute} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} {startLabel}</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>{assignedRequest && !isConsultantRequest(assignedRequest) && <HostessApproachLocationPanel requestId={assignedRequest.id} token={token} />}</>;
 }
 
 function Flow({ counts }) {
@@ -922,15 +943,18 @@ function DriverSupportPage({ data, user, token, refresh, notify }) {
   </>;
 }
 
-function ConsultantEditorModal({ consultant, onClose, token, refresh, notify }) {
-  const editing = Boolean(consultant);
-  const [form, setForm] = useState({ name: consultant?.name || '', active: consultant?.active ?? true });
+function ResponsibleEditorModal({ person, kind, onClose, token, refresh, notify }) {
+  const selfGen = kind === 'self-gen';
+  const label = selfGen ? 'Self Gen' : 'consultor';
+  const endpoint = selfGen ? '/api/self-gens' : '/api/consultants';
+  const editing = Boolean(person);
+  const [form, setForm] = useState({ name: person?.name || '', active: person?.active ?? true });
   const [saving, setSaving] = useState(false);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
-    try { await api(token, editing ? `/api/consultants/${consultant.id}` : '/api/consultants', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? 'Consultor atualizado.' : 'Consultor cadastrado.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
+    try { await api(token, editing ? `${endpoint}/${person.id}` : endpoint, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? `${label} atualizado.` : `${label} cadastrado.`, 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={editing ? 'Editar consultor' : 'Novo consultor'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Cadastrar consultor'}</button></form></Modal>;
+  return <Modal title={editing ? `Editar ${label}` : `Novo ${label}`} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : `Cadastrar ${label}`}</button></form></Modal>;
 }
 
 function ConsultantsPage({ data, user, token, refresh, notify }) {
@@ -939,11 +963,14 @@ function ConsultantsPage({ data, user, token, refresh, notify }) {
   const [savingDelete, setSavingDelete] = useState(false);
   const canManageConsultants = can(user, 'MANAGE_CONSULTANTS');
   const currentTours = data.tours.filter((tour) => !['CONCLUIDO', 'DESISTENCIA'].includes(tour.status));
-  async function removeConsultant() {
+  async function removePerson() {
     setSavingDelete(true);
-    try { await api(token, `/api/consultants/${deleting.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify('Consultor excluído.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
+    const endpoint = deleting.kind === 'self-gen' ? '/api/self-gens' : '/api/consultants';
+    const label = deleting.kind === 'self-gen' ? 'Self Gen' : 'Consultor';
+    try { await api(token, `${endpoint}/${deleting.person.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify(`${label} excluído.`, 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
   }
-  return <><SectionHeader title="Consultores" description="Consultores vinculados aos grupos da operação." action={canManageConsultants ? () => setEditing({}) : undefined} actionText="Novo consultor" /><section className="consultants-grid">{data.consultants.map((consultant) => { const tours = currentTours.filter((tour) => tour.consultantId === consultant.id); return <article className="consultant-card" key={consultant.id}><Avatar name={consultant.name} color="pink" /><h2>{consultant.name}</h2><span className={consultant.active ? 'active-dot' : 'inactive-dot'}>{consultant.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>grupos ativos</small></div>{canManageConsultants && <p className="card-actions"><button className="mini-action" onClick={() => setEditing(consultant)}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting(consultant)}>Excluir</button></p>}</article>; })}</section>{editing && <ConsultantEditorModal key={editing.id || 'new'} consultant={editing.id ? editing : null} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title="Excluir consultor" onClose={() => setDeleting(null)}><div className="danger-copy"><UserRound size={25} /><p>Excluir <strong>{deleting.name}</strong> remove o cadastro, preservando apenas os registros antigos de tours.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removeConsultant} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
+  const renderCards = (people, kind) => <section className="consultants-grid">{people.length ? people.map((person) => { const tours = currentTours.filter((tour) => kind === 'self-gen' ? tour.selfGenId === person.id : tour.consultantId === person.id); return <article className="consultant-card" key={person.id}><Avatar name={person.name} color={kind === 'self-gen' ? 'teal' : 'pink'} /><h2>{person.name}</h2><span className={person.active ? 'active-dot' : 'inactive-dot'}>{person.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>tours ativos</small></div>{canManageConsultants && <p className="card-actions"><button className="mini-action" onClick={() => setEditing({ kind, person })}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting({ kind, person })}>Excluir</button></p>}</article>; }) : <div className="empty-state">Nenhum {kind === 'self-gen' ? 'Self Gen' : 'consultor'} cadastrado.</div>}</section>;
+  return <><SectionHeader title="Consultores" description="Cadastros dos consultores vinculados aos Tours." action={canManageConsultants ? () => setEditing({ kind: 'consultant', person: null }) : undefined} actionText="Novo consultor" />{renderCards(data.consultants || [], 'consultant')}<SectionHeader title="Self Gen" description="Somente os nomes ativos aparecem na seleção dos Tours Self Gen." action={canManageConsultants ? () => setEditing({ kind: 'self-gen', person: null }) : undefined} actionText="Novo Self Gen" />{renderCards(data.selfGens || [], 'self-gen')}{editing && <ResponsibleEditorModal key={`${editing.kind}-${editing.person?.id || 'new'}`} person={editing.person} kind={editing.kind} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title={`Excluir ${deleting.kind === 'self-gen' ? 'Self Gen' : 'consultor'}`} onClose={() => setDeleting(null)}><div className="danger-copy"><UserRound size={25} /><p>Excluir <strong>{deleting.person.name}</strong> remove o cadastro, preservando os registros antigos dos Tours.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removePerson} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
 }
 
 function CartsPage({ data }) {
@@ -1281,8 +1308,10 @@ function ActionModal({ tour, action, data, user, onClose, token, refresh, notify
   const [homeDecision, setHomeDecision] = useState('AGUARDOU_NA_CASA');
   const [destinationId, setDestinationId] = useState(tour.destinationId || '');
   const [consultantId, setConsultantId] = useState(tour.consultantId || '');
+  const [selfGenId, setSelfGenId] = useState(tour.selfGenId || '');
   const [saving, setSaving] = useState(false);
   const activeConsultants = (data.consultants || []).filter((consultant) => consultant.active);
+  const activeSelfGens = (data.selfGens || []).filter((person) => person.active);
   const drivers = data.drivers.filter((driver) => driver.status === 'DISPONIVEL' && !driver.hostessAvailable);
   const currentTourDriverIds = new Set((tour.allocations || []).map((item) => item.driverId));
   const driverIdsOnWayToHome = new Set((data.tours || []).filter((item) => item.status === 'EM_TOUR' && item.phase !== 'Casa → Galeria').flatMap((item) => (item.allocations || []).map((allocation) => allocation.driverId)));
@@ -1290,10 +1319,11 @@ function ActionModal({ tour, action, data, user, onClose, token, refresh, notify
   const updateAllocation = (index, field, value) => setAllocations((current) => current.map((allocation, itemIndex) => itemIndex === index ? { ...allocation, [field]: value } : allocation));
   async function submit(event) {
     event.preventDefault(); setSaving(true);
-    const body = { action, allocations, destinationId, driverId: homeDriverId, homeDecision, consultantId };
+    const body = { action, allocations, destinationId, driverId: homeDriverId, homeDecision, consultantId, selfGenId };
     try { await api(token, `/api/tours/${tour.id}/action`, { method: 'POST', body: JSON.stringify(body) }); await refresh(); notify(isWithdraw ? 'Desistência registrada no histórico.' : `${meta.label} registrado.`, 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={meta.title} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{isQuantityTour ? 'Tour registrado por quantidade' : STATUS[tour.status]?.label}</span></div></div><p className="modal-intro">{meta.text}</p><form className="modal-form" onSubmit={submit}>{action === 'start' && isQuantityTour && <label>Consultor que está saindo<select value={consultantId} onChange={(event) => setConsultantId(event.target.value)} required><option value="">Selecione o consultor</option>{activeConsultants.map((consultant) => <option value={consultant.id} key={consultant.id}>{consultant.name}</option>)}</select>{!activeConsultants.length && <small className="field-help">Não há consultor ativo cadastrado. Peça ao administrador para cadastrar um em Consultores.</small>}</label>}{meta.destination && <label>Destino final<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required><option value="">Selecione o destino</option>{data.destinations.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}{meta.allocations && <div className="allocation-form"><div className="allocation-title"><span>{meta.homeJoin ? 'Motorista a caminho da Casa' : 'Motoristas'}</span><small>{meta.homeJoin ? `Falta ${incomingDriversNeeded} motorista${incomingDriversNeeded === 1 ? '' : 's'} para completar ${requiredHomeCarts} carrinhos` : action === 'pickup-home' && requiredHomeCarts > 1 ? `Este casal precisa de ${requiredHomeCarts} motoristas` : 'Um carrinho disponível será reservado para cada motorista'}</small></div><p className="allocation-help">{meta.homeJoin ? 'Dê prioridade a quem já está em tour a caminho da Casa. Depois de liberado do grupo atual, selecione-o para completar os carrinhos deste casal.' : action === 'pickup-home' && requiredHomeCarts > 1 ? `Selecione os ${requiredHomeCarts} motoristas necessários para este casal. O sistema não permite iniciar a busca com menos carrinhos.` : 'Informe somente o nome do motorista. Não é necessário informar família, casal, hóspedes ou carrinho.'}</p>{meta.homeJoin && driversOnWayToHome.length > 0 && <div className="role-help"><strong>PRIORIDADE DE CHAMADA:</strong> {driversOnWayToHome.map((driver) => driver.name).join(', ')} já está{driversOnWayToHome.length === 1 ? '' : 'ão'} em tour a caminho da Casa. Ao ficar disponível, use este motorista primeiro.</div>}{allocations.map((allocation, index) => <div className="allocation-row" key={index}><label>Motorista<select value={allocation.driverId} onChange={(event) => updateAllocation(index, 'driverId', event.target.value)} required><option value="">Selecione</option>{drivers.filter((driver) => driver.id === allocation.driverId || !allocations.some((item, itemIndex) => itemIndex !== index && item.driverId === driver.id)).map((driver) => <option value={driver.id} key={driver.id}>{driver.name}</option>)}</select></label>{!meta.homeJoin && allocations.length > 1 && <button type="button" className="remove-allocation" onClick={() => setAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remover</button>}</div>)}<div className="allocation-footer"><span>{allocations.filter((item) => item.driverId).length} motorista{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'} selecionado{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'}</span>{!meta.homeJoin && <button type="button" className="text-button" onClick={() => setAllocations((current) => [...current, { driverId: '' }])}><Plus size={15} /> Adicionar carrinho</button>}</div></div>}{meta.individualArrival && <div className="allocation-form"><div className="allocation-title"><span>Registro individual do motorista</span><small>{pendingArrivals.length} pendente{pendingArrivals.length === 1 ? '' : 's'}</small></div><label>Motorista<select value={homeDriverId} onChange={(event) => setHomeDriverId(event.target.value)} required>{pendingArrivals.map((item) => { const driver = data.drivers.find((candidate) => candidate.id === item.driverId); return <option value={item.driverId} key={item.driverId}>{driver?.name || 'Motorista'}</option>; })}</select></label><label>Ao chegar na Casa<select value={homeDecision} onChange={(event) => setHomeDecision(event.target.value)}><option value="AGUARDOU_NA_CASA">Permaneceu aguardando com a família</option><option value="DEIXOU_NA_CASA">Deixou a família e voltou ao Prestige</option></select></label></div>}<button className={classNames('button', meta.danger ? 'button-danger' : 'button-primary')} disabled={saving || (meta.individualArrival && !homeDriverId) || (action === 'start' && isQuantityTour && (!consultantId || !activeConsultants.length))}>{saving && <LoaderCircle className="spin" size={17} />} <Check size={17} /> {isWithdraw ? 'Confirmar desistência' : 'Confirmar'}</button></form></Modal>;
+  const responsibleMissing = tour.selfGuide ? (!selfGenId || !activeSelfGens.length) : (!consultantId || !activeConsultants.length);
+  return <Modal title={meta.title} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{isQuantityTour ? 'Tour registrado por quantidade' : STATUS[tour.status]?.label}</span></div></div><p className="modal-intro">{meta.text}</p><form className="modal-form" onSubmit={submit}>{action === 'start' && isQuantityTour && (tour.selfGuide ? <label>Self Gen que está saindo<select value={selfGenId} onChange={(event) => setSelfGenId(event.target.value)} required><option value="">Selecione o Self Gen</option>{activeSelfGens.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select>{!activeSelfGens.length && <small className="field-help">Não há Self Gen ativo cadastrado. Cadastre um na tela Consultores.</small>}</label> : <label>Consultor que está saindo<select value={consultantId} onChange={(event) => setConsultantId(event.target.value)} required><option value="">Selecione o consultor</option>{activeConsultants.map((consultant) => <option value={consultant.id} key={consultant.id}>{consultant.name}</option>)}</select>{!activeConsultants.length && <small className="field-help">Não há consultor ativo cadastrado. Peça ao administrador para cadastrar um em Consultores.</small>}</label>)}{meta.destination && <label>Destino final<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required><option value="">Selecione o destino</option>{data.destinations.filter((item) => item.active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}{meta.allocations && <div className="allocation-form"><div className="allocation-title"><span>{meta.homeJoin ? 'Motorista a caminho da Casa' : 'Motoristas'}</span><small>{meta.homeJoin ? `Falta ${incomingDriversNeeded} motorista${incomingDriversNeeded === 1 ? '' : 's'} para completar ${requiredHomeCarts} carrinhos` : action === 'pickup-home' && requiredHomeCarts > 1 ? `Este casal precisa de ${requiredHomeCarts} motoristas` : 'Um carrinho disponível será reservado para cada motorista'}</small></div><p className="allocation-help">{meta.homeJoin ? 'Dê prioridade a quem já está em tour a caminho da Casa. Depois de liberado do grupo atual, selecione-o para completar os carrinhos deste casal.' : action === 'pickup-home' && requiredHomeCarts > 1 ? `Selecione os ${requiredHomeCarts} motoristas necessários para este casal. O sistema não permite iniciar a busca com menos carrinhos.` : 'Informe somente o nome do motorista. Não é necessário informar família, casal, hóspedes ou carrinho.'}</p>{meta.homeJoin && driversOnWayToHome.length > 0 && <div className="role-help"><strong>PRIORIDADE DE CHAMADA:</strong> {driversOnWayToHome.map((driver) => driver.name).join(', ')} já está{driversOnWayToHome.length === 1 ? '' : 'ão'} em tour a caminho da Casa. Ao ficar disponível, use este motorista primeiro.</div>}{allocations.map((allocation, index) => <div className="allocation-row" key={index}><label>Motorista<select value={allocation.driverId} onChange={(event) => updateAllocation(index, 'driverId', event.target.value)} required><option value="">Selecione</option>{drivers.filter((driver) => driver.id === allocation.driverId || !allocations.some((item, itemIndex) => itemIndex !== index && item.driverId === driver.id)).map((driver) => <option value={driver.id} key={driver.id}>{driver.name}</option>)}</select></label>{!meta.homeJoin && allocations.length > 1 && <button type="button" className="remove-allocation" onClick={() => setAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remover</button>}</div>)}<div className="allocation-footer"><span>{allocations.filter((item) => item.driverId).length} motorista{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'} selecionado{allocations.filter((item) => item.driverId).length === 1 ? '' : 's'}</span>{!meta.homeJoin && <button type="button" className="text-button" onClick={() => setAllocations((current) => [...current, { driverId: '' }])}><Plus size={15} /> Adicionar carrinho</button>}</div></div>}{meta.individualArrival && <div className="allocation-form"><div className="allocation-title"><span>Registro individual do motorista</span><small>{pendingArrivals.length} pendente{pendingArrivals.length === 1 ? '' : 's'}</small></div><label>Motorista<select value={homeDriverId} onChange={(event) => setHomeDriverId(event.target.value)} required>{pendingArrivals.map((item) => { const driver = data.drivers.find((candidate) => candidate.id === item.driverId); return <option value={item.driverId} key={item.driverId}>{driver?.name || 'Motorista'}</option>; })}</select></label><label>Ao chegar na Casa<select value={homeDecision} onChange={(event) => setHomeDecision(event.target.value)}><option value="AGUARDOU_NA_CASA">Permaneceu aguardando com a família</option><option value="DEIXOU_NA_CASA">Deixou a família e voltou ao Prestige</option></select></label></div>}<button className={classNames('button', meta.danger ? 'button-danger' : 'button-primary')} disabled={saving || (meta.individualArrival && !homeDriverId) || (action === 'start' && isQuantityTour && responsibleMissing)}>{saving && <LoaderCircle className="spin" size={17} />} <Check size={17} /> {isWithdraw ? 'Confirmar desistência' : 'Confirmar'}</button></form></Modal>;
 }
 
 function Modal({ title, onClose, children }) {
@@ -1303,12 +1333,21 @@ function Modal({ title, onClose, children }) {
 function ConsultantDriverPanel() {
   const [board, setBoard] = useState({ drivers: [], operationDate: '' });
   const [consultants, setConsultants] = useState([]);
+  const [selfGens, setSelfGens] = useState([]);
+  const [tours, setTours] = useState([]);
+  const [destinations, setDestinations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [boardError, setBoardError] = useState('');
   const [optionsError, setOptionsError] = useState('');
   const [requestError, setRequestError] = useState('');
+  const [identityType, setIdentityType] = useState('CONSULTANT');
   const [consultantId, setConsultantId] = useState('');
+  const [selfGenId, setSelfGenId] = useState('');
+  const [tourId, setTourId] = useState('');
+  const [routeStage, setRouteStage] = useState('PRESTIGE');
+  const [guestLocation, setGuestLocation] = useState('WAVES');
+  const [destinationId, setDestinationId] = useState('');
   const [reference, setReference] = useState('');
   const [requestSaving, setRequestSaving] = useState(false);
   const [requestAccess, setRequestAccess] = useState(readConsultantSupportAccess);
@@ -1328,8 +1367,13 @@ function ConsultantDriverPanel() {
     try {
       const payload = await api('', '/api/public/consultant-support/options');
       const values = (Array.isArray(payload.consultants) ? payload.consultants : []).filter((item) => item?.id && item?.name && item.active !== false);
+      const selfGenValues = (Array.isArray(payload.selfGens) ? payload.selfGens : []).filter((item) => item?.id && item?.name && item.active !== false);
       setConsultants(values);
+      setSelfGens(selfGenValues);
+      setTours(Array.isArray(payload.tours) ? payload.tours : []);
+      setDestinations(Array.isArray(payload.destinations) ? payload.destinations : []);
       setConsultantId((current) => values.some((item) => String(item.id) === String(current)) ? current : String(values[0]?.id || ''));
+      setSelfGenId((current) => selfGenValues.some((item) => String(item.id) === String(current)) ? current : String(selfGenValues[0]?.id || ''));
       setOptionsError('');
     } catch (requestError) {
       setOptionsError(requestError.message || 'Não foi possível carregar os consultores.');
@@ -1346,13 +1390,23 @@ function ConsultantDriverPanel() {
 
   async function requestSupport(event) {
     event.preventDefault();
-    if (!consultantId || requestSaving) return;
+    const identityId = identityType === 'SELF_GEN' ? selfGenId : consultantId;
+    if (!identityId || !tourId || requestSaving) return;
     setRequestSaving(true);
     setRequestError('');
     try {
       const payload = await api('', '/api/public/consultant-support-requests', {
         method: 'POST',
-        body: JSON.stringify({ consultantId, note: reference.trim() })
+        body: JSON.stringify({
+          identityType,
+          consultantId: identityType === 'CONSULTANT' ? consultantId : undefined,
+          selfGenId: identityType === 'SELF_GEN' ? selfGenId : undefined,
+          tourId,
+          routeStage,
+          guestLocation: routeStage === 'GALERIA_EXIT' ? undefined : guestLocation,
+          destinationId: routeStage === 'GALERIA_EXIT' ? destinationId : undefined,
+          note: reference.trim()
+        })
       });
       const nextRequest = payload.request && typeof payload.request === 'object' ? payload.request : null;
       const nextAccess = {
@@ -1364,6 +1418,7 @@ function ConsultantDriverPanel() {
       setRequestAccess(nextAccess);
       setActiveRequest(nextRequest);
       setReference('');
+      setTourId('');
     } catch (error) {
       setRequestError(error.message || 'Não foi possível solicitar o apoio.');
     } finally {
@@ -1385,23 +1440,37 @@ function ConsultantDriverPanel() {
     setRequestError('');
   }
   const requestClosed = publicSupportRequestIsClosed(activeRequest);
+  const identityId = identityType === 'SELF_GEN' ? selfGenId : consultantId;
+  const eligibleTours = tours.filter((tour) => {
+    if (Boolean(tour.selfGuide) !== (identityType === 'SELF_GEN') || tour.requestOpen) return false;
+    const expectedStatus = routeStage === 'PRESTIGE' ? 'DISPONIVEL' : routeStage === 'CASA' ? ['NA_CASA', 'AGUARDANDO_CASA'] : 'AGUARDANDO_DESTINO';
+    if (Array.isArray(expectedStatus) ? !expectedStatus.includes(tour.status) : tour.status !== expectedStatus) return false;
+    const linkedId = identityType === 'SELF_GEN' ? tour.selfGenId : tour.consultantId;
+    return routeStage === 'PRESTIGE' ? (!linkedId || linkedId === identityId) : linkedId === identityId;
+  });
+  const identityOptions = identityType === 'SELF_GEN' ? selfGens : consultants;
 
   return <main className="consultant-public-page">
     <header className="consultant-public-header"><Logo /><a href="/" className="public-login-link"><LockKeyhole size={16} /> Acesso da equipe</a></header>
-    <section className="consultant-public-hero"><span>PAINEL DOS CONSULTORES</span><h1>Status dos motoristas</h1><p>Os status são públicos. A localização no mapa só é liberada para o motorista que assumir o seu pedido de apoio.</p></section>
+    <section className="consultant-public-hero"><span>PAINEL DE CONSULTOR E SELF GEN</span><h1>Solicitação por número do Tour</h1><p>Informe onde o hóspede está. O pedido fica atrelado ao Tour e o motorista recebe a rota pronta para iniciar.</p></section>
     <section className="consultant-public-summary"><CarFront size={28} /><div><strong>{board.drivers.length}</strong><span>motorista{board.drivers.length === 1 ? '' : 's'} ativo{board.drivers.length === 1 ? '' : 's'}</span></div><small>Operação: {board.operationDate || '—'}</small></section>
     {requestError && <div className="consultant-public-error" role="alert">{requestError}</div>}
     {requestAccess ? <>
       <ConsultantSupportLocationPanel requestId={requestAccess.requestId} accessToken={requestAccess.accessToken} initialRequest={activeRequest} onRequestChange={handleRequestChange} onUnavailable={handleRequestUnavailable} />
       {requestClosed && <div className="consultant-support-reset"><button className="button button-primary" type="button" onClick={startAnotherRequest}><HandHeart size={17} /> Fazer novo pedido</button></div>}
     </> : <section className="consultant-support-request">
-      <div className="consultant-support-request-copy"><span>SOLICITAR APOIO</span><h2>Precisa de um motorista?</h2><p>Identifique-se e abra um pedido. Quando um motorista assumir, somente este navegador poderá acompanhar a posição dele até o fim do chamado.</p><small><ShieldCheck size={15} /> A credencial temporária fica apenas nesta aba e não aparece no endereço do site.</small></div>
+      <div className="consultant-support-request-copy"><span>SOLICITAR CARRINHO</span><h2>Onde o hóspede está?</h2><p>Selecione seu nome, o número do Tour e a etapa. O motorista não precisará preencher novamente os dados do consultor.</p><small><ShieldCheck size={15} /> Depois que o motorista iniciar, a posição dele aparece somente para quem abriu este pedido.</small></div>
       <form className="consultant-support-form" onSubmit={requestSupport}>
-        <label>Seu nome<select value={consultantId} onChange={(event) => setConsultantId(event.target.value)} required disabled={optionsLoading || requestSaving}><option value="">Selecione o consultor</option>{consultants.map((consultant) => <option value={consultant.id} key={consultant.id}>{consultant.name}</option>)}</select></label>
-        <label>Referência para o motorista (opcional)<textarea value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Ex.: estou na Galeria, próximo à recepção" maxLength="300" rows="3" disabled={requestSaving} /></label>
+        <label>Tipo de responsável<select value={identityType} onChange={(event) => { setIdentityType(event.target.value); setTourId(''); }} disabled={optionsLoading || requestSaving}><option value="CONSULTANT">Consultor</option><option value="SELF_GEN">Self Gen</option></select></label>
+        <label>Seu nome<select value={identityId} onChange={(event) => { identityType === 'SELF_GEN' ? setSelfGenId(event.target.value) : setConsultantId(event.target.value); setTourId(''); }} required disabled={optionsLoading || requestSaving}><option value="">Selecione o nome</option>{identityOptions.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label>
+        <label>Local do pedido<select value={routeStage} onChange={(event) => { setRouteStage(event.target.value); setTourId(''); }} disabled={requestSaving}><option value="PRESTIGE">Prestige</option><option value="CASA">Casa</option><option value="GALERIA_EXIT">Saída da Galeria</option></select></label>
+        {routeStage !== 'GALERIA_EXIT' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving}><option value="WAVES">Waves</option><option value="SELECTION">Selection</option></select></label>}
+        <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">Não há Tour disponível para este nome e esta etapa.</small>}</label>
+        {routeStage === 'GALERIA_EXIT' && <label>Destino<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required disabled={requestSaving}><option value="">Selecione o destino</option>{destinations.map((destination) => <option value={destination.id} key={destination.id}>{destination.name}</option>)}</select></label>}
+        <label>Referência para o motorista (opcional)<textarea value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Ex.: próximo à recepção" maxLength="300" rows="2" disabled={requestSaving} /></label>
         {optionsError && <div className="consultant-support-form-error" role="alert"><span>{optionsError}</span><button className="text-button" type="button" onClick={loadOptions}>Tentar novamente</button></div>}
-        {!optionsLoading && !optionsError && !consultants.length && <div className="consultant-support-form-error" role="status"><span>Nenhum consultor ativo está disponível para abrir um pedido.</span></div>}
-        <button className="button button-primary" disabled={requestSaving || optionsLoading || !consultantId || Boolean(optionsError)}>{requestSaving ? <LoaderCircle className="spin" size={18} /> : <HandHeart size={18} />} {requestSaving ? 'Enviando pedido…' : 'Solicitar apoio'}</button>
+        {!optionsLoading && !optionsError && !identityOptions.length && <div className="consultant-support-form-error" role="status"><span>Nenhum {identityType === 'SELF_GEN' ? 'Self Gen' : 'consultor'} ativo está disponível para abrir um pedido.</span></div>}
+        <button className="button button-primary" disabled={requestSaving || optionsLoading || !identityId || !tourId || (routeStage === 'GALERIA_EXIT' && !destinationId) || Boolean(optionsError)}>{requestSaving ? <LoaderCircle className="spin" size={18} /> : <CarFront size={18} />} {requestSaving ? 'Enviando pedido…' : 'Solicitar carrinho'}</button>
       </form>
     </section>}
     <section className="consultant-public-section-heading"><div><span>VISÃO GERAL</span><h2>Disponibilidade da equipe</h2></div><small>Atualização automática a cada 30 segundos</small></section>

@@ -81,14 +81,14 @@ paths:
   /public/consultant-support/options:
     get:
       tags: [Público]
-      summary: Lista consultores ativos para abertura de chamado
+      summary: Lista Consultores, Self Gen, Tours, etapas, locais e destinos disponíveis
       security: []
       responses:
         '200': {description: Opções públicas do formulário}
   /public/consultant-support-requests:
     post:
       tags: [Público]
-      summary: Abre um chamado de consultor e devolve sua credencial temporária uma única vez
+      summary: Abre um pedido de carrinho vinculado ao Tour e devolve a credencial temporária
       security: []
       requestBody:
         required: true
@@ -96,9 +96,15 @@ paths:
           application/json:
             schema:
               type: object
-              required: [consultantId]
+              required: [identityType, tourId, routeStage]
               properties:
-                consultantId: {type: string}
+                identityType: {type: string, enum: [CONSULTANT, SELF_GEN]}
+                consultantId: {type: [string, 'null'], description: Obrigatório quando identityType é CONSULTANT}
+                selfGenId: {type: [string, 'null'], description: Obrigatório quando identityType é SELF_GEN}
+                tourId: {type: string}
+                routeStage: {type: string, enum: [PRESTIGE, CASA, GALERIA_EXIT]}
+                guestLocation: {type: [string, 'null'], enum: [WAVES, SELECTION, null], description: Obrigatório em Prestige e Casa}
+                destinationId: {type: [string, 'null'], description: Obrigatório na saída da Galeria}
                 note: {type: string, maxLength: 500}
       responses:
         '201': {description: Chamado e accessToken temporário}
@@ -307,6 +313,14 @@ paths:
       responses:
         '200': {description: Tour atualizado}
         '409': {$ref: '#/components/responses/Conflict'}
+  /consultant-tour-requests/{requestId}/start:
+    post:
+      tags: [Operação]
+      summary: Motorista inicia com um toque a etapa predefinida pelo Consultor ou Self Gen
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200': {description: Tour atualizado e pedido associado ao motorista}
+        '409': {$ref: '#/components/responses/Conflict'}
   /transfers:
     post:
       tags: [Operação]
@@ -405,6 +419,31 @@ paths:
       parameters: [{$ref: '#/components/parameters/ConsultantId'}]
       responses:
         '200': {$ref: '#/components/responses/Ok'}
+  /self-gens:
+    post:
+      tags: [Cadastros]
+      summary: Cria um Self Gen
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [name], properties: {name: {type: string}, active: {type: boolean}}}}}
+      responses:
+        '201': {description: Self Gen criado}
+  /self-gens/{selfGenId}:
+    put:
+      tags: [Cadastros]
+      summary: Atualiza um Self Gen
+      parameters: [{$ref: '#/components/parameters/SelfGenId'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: true}}}
+      responses:
+        '200': {description: Self Gen atualizado}
+    delete:
+      tags: [Cadastros]
+      summary: Exclui um Self Gen
+      parameters: [{$ref: '#/components/parameters/SelfGenId'}]
+      responses:
+        '200': {$ref: '#/components/responses/Ok'}
   /operation/departure-prestige:
     post:
       tags: [Operação]
@@ -474,6 +513,7 @@ components:
     UserId: {in: path, name: userId, required: true, schema: {type: string}}
     DriverId: {in: path, name: driverId, required: true, schema: {type: string}}
     ConsultantId: {in: path, name: consultantId, required: true, schema: {type: string}}
+    SelfGenId: {in: path, name: selfGenId, required: true, schema: {type: string}}
   responses:
     Ok: {description: Operação concluída, content: {application/json: {schema: {type: object}}}}
     BadRequest: {description: Corpo ou valor inválido, content: {application/json: {schema: {$ref: '#/components/schemas/ApiError'}}}}

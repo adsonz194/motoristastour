@@ -92,9 +92,11 @@ Todas as rotas autenticadas do site possuem um endereço equivalente com o prefi
 | Corrigir Ola | `PATCH /tours/hostess/selection` |
 | Excluir lançamentos | `DELETE /tours/hostess/selection` |
 | Executar etapa de tour | `POST /tours/{tourId}/action` |
+| Iniciar pedido de Tour já preenchido | `POST /consultant-tour-requests/{requestId}/start` |
 | Criar/alterar usuários | `POST /users`, `PUT /users/{userId}` |
 | Criar/alterar motoristas | `POST /drivers`, `PUT /drivers/{driverId}` |
 | Criar/alterar consultores | `POST /consultants`, `PUT /consultants/{consultantId}` |
+| Criar/alterar Self Gen | `POST /self-gens`, `PUT /self-gens/{selfGenId}` |
 | Solicitar carro da Hostess | `POST /hostess-requests` |
 | Assumir chamado | `POST /drivers/hostess-availability` |
 | Acompanhar aproximação | `GET /hostess-requests/{requestId}/approach` |
@@ -102,11 +104,13 @@ Todas as rotas autenticadas do site possuem um endereço equivalente com o prefi
 | Compartilhar GPS do motorista | `POST /drivers/me/location-sharing`, depois `PUT /drivers/me/location` |
 | Ver mapa da Hostess | `GET /driver-locations` |
 | Configurações operacionais | `/operation/*` e `/hotel-closures/*` |
-| Chamado público do consultor | `/public/consultant-support-requests/*` |
+| Pedido público do Consultor/Self Gen | `/public/consultant-support/options`, `/public/consultant-support-requests/*` |
 
 O servidor não confia no aplicativo para autorização. Cada rota continua validando a permissão, o perfil, o check-in, o estado atual do tour/motorista e a propriedade do chamado.
 
 As rotas `/public/*` não usam o token da conta. O acompanhamento do consultor exige no cabeçalho `X-Support-Access-Token` a credencial devolvida uma única vez na criação daquele pedido.
+
+O pedido público recebe `identityType` (`CONSULTANT` ou `SELF_GEN`), o ID do nome selecionado, `tourId` e `routeStage`. Em Prestige ou Casa, envie também `guestLocation` (`WAVES` ou `SELECTION`). Na saída da Galeria, envie `destinationId`. O servidor liga o nome ao número do Tour e o motorista usa `/consultant-tour-requests/{requestId}/start`, sem redigitar o consultor, o Self Gen ou o destino.
 
 ## Localização no Android
 

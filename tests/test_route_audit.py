@@ -189,8 +189,8 @@ class RouteAuditApiTest(unittest.TestCase):
         self.assertEqual(audit_activity["actorUsername"], "outro.motorista")
         self.assertEqual(audit_activity["actorRole"], tour_app.ROLE_DRIVER)
         self.assertEqual(audit_activity["audit"]["action"], "change-destination")
-        self.assertEqual(audit_activity["audit"]["from"], "A caminho de Lobby Bahia")
-        self.assertEqual(audit_activity["audit"]["to"], "A caminho de Prestige Praia")
+        self.assertEqual(audit_activity["audit"]["from"], "A caminho de Lobby Waves")
+        self.assertEqual(audit_activity["audit"]["to"], "A caminho de Prestige Selection")
 
 
 if __name__ == "__main__":
