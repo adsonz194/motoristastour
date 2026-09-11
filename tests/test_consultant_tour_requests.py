@@ -455,6 +455,30 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
         self.assertEqual(bootstrap.get_json()["data"]["tours"], [])
 
+    def test_numbered_tours_are_returned_from_smallest_to_largest(self) -> None:
+        self.database["tours"] = [
+            self._tour("tour_a", "Tour 11"),
+            self._tour("tour_z", "Tour 2"),
+            self._tour("tour_y", "Tour 1"),
+        ]
+
+        consultant_options = self.client.get(
+            "/api/consultant/support/options",
+            headers=self.auth("token-consultant"),
+        )
+        self.assertEqual(consultant_options.status_code, 200, consultant_options.get_json())
+        self.assertEqual(
+            [item["label"] for item in consultant_options.get_json()["tours"]],
+            ["Tour 1", "Tour 2", "Tour 11"],
+        )
+
+        driver_bootstrap = self.client.get("/api/bootstrap", headers=self.auth("token-driver"))
+        self.assertEqual(driver_bootstrap.status_code, 200, driver_bootstrap.get_json())
+        self.assertEqual(
+            [item["slotLabel"] for item in driver_bootstrap.get_json()["data"]["tours"]],
+            ["Tour 1", "Tour 2", "Tour 11"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

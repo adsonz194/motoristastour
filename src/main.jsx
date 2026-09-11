@@ -310,6 +310,22 @@ function initials(name = '') {
   return name.split(' ').filter(Boolean).slice(0, 2).map((word) => word[0]).join('').toUpperCase() || 'TI';
 }
 
+function toursInAscendingOrder(tours = []) {
+  const number = (tour) => {
+    const label = String(tour.slotLabel || tour.groupName || tour.label || '');
+    const match = label.match(/(?:Tour|Self Gen)\s*(\d+)/i);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const waveOrder = { WAVE_1: 0, WAVE_2: 1 };
+  return [...tours].sort((left, right) =>
+    (waveOrder[left.wave] ?? 99) - (waveOrder[right.wave] ?? 99)
+    || Number(Boolean(left.selfGuide)) - Number(Boolean(right.selfGuide))
+    || number(left) - number(right)
+    || String(left.createdAt || '').localeCompare(String(right.createdAt || ''))
+    || String(left.id || '').localeCompare(String(right.id || ''))
+  );
+}
+
 function time(value) {
   if (!value) return '—';
   return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(new Date(value));
@@ -489,7 +505,7 @@ function TourTable({ tours, data, user, onAction, compact = false, empty = 'Nenh
     return null;
   };
   if (!tours.length) return <div className="empty-state">{empty}</div>;
-  return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{tours.map((tour) => {
+  return <div className={classNames('table-wrap', 'tour-table', compact && 'table-compact')}><table><thead><tr><th>Consultor</th><th>Família / Casal</th><th>Pessoas</th><th>Carrinhos</th><th>Motoristas</th><th>Status</th><th aria-label="Ações" /></tr></thead><tbody>{toursInAscendingOrder(tours).map((tour) => {
     const action = actionFor(tour); const consultantName = consultant(tour); const driverInfo = driverDetails(tour);
     // A permissão operacional vale para toda a equipe autorizada: um motorista
     // pode assumir ou corrigir qualquer tour. O servidor registra quem fez cada alteração.
@@ -642,7 +658,7 @@ function Dashboard({ data, user, token, refresh, notify, onAction, onCreate, onC
     available: count(['DISPONIVEL']), enTour: count(['EM_TOUR']), home: count(['NA_CASA', 'AGUARDANDO_CASA']), gallery: count(['AGUARDANDO_DESTINO']), destination: count(['EM_DESTINO_FINAL'])
   };
   const people = (items) => items.reduce((sum, tour) => sum + tour.people, 0);
-  const activeTours = tours.filter((tour) => !['DISPONIVEL', 'CONCLUIDO', 'DESISTENCIA'].includes(tour.status)).slice(0, 5);
+  const activeTours = toursInAscendingOrder(tours).filter((tour) => !['DISPONIVEL', 'CONCLUIDO', 'DESISTENCIA'].includes(tour.status)).slice(0, 5);
   const galleryTours = tours.filter((tour) => tour.status === 'AGUARDANDO_DESTINO');
   const houseTours = tours.filter((tour) => ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status));
   const destTours = tours.filter((tour) => tour.status === 'AGUARDANDO_DESTINO');
@@ -795,7 +811,7 @@ function HostessPrestigePage({ data, user, token, refresh, notify }) {
 
 function Queue({ items, data, destinations = false }) {
   if (!items.length) return <div className="empty-state">Nenhum grupo aguardando.</div>;
-  return <div className="queue-list">{items.map((tour) => {
+  return <div className="queue-list">{toursInAscendingOrder(items).map((tour) => {
     const consultantName = tour.consultantName || (data.consultants || []).find((item) => item.id === tour.consultantId)?.name;
     const destination = destinations ? (data.destinations || []).find((item) => item.id === tour.destinationId)?.name || 'Destino pendente' : 'Aguardando transporte';
     return <div className="queue-row" key={tour.id}><Avatar name={consultantName || tour.groupName} color="orange" /><div><strong>{tour.groupName}</strong><span>{consultantName && `Consultor: ${consultantName} · `}{tour.people} pessoas · {destination}</span></div><ChevronRight size={18} /></div>;
@@ -1480,7 +1496,7 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
   const identityOptions = identityType === 'SELF_GEN' ? selfGens : consultants;
   const identityName = identityOptions.find((person) => String(person.id) === String(identityId))?.name || '';
   const normalizeIdentityName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR');
-  const eligibleTours = tours.filter((tour) => {
+  const eligibleTours = toursInAscendingOrder(tours).filter((tour) => {
     if (Boolean(tour.selfGuide) !== (identityType === 'SELF_GEN') || tour.requestOpen) return false;
     const expectedStatus = routeStage === 'PRESTIGE' ? 'DISPONIVEL' : routeStage === 'CASA' ? ['NA_CASA', 'AGUARDANDO_CASA'] : 'AGUARDANDO_DESTINO';
     if (Array.isArray(expectedStatus) ? !expectedStatus.includes(tour.status) : tour.status !== expectedStatus) return false;
@@ -1491,6 +1507,13 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
       : Boolean(normalizeIdentityName(linkedName)) && normalizeIdentityName(linkedName) === normalizeIdentityName(identityName);
     return routeStage === 'PRESTIGE' ? ((!linkedId && !linkedName) || identityMatches) : identityMatches;
   });
+  const eligibleTourIds = eligibleTours.map((tour) => String(tour.id)).join('|');
+  useEffect(() => {
+    setTourId((current) => {
+      if (eligibleTours.some((tour) => String(tour.id) === String(current))) return current;
+      return routeStage !== 'PRESTIGE' && eligibleTours.length === 1 ? String(eligibleTours[0].id) : '';
+    });
+  }, [eligibleTourIds, routeStage]);
 
   return <main className="consultant-public-page">
     <header className="consultant-public-header"><Logo /><button type="button" className="public-login-link" onClick={onLogout}><LogOut size={16} /> Sair</button></header>

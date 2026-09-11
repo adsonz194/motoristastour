@@ -3091,7 +3091,7 @@ def consultant_for_account(db: dict[str, Any], user: dict[str, Any]) -> dict[str
 
 def quantity_slot_number(tour: dict[str, Any]) -> int | None:
     """Return the numeric part of a Hostess quantity slot label."""
-    label = str(tour.get("slotLabel") or "").strip()
+    label = str(tour.get("slotLabel") or tour.get("groupName") or tour.get("label") or "").strip()
     prefix = "Self Gen " if tour.get("selfGuide") else "Tour "
     if not label.startswith(prefix):
         return None
@@ -3100,6 +3100,22 @@ def quantity_slot_number(tour: dict[str, Any]) -> int | None:
     except ValueError:
         return None
     return number if number > 0 else None
+
+
+def tour_display_sort_key(tour: dict[str, Any]) -> tuple[Any, ...]:
+    """Show numbered Tours from the smallest to the largest in each Ola."""
+    wave_order = {wave: index for index, wave in enumerate(TRANSFER_SCHEDULES)}
+    return (
+        wave_order.get(tour.get("wave"), len(wave_order)),
+        bool(tour.get("selfGuide")),
+        quantity_slot_number(tour) or 10_000,
+        str(tour.get("createdAt") or ""),
+        str(tour.get("id") or ""),
+    )
+
+
+def tours_for_display(tours: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(tours, key=tour_display_sort_key)
 
 
 def renumber_open_quantity_tours(db: dict[str, Any], waves: set[str]) -> None:
@@ -3752,7 +3768,7 @@ def public_consultant_support_options():
             item.get("tourId") for item in open_hostess_requests(db)
             if is_consultant_route_request(item)
         }
-        tours = [
+        tours = tours_for_display([
             {
                 "id": item.get("id"),
                 "label": item.get("slotLabel") or item.get("groupName") or "Tour",
@@ -3772,7 +3788,7 @@ def public_consultant_support_options():
                 STATE_WAITING_HOME,
                 STATE_WAITING_DESTINATION,
             }
-        ]
+        ])
         active_request = None
         if authenticated_consultant:
             consultants = [{"id": authenticated_consultant["id"], "name": authenticated_consultant["name"]}]
@@ -4331,6 +4347,7 @@ def bootstrap_data_for_user(
     # keeps a custom, narrowly scoped account from crashing a shared view.
     for collection in ("tours", "transfers", "drivers", "consultants", "selfGens", "carts", "destinations", "activities", "hostessRequests", "driverSupports", "attendance"):
         data.setdefault(collection, [])
+    data["tours"] = tours_for_display(data["tours"])
     return data
 
 
