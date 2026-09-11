@@ -91,6 +91,17 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "passwordHash": "unused",
             "createdAt": "2026-09-11T10:00:00+00:00",
         })
+        self.database["users"].append({
+            "id": "user_consultant",
+            "username": "dimitri",
+            "name": "Dimitri",
+            "role": tour_app.ROLE_CONSULTANT,
+            "permissions": [],
+            "consultantId": "con_dimitri",
+            "active": True,
+            "passwordHash": "unused",
+            "createdAt": "2026-09-11T10:00:00+00:00",
+        })
 
         self.patchers = [
             patch.object(tour_app, "POSTGRES_URL", ""),
@@ -110,6 +121,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "token-admin": {"userId": "user_admin", "expiresAt": expiry},
             "token-driver": {"userId": "user_driver", "expiresAt": expiry},
             "token-driver-two": {"userId": "user_driver_two", "expiresAt": expiry},
+            "token-consultant": {"userId": "user_consultant", "expiresAt": expiry},
         })
         self.addCleanup(tour_app.SESSIONS.clear)
         tour_app.app.config["TESTING"] = True
@@ -321,6 +333,127 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         })
         self.assertEqual(created.status_code, 409, created.get_json())
         self.assertIn("outro nome", created.get_json()["error"])
+
+    def test_consultant_login_is_scoped_and_each_completed_segment_releases_next_request(self) -> None:
+        headers = self.auth("token-consultant")
+        options = self.client.get("/api/consultant/support/options", headers=headers)
+        self.assertEqual(options.status_code, 200, options.get_json())
+        self.assertTrue(options.get_json()["consultantMode"])
+        self.assertEqual(options.get_json()["consultants"], [{"id": "con_dimitri", "name": "Dimitri"}])
+        self.assertEqual(options.get_json()["selfGens"], [])
+        mobile_options = self.client.get("/api/mobile/v1/consultant/support/options", headers=headers)
+        self.assertEqual(mobile_options.status_code, 200, mobile_options.get_json())
+        self.assertTrue(mobile_options.get_json()["consultantMode"])
+
+        prestige = self.client.post("/api/consultant/support-requests", headers=headers, json={
+            "tourId": "tour_01",
+            "routeStage": "PRESTIGE",
+            "guestLocation": "WAVES",
+        })
+        self.assertEqual(prestige.status_code, 201, prestige.get_json())
+        prestige_request_id = prestige.get_json()["request"]["id"]
+        self.assertEqual(self.database["hostessRequests"][0]["requestedById"], "user_consultant")
+
+        started = self.client.post(
+            f"/api/consultant-tour-requests/{prestige_request_id}/start",
+            headers=self.auth("token-driver"),
+        )
+        self.assertEqual(started.status_code, 200, started.get_json())
+        arrived = self.client.post("/api/tours/tour_01/action", headers=self.auth("token-driver"), json={
+            "action": "arrived-home",
+            "driverId": "drv_one",
+            "homeDecision": "DEIXOU_NA_CASA",
+        })
+        self.assertEqual(arrived.status_code, 200, arrived.get_json())
+        self.assertEqual(self.database["hostessRequests"][0]["status"], tour_app.HOSTESS_REQUEST_CLOSED)
+        self.assertEqual(self.database["tours"][0]["status"], tour_app.STATE_WAITING_HOME)
+
+        house_options = self.client.get("/api/consultant/support/options", headers=headers).get_json()
+        self.assertIsNone(house_options["activeRequest"])
+        self.assertEqual([item["id"] for item in house_options["tours"]], ["tour_01"])
+        house = self.client.post("/api/consultant/support-requests", headers=headers, json={
+            "tourId": "tour_01",
+            "routeStage": "CASA",
+            "guestLocation": "SELECTION",
+        })
+        self.assertEqual(house.status_code, 201, house.get_json())
+        house_request_id = house.get_json()["request"]["id"]
+        self.assertEqual(
+            self.client.post(f"/api/consultant-tour-requests/{house_request_id}/start", headers=self.auth("token-driver")).status_code,
+            200,
+        )
+        gallery_arrival = self.client.post("/api/tours/tour_01/action", headers=self.auth("token-driver"), json={
+            "action": "deliver-gallery",
+        })
+        self.assertEqual(gallery_arrival.status_code, 200, gallery_arrival.get_json())
+        house_record = next(item for item in self.database["hostessRequests"] if item["id"] == house_request_id)
+        self.assertEqual(house_record["status"], tour_app.HOSTESS_REQUEST_CLOSED)
+
+        gallery_options = self.client.get("/api/consultant/support/options", headers=headers).get_json()
+        self.assertIsNone(gallery_options["activeRequest"])
+        self.assertEqual(
+            {item["name"] for item in gallery_options["destinations"]},
+            {"Prestige Waves", "Prestige Selection", "Lobby Waves", "Lobby Selection"},
+        )
+        destination_id = next(item["id"] for item in gallery_options["destinations"] if item["name"] == "Prestige Waves")
+        gallery = self.client.post("/api/consultant/support-requests", headers=headers, json={
+            "tourId": "tour_01",
+            "routeStage": "GALERIA_EXIT",
+            "destinationId": destination_id,
+        })
+        self.assertEqual(gallery.status_code, 201, gallery.get_json())
+        gallery_request_id = gallery.get_json()["request"]["id"]
+        self.assertEqual(
+            self.client.post(f"/api/consultant-tour-requests/{gallery_request_id}/start", headers=self.auth("token-driver")).status_code,
+            200,
+        )
+        completed = self.client.post("/api/tours/tour_01/action", headers=self.auth("token-driver"), json={
+            "action": "complete-destination",
+        })
+        self.assertEqual(completed.status_code, 200, completed.get_json())
+        gallery_record = next(item for item in self.database["hostessRequests"] if item["id"] == gallery_request_id)
+        self.assertEqual(gallery_record["status"], tour_app.HOSTESS_REQUEST_CLOSED)
+
+    def test_admin_can_create_consultant_login_linked_to_existing_consultant(self) -> None:
+        created = self.client.post("/api/users", headers=self.auth("token-admin"), json={
+            "name": "Nome será substituído",
+            "username": "bruna",
+            "password": "senha-segura",
+            "role": "CONSULTOR",
+            "consultantId": "con_dimitri",
+            "permissions": ["VIEW_DASHBOARD"],
+        })
+        self.assertEqual(created.status_code, 409, created.get_json())
+        self.assertIn("já está vinculado", created.get_json()["error"])
+
+        self.database["users"] = [item for item in self.database["users"] if item["id"] != "user_consultant"]
+        created = self.client.post("/api/users", headers=self.auth("token-admin"), json={
+            "name": "Nome será substituído",
+            "username": "bruna",
+            "password": "senha-segura",
+            "role": "CONSULTOR",
+            "consultantId": "con_dimitri",
+            "permissions": ["VIEW_DASHBOARD"],
+        })
+        self.assertEqual(created.status_code, 201, created.get_json())
+        account = created.get_json()["user"]
+        self.assertEqual(account["name"], "Dimitri")
+        self.assertEqual(account["consultantId"], "con_dimitri")
+        self.assertEqual(account["permissions"], [])
+
+        login = self.client.post("/api/auth/login", json={
+            "username": "bruna",
+            "password": "senha-segura",
+        })
+        self.assertEqual(login.status_code, 200, login.get_json())
+        self.assertEqual(login.get_json()["user"]["role"], tour_app.ROLE_CONSULTANT)
+        consultant_headers = self.auth(login.get_json()["token"])
+        scoped_options = self.client.get("/api/consultant/support/options", headers=consultant_headers)
+        self.assertEqual(scoped_options.status_code, 200, scoped_options.get_json())
+        self.assertEqual(scoped_options.get_json()["consultants"], [{"id": "con_dimitri", "name": "Dimitri"}])
+        bootstrap = self.client.get("/api/bootstrap", headers=consultant_headers)
+        self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
+        self.assertEqual(bootstrap.get_json()["data"]["tours"], [])
 
 
 if __name__ == "__main__":

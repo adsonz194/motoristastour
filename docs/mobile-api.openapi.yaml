@@ -78,6 +78,43 @@ paths:
       security: []
       responses:
         '200': {description: Painel público sanitizado}
+  /consultant/support/options:
+    get:
+      tags: [Consultor]
+      summary: Lista somente os Tours do consultor autenticado e recupera seu pedido ativo
+      responses:
+        '200': {description: Identidade vinculada, Tours elegíveis, quatro destinos e pedido ativo}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /consultant/support-requests:
+    post:
+      tags: [Consultor]
+      summary: Solicita um motorista para o próximo trecho do Tour do consultor autenticado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tourId, routeStage]
+              properties:
+                tourId: {type: string}
+                routeStage: {type: string, enum: [PRESTIGE, CASA, GALERIA_EXIT]}
+                guestLocation: {type: [string, 'null'], enum: [WAVES, SELECTION, null]}
+                destinationId: {type: [string, 'null'], description: Obrigatório na saída da Galeria}
+                note: {type: string, maxLength: 500}
+      responses:
+        '201': {description: Pedido criado e vinculado ao usuário consultor}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /consultant/support-requests/{requestId}:
+    get:
+      tags: [Consultor]
+      summary: Acompanha somente um pedido pertencente ao consultor autenticado
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200': {description: Estado do pedido e localização do motorista designado}
+        '404': {$ref: '#/components/responses/NotFound'}
   /public/consultant-support/options:
     get:
       tags: [Público]

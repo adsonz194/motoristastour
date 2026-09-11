@@ -157,6 +157,7 @@ const ROLE_DEFAULT_PERMISSIONS = {
   MOTORISTA: ['VIEW_DASHBOARD', 'VIEW_PRESTIGE', 'VIEW_TOURS', 'VIEW_GALLERY', 'VIEW_HOME', 'VIEW_DESTINATIONS', 'VIEW_DRIVERS', 'CHECK_IN', 'SHARE_OWN_LOCATION', 'MANAGE_TOURS', 'MANAGE_DRIVER_SUPPORT', 'MANAGE_HOSTESS_SUPPORT'],
   HOSTESS: ['VIEW_DASHBOARD', 'VIEW_DRIVER_LOCATIONS', 'CHECK_IN', 'MANAGE_TOUR_QUANTITIES', 'REQUEST_HOSTESS_CAR'],
   CONCIERGE: ['VIEW_TRANSFERS', 'MANAGE_TRANSFERS'],
+  CONSULTOR: [],
   VISUALIZADOR: ['VIEW_DASHBOARD']
 };
 
@@ -351,7 +352,7 @@ function auditText(value, fallback = 'Não informado') {
 }
 
 function roleLabel(role) {
-  return ({ ADMIN: 'Administrador', MOTORISTA: 'Motorista', HOSTESS: 'Hostess', CONCIERGE: 'Concierge', VISUALIZADOR: 'Somente visualização' })[role] || role || '';
+  return ({ ADMIN: 'Administrador', MOTORISTA: 'Motorista', HOSTESS: 'Hostess', CONCIERGE: 'Concierge', CONSULTOR: 'Consultor', VISUALIZADOR: 'Somente visualização' })[role] || role || '';
 }
 
 function urlBase64ToUint8Array(value) {
@@ -418,7 +419,7 @@ function Login({ onLogin }) {
       <label>Senha<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Sua senha" required /></label>
       {error && <div className="form-error">{error}</div>}
       <button className="button button-primary login-submit" disabled={loading}>{loading ? <LoaderCircle className="spin" size={18} /> : <LockKeyhole size={18} />} Entrar no painel</button>
-      <a className="public-panel-link" href="/consultores"><CarFront size={16} /> Painel público dos consultores</a>
+      <small className="login-role-note">Consultores entram aqui com seu usuário e senha e acessam somente os próprios Tours.</small>
     </form></section>
   </main>;
 }
@@ -1027,11 +1028,11 @@ function PermissionSummary({ permissions, catalog, fallbackRole }) {
   return <span className="permission-summary" title={labels.join(' · ')}>{visible.join(' · ')}{remaining > 0 && <small>+{remaining}</small>}</span>;
 }
 
-function UserEditorModal({ account, drivers, permissionCatalog: catalogInput, onClose, token, refresh, notify }) {
+function UserEditorModal({ account, drivers, consultants, permissionCatalog: catalogInput, onClose, token, refresh, notify }) {
   const editing = Boolean(account);
   const catalog = permissionCatalog(catalogInput);
   const initialPermissions = selectedPermissionsForAccount(account, catalog);
-  const [form, setForm] = useState({ name: account?.name || '', username: account?.username || '', password: '', role: account?.role || 'MOTORISTA', active: account?.active ?? true, driverId: account?.driverId || '', checkInLocation: account?.checkInLocation || 'Prestige Praia do Forte', permissions: initialPermissions });
+  const [form, setForm] = useState({ name: account?.name || '', username: account?.username || '', password: '', role: account?.role || 'MOTORISTA', active: account?.active ?? true, driverId: account?.driverId || '', consultantId: account?.consultantId || '', checkInLocation: account?.checkInLocation || 'Prestige Praia do Forte', permissions: initialPermissions });
   const [saving, setSaving] = useState(false);
   const [permissionsRole, setPermissionsRole] = useState(account?.role || 'MOTORISTA');
   const permissionGroups = catalog.filter((permission) => permissionAllowedForRole(permission.code, form.role)).reduce((groups, permission) => {
@@ -1058,7 +1059,7 @@ function UserEditorModal({ account, drivers, permissionCatalog: catalogInput, on
     const payload = { ...form, permissions: Array.from(new Set(permissionsAllowedForRole(form.permissions, form.role))) };
     try { await api(token, editing ? `/api/users/${account.id}` : '/api/users', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload) }); await refresh(); notify(editing ? 'Usuário atualizado.' : 'Usuário criado com sucesso.', 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={editing ? 'Editar usuário' : 'Criar usuário'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>{editing ? 'Nova senha (opcional)' : 'Senha inicial'}<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required={!editing} /></label><label>Perfil<select value={form.role} onChange={(event) => { const role = event.target.value; setForm({ ...form, role, driverId: role === 'MOTORISTA' ? form.driverId : '' }); }}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="CONCIERGE">Concierge</option><option value="VISUALIZADOR">Somente visualização</option><option value="ADMIN">Administrador</option></select></label>{form.role === 'MOTORISTA' && <label>Motorista vinculado<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Criar automaticamente com este nome</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}{['MOTORISTA', 'HOSTESS'].includes(form.role) && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}<fieldset className="permissions-fieldset"><div className="permissions-heading"><div><legend>Permissões de acesso</legend><p>Marque exatamente o que este usuário pode ver ou fazer.</p></div><button type="button" className="text-button" onClick={applyRoleDefaults}>Usar sugestão do perfil</button></div><div className="permissions-readonly-note"><ShieldCheck size={17} /><span><strong>Ver Painel Geral</strong> sozinho deixa a conta em modo somente visualização: sem botões para alterar tours, motoristas ou cadastros.</span></div><div className="permission-groups">{Object.entries(permissionGroups).map(([group, permissions]) => <section className="permission-group" key={group}><h3>{group}</h3>{permissions.map((permission) => <label className="permission-option" key={permission.code}><input type="checkbox" checked={selectedPermissions.has(normalizedPermissionCode(permission.code))} onChange={() => togglePermission(permission.code)} /><span><strong>{permission.label}</strong><small>{permission.description}</small></span></label>)}</section>)}</div><div className="permission-selection-summary"><span>{selectedPermissions.size} permissão{selectedPermissions.size === 1 ? '' : 'ões'} selecionada{selectedPermissions.size === 1 ? '' : 's'}</span><PermissionSummary permissions={form.permissions} catalog={catalog} fallbackRole={form.role} />{readOnlyDashboard && <strong>Esta conta só poderá visualizar o Painel Geral.</strong>}</div></fieldset><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Usuário ativo</label><div className="role-help"><strong>Motorista:</strong> sem vínculo selecionado, o cadastro operacional é criado automaticamente e fica disponível após o check-in. <strong>Concierge:</strong> registra somente seus convites Waves e desistências; não cria nem mantém cadastro de motorista.</div><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Criar usuário'}</button></form></Modal>;
+  return <Modal title={editing ? 'Editar usuário' : 'Criar usuário'} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label><label>{editing ? 'Nova senha (opcional)' : 'Senha inicial'}<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required={!editing} /></label><label>Perfil<select value={form.role} onChange={(event) => { const role = event.target.value; setForm({ ...form, role, driverId: role === 'MOTORISTA' ? form.driverId : '', consultantId: role === 'CONSULTOR' ? form.consultantId : '' }); }}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="CONCIERGE">Concierge</option><option value="CONSULTOR">Consultor</option><option value="VISUALIZADOR">Somente visualização</option><option value="ADMIN">Administrador</option></select></label>{form.role === 'MOTORISTA' && <label>Motorista vinculado<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Criar automaticamente com este nome</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}{form.role === 'CONSULTOR' && <label>Consultor vinculado<select value={form.consultantId} onChange={(event) => { const consultantId = event.target.value; const selected = consultants.find((item) => String(item.id) === consultantId); setForm({ ...form, consultantId, name: selected?.name || form.name }); }} required><option value="">Selecione o consultor</option>{consultants.filter((item) => item.active !== false).map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}</select></label>}{['MOTORISTA', 'HOSTESS'].includes(form.role) && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}{form.role !== 'CONSULTOR' && <fieldset className="permissions-fieldset"><div className="permissions-heading"><div><legend>Permissões de acesso</legend><p>Marque exatamente o que este usuário pode ver ou fazer.</p></div><button type="button" className="text-button" onClick={applyRoleDefaults}>Usar sugestão do perfil</button></div><div className="permissions-readonly-note"><ShieldCheck size={17} /><span><strong>Ver Painel Geral</strong> sozinho deixa a conta em modo somente visualização: sem botões para alterar tours, motoristas ou cadastros.</span></div><div className="permission-groups">{Object.entries(permissionGroups).map(([group, permissions]) => <section className="permission-group" key={group}><h3>{group}</h3>{permissions.map((permission) => <label className="permission-option" key={permission.code}><input type="checkbox" checked={selectedPermissions.has(normalizedPermissionCode(permission.code))} onChange={() => togglePermission(permission.code)} /><span><strong>{permission.label}</strong><small>{permission.description}</small></span></label>)}</section>)}</div><div className="permission-selection-summary"><span>{selectedPermissions.size} permissão{selectedPermissions.size === 1 ? '' : 'ões'} selecionada{selectedPermissions.size === 1 ? '' : 's'}</span><PermissionSummary permissions={form.permissions} catalog={catalog} fallbackRole={form.role} />{readOnlyDashboard && <strong>Esta conta só poderá visualizar o Painel Geral.</strong>}</div></fieldset>}<label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Usuário ativo</label><div className="role-help">{form.role === 'CONSULTOR' ? <><strong>Consultor:</strong> acessa somente sua tela de solicitações e os Tours vinculados ao próprio nome.</> : <><strong>Motorista:</strong> sem vínculo selecionado, o cadastro operacional é criado automaticamente e fica disponível após o check-in. <strong>Concierge:</strong> registra somente seus convites Waves e desistências.</>}</div><button className="button button-primary" disabled={saving || (form.role === 'CONSULTOR' && !form.consultantId)}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Criar usuário'}</button></form></Modal>;
 }
 
 function OperationSettingsPanel({ data, token, refresh, notify }) {
@@ -1258,7 +1259,7 @@ function SettingsPage({ data, user, token, refresh, notify }) {
       <OperationSettingsPanel data={data} token={token} refresh={refresh} notify={notify} />
       <section className="operation-reset"><div><h2>Zerar dados operacionais</h2><p>Remove tours, convites Waves, filas, atividades, check-ins e indicadores de motoristas. Usuários e cadastros são preservados.</p></div><button className="button button-danger" onClick={() => setResetOpen(true)}>Zerar operação</button></section>
     </>}
-    {editor && canManageUsers && <UserEditorModal key={editor.id || 'new'} account={editor.id ? editor : null} drivers={data.drivers} permissionCatalog={catalog} onClose={() => setEditor(null)} token={token} refresh={refresh} notify={notify} />}
+    {editor && canManageUsers && <UserEditorModal key={editor.id || 'new'} account={editor.id ? editor : null} drivers={data.drivers} consultants={data.consultants || []} permissionCatalog={catalog} onClose={() => setEditor(null)} token={token} refresh={refresh} notify={notify} />}
     {resetOpen && canManageSettings && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove tours, convites Waves, filas, histórico, check-ins e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}
     {deletingUser && canManageUsers && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}
   </>;
@@ -1332,7 +1333,7 @@ function Modal({ title, onClose, children }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button onClick={onClose} aria-label="Fechar"><X size={21} /></button></div>{children}</section></div>;
 }
 
-function ConsultantDriverPanel() {
+function ConsultantDriverPanel({ token, user, onLogout }) {
   const [board, setBoard] = useState({ drivers: [], operationDate: '' });
   const [consultants, setConsultants] = useState([]);
   const [selfGens, setSelfGens] = useState([]);
@@ -1367,22 +1368,44 @@ function ConsultantDriverPanel() {
   const loadOptions = useCallback(async () => {
     setOptionsLoading(true);
     try {
-      const payload = await api('', '/api/public/consultant-support/options');
+      const payload = await api(token, '/api/consultant/support/options');
       const values = (Array.isArray(payload.consultants) ? payload.consultants : []).filter((item) => item?.id && item?.name && item.active !== false);
       const selfGenValues = (Array.isArray(payload.selfGens) ? payload.selfGens : []).filter((item) => item?.id && item?.name && item.active !== false);
       setConsultants(values);
       setSelfGens(selfGenValues);
-      setTours(Array.isArray(payload.tours) ? payload.tours : []);
+      const scopedTours = Array.isArray(payload.tours) ? payload.tours : [];
+      setTours(scopedTours);
       setDestinations(Array.isArray(payload.destinations) ? payload.destinations : []);
       setConsultantId((current) => values.some((item) => String(item.id) === String(current)) ? current : String(values[0]?.id || ''));
       setSelfGenId((current) => selfGenValues.some((item) => String(item.id) === String(current)) ? current : String(selfGenValues[0]?.id || ''));
+      const stageHasTour = (stage) => scopedTours.some((tour) => {
+        if (tour.requestOpen) return false;
+        if (stage === 'CASA') return ['NA_CASA', 'AGUARDANDO_CASA'].includes(tour.status);
+        if (stage === 'GALERIA_EXIT') return tour.status === 'AGUARDANDO_DESTINO';
+        return tour.status === 'DISPONIVEL';
+      });
+      setRouteStage((current) => {
+        if (stageHasTour(current)) return current;
+        if (stageHasTour('CASA')) return 'CASA';
+        if (stageHasTour('GALERIA_EXIT')) return 'GALERIA_EXIT';
+        return 'PRESTIGE';
+      });
+      const currentRequest = payload.activeRequest && typeof payload.activeRequest === 'object' ? payload.activeRequest : null;
+      if (currentRequest?.id) {
+        setRequestAccess({ requestId: String(currentRequest.id), accessToken: '' });
+        setActiveRequest(currentRequest);
+      } else {
+        clearConsultantSupportAccess();
+        setRequestAccess(null);
+        setActiveRequest(null);
+      }
       setOptionsError('');
     } catch (requestError) {
       setOptionsError(requestError.message || 'Não foi possível carregar os consultores.');
     } finally {
       setOptionsLoading(false);
     }
-  }, []);
+  }, [token]);
   useEffect(() => {
     loadBoard();
     const timer = window.setInterval(loadBoard, 30000);
@@ -1397,7 +1420,7 @@ function ConsultantDriverPanel() {
     setRequestSaving(true);
     setRequestError('');
     try {
-      const payload = await api('', '/api/public/consultant-support-requests', {
+      const payload = await api(token, '/api/consultant/support-requests', {
         method: 'POST',
         body: JSON.stringify({
           identityType,
@@ -1415,7 +1438,7 @@ function ConsultantDriverPanel() {
         requestId: String(nextRequest?.id || payload.requestId || '').trim(),
         accessToken: String(payload.accessToken || '').trim()
       };
-      if (!nextAccess.requestId || !nextAccess.accessToken) throw new Error('O servidor não liberou o acompanhamento deste pedido.');
+      if (!nextAccess.requestId) throw new Error('O servidor não liberou o acompanhamento deste pedido.');
       storeConsultantSupportAccess(nextAccess);
       setRequestAccess(nextAccess);
       setActiveRequest(nextRequest);
@@ -1432,9 +1455,20 @@ function ConsultantDriverPanel() {
     clearConsultantSupportAccess();
     setRequestAccess(null);
     setActiveRequest(null);
-    setRequestError('Este pedido não está mais disponível neste aparelho. Faça uma nova solicitação se ainda precisar de apoio.');
-  }, []);
-  const handleRequestChange = useCallback((nextRequest) => { setActiveRequest(nextRequest); }, []);
+    setRequestError('Este pedido foi encerrado. Você já pode solicitar o próximo trecho.');
+    loadOptions();
+  }, [loadOptions]);
+  const handleRequestChange = useCallback((nextRequest) => {
+    if (publicSupportRequestIsClosed(nextRequest)) {
+      clearConsultantSupportAccess();
+      setRequestAccess(null);
+      setActiveRequest(null);
+      setRequestError('Trecho concluído. Você já pode solicitar o próximo carrinho.');
+      loadOptions();
+      return;
+    }
+    setActiveRequest(nextRequest);
+  }, [loadOptions]);
   function startAnotherRequest() {
     clearConsultantSupportAccess();
     setRequestAccess(null);
@@ -1459,18 +1493,17 @@ function ConsultantDriverPanel() {
   });
 
   return <main className="consultant-public-page">
-    <header className="consultant-public-header"><Logo /><a href="/" className="public-login-link"><LockKeyhole size={16} /> Acesso da equipe</a></header>
-    <section className="consultant-public-hero"><span>PAINEL DE CONSULTOR E SELF GEN</span><h1>Solicitação por número do Tour</h1><p>Informe onde o hóspede está. O pedido fica atrelado ao Tour e o motorista recebe a rota pronta para iniciar.</p></section>
+    <header className="consultant-public-header"><Logo /><button type="button" className="public-login-link" onClick={onLogout}><LogOut size={16} /> Sair</button></header>
+    <section className="consultant-public-hero"><span>ÁREA EXCLUSIVA DO CONSULTOR</span><h1>{user?.name || 'Consultor'}, solicite seu carrinho</h1><p>Cada pedido acompanha um trecho do Tour. Ao chegar à Casa ou à Galeria, o trecho encerra e o próximo pedido é liberado.</p></section>
     <section className="consultant-public-summary"><CarFront size={28} /><div><strong>{board.drivers.length}</strong><span>motorista{board.drivers.length === 1 ? '' : 's'} ativo{board.drivers.length === 1 ? '' : 's'}</span></div><small>Operação: {board.operationDate || '—'}</small></section>
     {requestError && <div className="consultant-public-error" role="alert">{requestError}</div>}
     {requestAccess ? <>
-      <ConsultantSupportLocationPanel requestId={requestAccess.requestId} accessToken={requestAccess.accessToken} initialRequest={activeRequest} onRequestChange={handleRequestChange} onUnavailable={handleRequestUnavailable} />
+      <ConsultantSupportLocationPanel requestId={requestAccess.requestId} accessToken={requestAccess.accessToken} authToken={token} initialRequest={activeRequest} onRequestChange={handleRequestChange} onUnavailable={handleRequestUnavailable} />
       {requestClosed && <div className="consultant-support-reset"><button className="button button-primary" type="button" onClick={startAnotherRequest}><HandHeart size={17} /> Fazer novo pedido</button></div>}
     </> : <section className="consultant-support-request">
-      <div className="consultant-support-request-copy"><span>SOLICITAR CARRINHO</span><h2>Onde o hóspede está?</h2><p>Selecione seu nome, o número do Tour e a etapa. O motorista não precisará preencher novamente os dados do consultor.</p><small><ShieldCheck size={15} /> Depois que o motorista iniciar, a posição dele aparece somente para quem abriu este pedido.</small></div>
+      <div className="consultant-support-request-copy"><span>SOLICITAR CARRINHO</span><h2>Onde o hóspede está?</h2><p>Escolha o número do seu Tour e o trecho que precisa de motorista.</p><small><ShieldCheck size={15} /> Esta conta mostra somente os Tours vinculados a {user?.name || 'este consultor'}.</small></div>
       <form className="consultant-support-form" onSubmit={requestSupport}>
-        <label>Tipo de responsável<select value={identityType} onChange={(event) => { setIdentityType(event.target.value); setTourId(''); }} disabled={optionsLoading || requestSaving}><option value="CONSULTANT">Consultor</option><option value="SELF_GEN">Self Gen</option></select></label>
-        <label>Seu nome<select value={identityId} onChange={(event) => { identityType === 'SELF_GEN' ? setSelfGenId(event.target.value) : setConsultantId(event.target.value); setTourId(''); }} required disabled={optionsLoading || requestSaving}><option value="">Selecione o nome</option>{identityOptions.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label>
+        <div className="consultant-identity-lock"><ShieldCheck size={18} /><div><span>Consultor conectado</span><strong>{identityName || user?.name || 'Consultor'}</strong></div></div>
         <div className="consultant-route-field"><span>Local do pedido</span><div className="consultant-route-options" role="group" aria-label="Local do pedido">{[['PRESTIGE', 'Prestige'], ['CASA', 'Casa — buscar hóspedes'], ['GALERIA_EXIT', 'Galeria — levar ao destino']].map(([value, label]) => <button key={value} type="button" className={classNames('consultant-route-option', routeStage === value && 'active')} aria-pressed={routeStage === value} onClick={() => { setRouteStage(value); setTourId(''); setDestinationId(''); }} disabled={requestSaving}>{label}</button>)}</div></div>
         {routeStage !== 'GALERIA_EXIT' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving}><option value="WAVES">Waves</option><option value="SELECTION">Selection</option></select></label>}
         <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">{routeStage === 'CASA' ? 'Nenhum Tour deste nome está aguardando busca na Casa.' : routeStage === 'GALERIA_EXIT' ? 'Nenhum Tour deste nome está aguardando saída da Galeria.' : 'Não há Tour disponível para este nome e esta etapa.'}</small>}</label>
@@ -1575,6 +1608,7 @@ function App() {
       try { await api(token, '/api/drivers/me/location-sharing', { method: 'DELETE' }); } catch { /* An expired point is hidden automatically. */ }
     }
     try { await api(token, '/api/auth/logout', { method: 'POST' }); } catch { /* session may already be gone */ }
+    clearConsultantSupportAccess();
     localStorage.removeItem('iberostar-tour-token'); setToken(''); setUser(null); setData(null);
   }
   const content = useMemo(() => {
@@ -1602,11 +1636,12 @@ function App() {
   }, [data, user, page, token]);
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
+  if (user.role === 'CONSULTOR') return <ConsultantDriverPanel token={token} user={user} onLogout={signOut} />;
   return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} operationSettings={data.operationSettings} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && can(user, 'CHECK_IN') && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{user.role === 'MOTORISTA' && can(user, 'SHARE_OWN_LOCATION') && <DriverLocationSharingCard data={data} user={user} token={token} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{<MobileNav page={page} setPage={setPage} user={user} operationSettings={data.operationSettings} />}</div>;
 }
 
 function Root() {
-  return window.location.pathname.startsWith('/consultores') ? <ConsultantDriverPanel /> : <App />;
+  return <App />;
 }
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><Root /></React.StrictMode>);

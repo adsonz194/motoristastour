@@ -52,8 +52,9 @@ ROLE_ADMIN = "ADMIN"
 ROLE_DRIVER = "MOTORISTA"
 ROLE_HOSTESS = "HOSTESS"
 ROLE_CONCIERGE = "CONCIERGE"
+ROLE_CONSULTANT = "CONSULTOR"
 ROLE_VIEWER = "VISUALIZADOR"
-ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE, ROLE_VIEWER}
+ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE, ROLE_CONSULTANT, ROLE_VIEWER}
 
 # A role is an initial access template, not an irrevocable authorization.
 # Administrators can tailor the explicit permissions of every account when it
@@ -142,6 +143,9 @@ DEFAULT_ROLE_PERMISSIONS = {
         PERMISSION_VIEW_TRANSFERS,
         PERMISSION_MANAGE_TRANSFERS,
     },
+    # Consultants use a dedicated, identity-scoped portal. They never inherit
+    # access to the operational dashboard or another consultant's requests.
+    ROLE_CONSULTANT: set(),
     ROLE_VIEWER: {PERMISSION_VIEW_DASHBOARD},
 }
 
@@ -1361,6 +1365,8 @@ def operational_database() -> dict[str, Any]:
         tour["phase"] = "Galeria"
         tour["updatedAt"] = timestamp()
         schema_updated = True
+    if reconcile_completed_consultant_requests(db):
+        schema_updated = True
     if enforce_driver_checkin(db):
         schema_updated = True
     if ensure_operational_day(db) or schema_updated:
@@ -1641,8 +1647,10 @@ def require_admin(user: dict[str, Any]) -> None:
     require_settings_management(user)
 
 
-def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
+def get_optional_current_user(db: dict[str, Any]) -> dict[str, Any] | None:
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token:
+        return None
     session = SESSIONS.get(token)
     if session and session["expiresAt"] < datetime.now(timezone.utc):
         SESSIONS.pop(token, None)
@@ -1650,10 +1658,15 @@ def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
     if not session:
         session = mobile_api_session_for_token(db, token)
     if not session:
-        raise APIError("Sessão inválida ou expirada.", 401)
+        return None
     user = next((item for item in db["users"] if item["id"] == session["userId"] and item["active"]), None)
+    return user
+
+
+def get_current_user(db: dict[str, Any]) -> dict[str, Any]:
+    user = get_optional_current_user(db)
     if not user:
-        raise APIError("Usuário sem acesso.", 401)
+        raise APIError("Sessão inválida ou expirada.", 401)
     return user
 
 
@@ -2131,6 +2144,23 @@ def validate_driver_link(db: dict[str, Any], driver_id: Any, user_id: str | None
     if any(item.get("driverId") == driver_id and item["id"] != user_id for item in db["users"]):
         raise APIError("Esse motorista já está vinculado a outro usuário.", 409)
     return driver_id
+
+
+def validate_consultant_link(db: dict[str, Any], consultant_id: Any, user_id: str | None = None) -> str:
+    consultant_id = str(consultant_id or "").strip()
+    if not consultant_id:
+        raise APIError("Selecione o consultor vinculado a este login.")
+    consultant = find(db.get("consultants", []), consultant_id, "Consultor")
+    if not consultant.get("active", True):
+        raise APIError("Esse consultor está inativo e não pode receber um login.", 409)
+    if any(
+        item.get("role") == ROLE_CONSULTANT
+        and item.get("consultantId") == consultant_id
+        and item.get("id") != user_id
+        for item in db.get("users", [])
+    ):
+        raise APIError("Esse consultor já está vinculado a outro usuário.", 409)
+    return consultant_id
 
 
 def remove_driver_for_role_change(db: dict[str, Any], driver_id: str, user_id: str) -> None:
@@ -2700,6 +2730,60 @@ def is_consultant_route_request(car_request: dict[str, Any]) -> bool:
     )
 
 
+def consultant_request_stage_is_complete(car_request: dict[str, Any], tour: dict[str, Any]) -> bool:
+    """Return whether the exact requested route segment has been delivered."""
+    stage = car_request.get("routeStage")
+    status = tour.get("status")
+    phase = str(tour.get("phase") or "")
+    if stage == "PRESTIGE":
+        return status in {
+            STATE_HOME,
+            STATE_WAITING_HOME,
+            STATE_WAITING_DESTINATION,
+            STATE_FINAL_DESTINATION,
+            STATE_COMPLETE,
+        } or phase in {"Casa", "Casa → Galeria", "Galeria", "Destino final", "Concluído"}
+    if stage == "CASA":
+        return status in {STATE_WAITING_DESTINATION, STATE_FINAL_DESTINATION, STATE_COMPLETE}
+    if stage == "GALERIA_EXIT":
+        return status == STATE_COMPLETE
+    return False
+
+
+def reconcile_completed_consultant_requests(
+    db: dict[str, Any],
+    user: dict[str, Any] | None = None,
+    tour: dict[str, Any] | None = None,
+) -> bool:
+    """Close completed route calls without altering the Tour's driver state."""
+    changed = False
+    tours_by_id = {item.get("id"): item for item in db.get("tours", [])}
+    actor = user or {"id": "system", "name": "Sistema"}
+    active_statuses = {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+    for car_request in db.get("hostessRequests", []):
+        if not is_consultant_route_request(car_request) or car_request.get("status") not in active_statuses:
+            continue
+        linked_tour = tour if tour and tour.get("id") == car_request.get("tourId") else tours_by_id.get(car_request.get("tourId"))
+        if not linked_tour or not consultant_request_stage_is_complete(car_request, linked_tour):
+            continue
+        closed_at = timestamp()
+        stage_label = car_request.get("routeStageLabel") or CONSULTANT_ROUTE_STAGES.get(car_request.get("routeStage"), "Rota")
+        car_request.update({
+            "status": HOSTESS_REQUEST_CLOSED,
+            "closedAt": closed_at,
+            "closedById": actor.get("id"),
+            "closedByName": actor.get("name", "Sistema"),
+            "closedReason": f"Trecho {stage_label} concluído.",
+            "updatedAt": closed_at,
+        })
+        remove_hostess_request_location(db, car_request.get("id"))
+        if linked_tour.get("pendingConsultantRequestId") == car_request.get("id"):
+            linked_tour.pop("pendingConsultantRequestId", None)
+            linked_tour["updatedAt"] = closed_at
+        changed = True
+    return changed
+
+
 def public_consultant_support_request_payload(car_request: dict[str, Any]) -> dict[str, Any]:
     """Expose only the caller's request summary, never ownership internals."""
     payload = {
@@ -2731,7 +2815,12 @@ def public_support_access_token_digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def consultant_support_request_for_access(db: dict[str, Any], request_id: str, access_token: Any) -> dict[str, Any]:
+def consultant_support_request_for_access(
+    db: dict[str, Any],
+    request_id: str,
+    access_token: Any,
+    requester_user: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Resolve one public request through an unguessable per-request capability."""
     car_request = next(
         (
@@ -2742,6 +2831,11 @@ def consultant_support_request_for_access(db: dict[str, Any], request_id: str, a
         ),
         None,
     )
+    if requester_user and requester_user.get("role") == ROLE_CONSULTANT:
+        consultant = consultant_for_account(db, requester_user)
+        if car_request and car_request.get("consultantId") == consultant.get("id"):
+            return car_request
+        raise APIError("Acompanhamento de apoio não encontrado.", 404)
     token = str(access_token or "").strip()
     valid_supplied_token = bool(token) and len(token) <= 512
     supplied_digest = public_support_access_token_digest(token) if valid_supplied_token else "0" * 64
@@ -2834,6 +2928,7 @@ def change_tour_state(db: dict[str, Any], user: dict[str, Any], tour: dict[str, 
     tour["status"] = next_state
     tour["updatedAt"] = timestamp()
     log_activity(db, user, tour, previous, next_state, message)
+    reconcile_completed_consultant_requests(db, user, tour)
 
 
 def change_transfer_state(db: dict[str, Any], user: dict[str, Any], transfer: dict[str, Any], next_state: str, message: str) -> None:
@@ -2983,6 +3078,15 @@ def tour_identity_matches(
         return linked_identity_id == str(identity.get("id") or "").strip()
     linked_identity_name = normalized_identity_name(tour.get(identity_name_field))
     return bool(linked_identity_name) and linked_identity_name == normalized_identity_name(identity.get("name"))
+
+
+def consultant_for_account(db: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    if user.get("role") != ROLE_CONSULTANT:
+        raise APIError("Esta área é exclusiva dos consultores.", 403)
+    consultant = find(db.get("consultants", []), user.get("consultantId"), "Consultor vinculado")
+    if not consultant.get("active", True):
+        raise APIError("O cadastro deste consultor está inativo.", 403)
+    return consultant
 
 
 def quantity_slot_number(tour: dict[str, Any]) -> int | None:
@@ -3620,10 +3724,14 @@ def public_driver_status():
 
 
 @app.get("/api/public/consultant-support/options")
+@app.get("/api/consultant/support/options")
 def public_consultant_support_options():
     """List active identities and safe route slots for the public cart form."""
     with DB_LOCK:
         db = operational_database()
+        authenticated_consultant = None
+        if "/consultant/" in request.path:
+            authenticated_consultant = consultant_for_account(db, get_current_user(db))
         consultants = sorted(
             (
                 {"id": item.get("id"), "name": item.get("name")}
@@ -3665,6 +3773,36 @@ def public_consultant_support_options():
                 STATE_WAITING_DESTINATION,
             }
         ]
+        active_request = None
+        if authenticated_consultant:
+            consultants = [{"id": authenticated_consultant["id"], "name": authenticated_consultant["name"]}]
+            self_gens = []
+            tours = [
+                item for item in tours
+                if not item.get("selfGuide")
+                and (
+                    (
+                        item.get("status") == STATE_AVAILABLE
+                        and not item.get("consultantId")
+                        and not item.get("consultantName")
+                    )
+                    or tour_identity_matches(
+                        item,
+                        authenticated_consultant,
+                        "consultantId",
+                        "consultantName",
+                    )
+                )
+            ]
+            active_request = next(
+                (
+                    public_consultant_support_request_payload(item)
+                    for item in db.get("hostessRequests", [])
+                    if item.get("consultantId") == authenticated_consultant["id"]
+                    and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+                ),
+                None,
+            )
         response = jsonify(
             operationDate=db["operationDate"],
             consultants=consultants,
@@ -3676,12 +3814,15 @@ def public_consultant_support_options():
                 {"id": item.get("id"), "name": item.get("name")}
                 for item in db.get("destinations", []) if item.get("active", True)
             ],
+            consultantMode=bool(authenticated_consultant),
+            activeRequest=active_request,
         )
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
 
 @app.post("/api/public/consultant-support-requests")
+@app.post("/api/consultant/support-requests")
 def create_public_consultant_support_request():
     """Open a legacy support call or a Tour-bound cart request."""
     payload = request.get_json(silent=True)
@@ -3694,15 +3835,23 @@ def create_public_consultant_support_request():
     identity_type = str(payload.get("identityType") or CONSULTANT_REQUESTER).strip().upper()
     consultant_id = str(payload.get("consultantId") or "").strip()
     self_gen_id = str(payload.get("selfGenId") or "").strip()
-    if identity_type not in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}:
+    authenticated_consultant_endpoint = "/consultant/" in request.path
+    if not authenticated_consultant_endpoint and identity_type not in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}:
         raise APIError("Selecione Consultor ou Self Gen.")
-    if identity_type == CONSULTANT_REQUESTER and not consultant_id:
+    if not authenticated_consultant_endpoint and identity_type == CONSULTANT_REQUESTER and not consultant_id:
         raise APIError("Selecione o consultor que está solicitando o carrinho.")
-    if identity_type == SELF_GEN_REQUESTER and not self_gen_id:
+    if not authenticated_consultant_endpoint and identity_type == SELF_GEN_REQUESTER and not self_gen_id:
         raise APIError("Selecione o nome do Self Gen que está solicitando o carrinho.")
 
     with DB_LOCK:
         db = operational_database()
+        requester_user = None
+        if "/consultant/" in request.path:
+            requester_user = get_current_user(db)
+            authenticated_consultant = consultant_for_account(db, requester_user)
+            identity_type = CONSULTANT_REQUESTER
+            consultant_id = authenticated_consultant["id"]
+            self_gen_id = ""
         if identity_type == SELF_GEN_REQUESTER:
             identity = find(db.get("selfGens", []), self_gen_id, "Self Gen")
             identity_id_field = "selfGenId"
@@ -3716,7 +3865,7 @@ def create_public_consultant_support_request():
         if any(
             item.get("requesterType") == identity_type
             and item.get(identity_id_field) == identity["id"]
-            and item.get("status") == HOSTESS_REQUEST_OPEN
+            and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
             for item in db.setdefault("hostessRequests", [])
         ):
             raise APIError(f"{identity['name']} já possui uma solicitação de carrinho aberta.", 409)
@@ -3815,7 +3964,7 @@ def create_public_consultant_support_request():
             "id": new_id("supportreq"),
             "status": HOSTESS_REQUEST_OPEN,
             "requesterType": identity_type,
-            "requestedById": None,
+            "requestedById": requester_user.get("id") if requester_user else None,
             "requestedByName": identity["name"],
             "consultantId": identity["id"] if identity_type == CONSULTANT_REQUESTER else None,
             "consultantName": identity["name"] if identity_type == CONSULTANT_REQUESTER else None,
@@ -3869,14 +4018,17 @@ def create_public_consultant_support_request():
 
 
 @app.get("/api/public/consultant-support-requests/<request_id>")
+@app.get("/api/consultant/support-requests/<request_id>")
 def public_consultant_support_request(request_id: str):
     """Track only the driver assigned to the capability's own request."""
     with DB_LOCK:
         db = operational_database()
+        requester_user = get_current_user(db) if "/consultant/" in request.path else None
         car_request = consultant_support_request_for_access(
             db,
             request_id,
             request.headers.get(PUBLIC_SUPPORT_ACCESS_HEADER),
+            requester_user,
         )
         local_now = driver_location_now()
         reconciled = purge_driver_locations_after_cutoff(db, local_now)
@@ -4224,11 +4376,18 @@ def create_user():
         if any(item["username"] == username for item in db["users"]):
             raise APIError("Esse usuário já existe.", 409)
         driver_id = validate_driver_link(db, payload.get("driverId")) if role == ROLE_DRIVER else None
+        consultant_id = validate_consultant_link(db, payload.get("consultantId")) if role == ROLE_CONSULTANT else None
+        if consultant_id:
+            name = find(db.get("consultants", []), consultant_id, "Consultor")["name"]
         permissions = normalize_permissions(payload.get("permissions"), role, strict=True) if "permissions" in payload else default_permissions_for_role(role)
+        if role == ROLE_CONSULTANT:
+            permissions = []
         require_user_management_scope(user, role, permissions)
         new_user = {"id": new_id("user"), "username": username, "name": name, "role": role, "permissions": permissions, "active": True, "passwordHash": generate_password_hash(password), "createdAt": timestamp()}
         if driver_id:
             new_user["driverId"] = driver_id
+        if consultant_id:
+            new_user["consultantId"] = consultant_id
         if role in {ROLE_DRIVER, ROLE_HOSTESS} or PERMISSION_CHECK_IN in permissions:
             new_user["checkInLocation"] = str(payload.get("checkInLocation", "")).strip() or "Prestige Praia do Forte"
         db["users"].append(new_user)
@@ -4276,9 +4435,15 @@ def update_user(user_id: str):
             permissions = default_permissions_for_role(role)
         else:
             permissions = normalize_permissions(target.get("permissions"), role)
+        if role == ROLE_CONSULTANT:
+            permissions = []
         require_user_management_scope(current_user, role, permissions, target)
         driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
         driver_id = validate_driver_link(db, driver_id, target["id"])
+        consultant_id = payload.get("consultantId", target.get("consultantId")) if role == ROLE_CONSULTANT else None
+        consultant_id = validate_consultant_link(db, consultant_id, target["id"]) if role == ROLE_CONSULTANT else None
+        if consultant_id:
+            name = find(db.get("consultants", []), consultant_id, "Consultor")["name"]
         if previous_role == ROLE_DRIVER and role != ROLE_DRIVER and previous_driver_id:
             remove_driver_for_role_change(db, previous_driver_id, target["id"])
         target.update({"name": name, "username": username, "role": role, "permissions": permissions, "active": active})
@@ -4288,6 +4453,10 @@ def update_user(user_id: str):
             target["driverId"] = driver_id
         else:
             target.pop("driverId", None)
+        if consultant_id:
+            target["consultantId"] = consultant_id
+        else:
+            target.pop("consultantId", None)
         if role in {ROLE_DRIVER, ROLE_HOSTESS} or PERMISSION_CHECK_IN in permissions:
             target["checkInLocation"] = str(payload.get("checkInLocation", target.get("checkInLocation", ""))).strip() or "Prestige Praia do Forte"
         else:
@@ -5167,6 +5336,12 @@ def update_consultant(consultant_id: str):
         if not name:
             raise APIError("Informe o nome do consultor.")
         consultant.update({"name": name, "active": bool(payload["active"]) if "active" in payload else consultant.get("active", True)})
+        for account in db.get("users", []):
+            if account.get("role") == ROLE_CONSULTANT and account.get("consultantId") == consultant_id:
+                account["name"] = name
+                if not consultant.get("active", True):
+                    account["active"] = False
+                    delete_mobile_api_sessions_for_user(db, account["id"])
         log_activity(db, user, None, None, None, f"Consultor {name} atualizado.")
         save_database(db)
         return jsonify(consultant=consultant)
@@ -5179,6 +5354,8 @@ def delete_consultant(consultant_id: str):
         user = get_current_user(db)
         require_permission(user, PERMISSION_MANAGE_CONSULTANTS, "Seu usuário não possui permissão para gerenciar consultores.")
         consultant = find(db["consultants"], consultant_id, "Consultor")
+        if any(item.get("role") == ROLE_CONSULTANT and item.get("consultantId") == consultant_id for item in db.get("users", [])):
+            raise APIError("Exclua primeiro o usuário de acesso vinculado a este consultor.", 409)
         db["consultants"] = [item for item in db["consultants"] if item["id"] != consultant_id]
         log_activity(db, user, None, None, None, f"Consultor {consultant['name']} excluído.")
         save_database(db)

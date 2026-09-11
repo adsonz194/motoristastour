@@ -1027,7 +1027,7 @@ function scopedRequestLocation(payload, request) {
 }
 
 
-export function ConsultantSupportLocationPanel({ requestId, accessToken, initialRequest = null, onRequestChange, onUnavailable }) {
+export function ConsultantSupportLocationPanel({ requestId, accessToken, authToken = '', initialRequest = null, onRequestChange, onUnavailable }) {
   const localSharingWindow = useSalvadorSharingWindow();
   const [request, setRequest] = useState(initialRequest);
   const [location, setLocation] = useState(null);
@@ -1063,15 +1063,15 @@ export function ConsultantSupportLocationPanel({ requestId, accessToken, initial
   }, [requestId, accessToken]);
 
   useEffect(() => {
-    if (!requestId || !accessToken) return undefined;
+    if (!requestId || (!accessToken && !authToken)) return undefined;
     let active = true;
     let requestController = null;
     async function loadRequest() {
       if (requestController) return;
       requestController = new AbortController();
       try {
-        const payload = await locationApi('', `/api/public/consultant-support-requests/${encodeURIComponent(requestId)}`, {
-          headers: { 'X-Support-Access-Token': accessToken },
+        const payload = await locationApi(authToken, `/api/consultant/support-requests/${encodeURIComponent(requestId)}`, {
+          headers: accessToken ? { 'X-Support-Access-Token': accessToken } : {},
           signal: requestController.signal
         });
         if (!active) return;
@@ -1116,7 +1116,7 @@ export function ConsultantSupportLocationPanel({ requestId, accessToken, initial
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [requestId, accessToken, reloadKey]);
+  }, [requestId, accessToken, authToken, reloadKey]);
 
   const ageNow = useLocationAgeClock(location ? [location] : [], [agePolicy.staleAfterSeconds]);
   const requestClosed = consultantRequestIsClosed(request);
