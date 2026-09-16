@@ -115,3 +115,7 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 # Self Gen e versão obrigatória do app
 
 Veja [o guia de implantação](docs/SELFGEN_ATUALIZACOES.md). As alterações do site/API e do app Android precisam ser publicadas em conjunto, começando pelo servidor. A exigência de versão vem desativada (`mobile-update.json`, código 0) até haver um APK assinado, publicado e testado.
+
+O APK está temporariamente suspenso por `mobileAppEnabled: false` nesse mesmo arquivo. O bloqueio se aplica à API móvel e às sessões móveis existentes; o site e o atalho/PWA do iPhone continuam disponíveis. A reativação exige alterar explicitamente esse campo para `true` depois da validação do aplicativo.
+
+O início manual de Tour agora respeita pedidos de carrinho já vinculados: se o consultor ou Self Gen tem pedido ativo em outro número, o servidor recusa a ação e orienta atender o Tour correto. Identidades divergentes de um Tour já vinculado também são recusadas, inclusive em clientes antigos. Roteiros anteriores encerrados não impedem um novo atendimento.

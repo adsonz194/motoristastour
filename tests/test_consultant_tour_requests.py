@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -187,6 +188,209 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertNotIn("pendingConsultantRequestId", tour)
         self.assertEqual(started.get_json()["request"]["status"], tour_app.HOSTESS_REQUEST_IN_PROGRESS)
         self.assertEqual(started.get_json()["request"]["assignedDriverName"], "Motorista Um")
+
+    def test_legacy_start_cannot_bypass_another_tours_active_request(self) -> None:
+        self.database["tours"].append(self._tour("tour_05", "Tour 05"))
+        created = self.client.post("/api/consultant/support-requests", headers=self.auth("token-consultant"), json={
+            "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        request_id = created.json["request"]["id"]
+        for request_status in (tour_app.HOSTESS_REQUEST_OPEN, tour_app.HOSTESS_REQUEST_IN_PROGRESS):
+            if request_status == tour_app.HOSTESS_REQUEST_IN_PROGRESS:
+                accepted = self.client.post(
+                    f"/api/consultant-tour-requests/{request_id}/start", headers=self.auth("token-driver"),
+                )
+                self.assertEqual(accepted.status_code, 200, accepted.json)
+            for prefix in ("/api", "/api/mobile/v1"):
+                with self.subTest(request_status=request_status, prefix=prefix):
+                    before = deepcopy(self.database)
+                    rejected = self.client.post(f"{prefix}/tours/tour_05/action", headers=self.auth("token-driver-two"), json={
+                        "action": "start", "consultantId": "con_dimitri", "allocations": [{"driverId": "drv_two"}],
+                    })
+                    self.assertEqual(rejected.status_code, 409, rejected.json)
+                    self.assertIn("Tour 01", rejected.json["error"])
+                    self.assertEqual(self.database, before)
+
+    def test_prebound_and_legacy_name_only_tour_cannot_bypass_another_request(self) -> None:
+        created = self.client.post("/api/consultant/support-requests", headers=self.auth("token-consultant"), json={
+            "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        other_tour = self._tour("tour_05", "Tour 05")
+        other_tour.update(requiresDetails=False, consultantName="Dimitri")
+        self.database["tours"].append(other_tour)
+        for linked_id in ("con_dimitri", None):
+            with self.subTest(linked_id=linked_id):
+                other_tour["consultantId"] = linked_id
+                before = deepcopy(self.database)
+                rejected = self.client.post("/api/tours/tour_05/action", headers=self.auth("token-driver"), json={
+                    "action": "start", "allocations": [{"driverId": "drv_one"}],
+                })
+                self.assertEqual(rejected.status_code, 409, rejected.json)
+                self.assertEqual(self.database, before)
+
+    def test_start_rejects_identity_payload_that_disagrees_with_bound_tour(self) -> None:
+        self.database["consultants"].append({"id": "con_other", "name": "Outra", "active": True})
+        self.database["selfGens"].append({"id": "self_other", "name": "Outro", "active": True})
+        cases = (
+            ({"consultantId": "con_dimitri", "consultantName": "Dimitri"}, {"consultantId": "con_other"}),
+            ({"consultantId": None, "consultantName": "Dimitri"}, {"consultantId": "con_other"}),
+            ({"consultantId": "con_dimitri", "consultantName": "Dimitri"}, {"selfGenId": "self_ana"}),
+            ({"selfGuide": True, "selfGenId": "self_ana", "selfGenName": "Ana"}, {"selfGenId": "self_other"}),
+            ({"selfGuide": True, "selfGenId": "self_ana", "selfGenName": "Ana"}, {"consultantId": "con_dimitri"}),
+            ({"consultantId": "con_dimitri", "consultantName": "Dimitri", "selfGenId": "self_ana", "selfGenName": "Ana"}, {"selfGenId": "self_other"}),
+        )
+        for links, supplied in cases:
+            with self.subTest(links=links, supplied=supplied):
+                tour = self._tour("tour_01", "Tour 01")
+                tour.update(requiresDetails=False, **links)
+                self.database["tours"] = [tour]
+                before = deepcopy(self.database)
+                rejected = self.client.post("/api/tours/tour_01/action", headers=self.auth("token-driver"), json={
+                    "action": "start", "allocations": [{"driverId": "drv_one"}], **supplied,
+                })
+                self.assertEqual(rejected.status_code, 409, rejected.json)
+                self.assertEqual(self.database, before)
+
+    def test_legacy_self_gen_start_cannot_bypass_its_pending_request(self) -> None:
+        self.database["tours"].extend([
+            self._tour("self_01", "Self Gen 1", self_guide=True),
+            self._tour("self_02", "Self Gen 2", self_guide=True),
+        ])
+        created = self.client.post("/api/consultant/support-requests", headers=self.self_gen_headers(), json={
+            "tourId": "self_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        before = deepcopy(self.database)
+        rejected = self.client.post("/api/tours/self_02/action", headers=self.auth("token-driver"), json={
+            "action": "start", "selfGenId": "self_ana", "allocations": [{"driverId": "drv_one"}],
+        })
+        self.assertEqual(rejected.status_code, 409, rejected.json)
+        self.assertIn("Self Gen 1", rejected.json["error"])
+        self.assertEqual(self.database, before)
+
+    def test_self_gen_support_request_reserves_both_linked_identities(self) -> None:
+        created = self.client.post("/api/consultant/support-requests", headers=self.self_gen_headers(), json={
+            "consultantId": "con_dimitri", "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        self.database["tours"].extend([
+            self._tour("tour_05", "Tour 05"),
+            self._tour("self_01", "Self Gen 1", self_guide=True),
+        ])
+        for target, supplied in (("tour_05", {"consultantId": "con_dimitri"}), ("self_01", {"selfGenId": "self_ana"})):
+            with self.subTest(target=target):
+                before = deepcopy(self.database)
+                rejected = self.client.post(f"/api/tours/{target}/action", headers=self.auth("token-driver"), json={
+                    "action": "start", "allocations": [{"driverId": "drv_one"}], **supplied,
+                })
+                self.assertEqual(rejected.status_code, 409, rejected.json)
+                self.assertEqual(self.database, before)
+        accepted = self.client.post(
+            f"/api/consultant-tour-requests/{created.json['request']['id']}/start", headers=self.auth("token-driver"),
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.json)
+        self.assertEqual(accepted.json["tour"]["consultantId"], "con_dimitri")
+        self.assertEqual(accepted.json["tour"]["selfGenId"], "self_ana")
+
+    def test_completed_request_allows_another_tour_without_global_identity_exclusivity(self) -> None:
+        created = self.client.post("/api/consultant/support-requests", headers=self.auth("token-consultant"), json={
+            "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        accepted = self.client.post(
+            f"/api/consultant-tour-requests/{created.json['request']['id']}/start", headers=self.auth("token-driver"),
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.json)
+        arrived = self.client.post("/api/tours/tour_01/action", headers=self.auth("token-driver"), json={
+            "action": "arrived-home", "driverId": "drv_one", "homeDecision": "DEIXOU_NA_CASA",
+        })
+        self.assertEqual(arrived.status_code, 200, arrived.json)
+        self.assertEqual(self.database["hostessRequests"][0]["status"], tour_app.HOSTESS_REQUEST_CLOSED)
+        self.assertEqual(self.database["tours"][0]["status"], tour_app.STATE_WAITING_HOME)
+        self.database["tours"].append(self._tour("tour_05", "Tour 05"))
+        started = self.client.post("/api/tours/tour_05/action", headers=self.auth("token-driver-two"), json={
+            "action": "start", "consultantId": "con_dimitri", "allocations": [{"driverId": "drv_two"}],
+        })
+        self.assertEqual(started.status_code, 200, started.json)
+        self.assertEqual(started.json["tour"]["consultantId"], "con_dimitri")
+        self.assertEqual(started.json["tour"]["status"], tour_app.STATE_IN_TOUR)
+
+    def test_consultant_and_self_gen_support_cannot_create_conflicting_requests(self) -> None:
+        self_headers = self.self_gen_headers()
+        self.database["tours"].append(self._tour("tour_05", "Tour 05"))
+        initial = deepcopy(self.database)
+        consultant_headers = self.auth("token-consultant")
+        for first_is_support in (False, True):
+            for in_progress in (False, True):
+                for same_tour in (False, True):
+                    with self.subTest(first_is_support=first_is_support, in_progress=in_progress, same_tour=same_tour):
+                        self.database.clear()
+                        self.database.update(deepcopy(initial))
+                        first_headers = self_headers if first_is_support else consultant_headers
+                        second_headers = consultant_headers if first_is_support else self_headers
+                        body = {"consultantId": "con_dimitri", "routeStage": "PRESTIGE", "guestLocation": "WAVES"}
+                        created = self.client.post("/api/consultant/support-requests", headers=first_headers, json={
+                            **body, "tourId": "tour_01",
+                        })
+                        self.assertEqual(created.status_code, 201, created.json)
+                        request_id = created.json["request"]["id"]
+                        if in_progress:
+                            accepted = self.client.post(
+                                f"/api/consultant-tour-requests/{request_id}/start", headers=self.auth("token-driver"),
+                            )
+                            self.assertEqual(accepted.status_code, 200, accepted.json)
+                        before = deepcopy(self.database)
+                        rejected = self.client.post("/api/consultant/support-requests", headers=second_headers, json={
+                            **body, "tourId": "tour_01" if same_tour else "tour_05",
+                        })
+                        self.assertEqual(rejected.status_code, 409, rejected.json)
+                        self.assertEqual(self.database, before)
+                        if not in_progress:
+                            accepted = self.client.post(
+                                f"/api/consultant-tour-requests/{request_id}/start", headers=self.auth("token-driver"),
+                            )
+                            self.assertEqual(accepted.status_code, 200, accepted.json)
+
+    def test_closed_consultant_request_allows_new_self_gen_support_request(self) -> None:
+        created = self.client.post("/api/consultant/support-requests", headers=self.auth("token-consultant"), json={
+            "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        accepted = self.client.post(
+            f"/api/consultant-tour-requests/{created.json['request']['id']}/start", headers=self.auth("token-driver"),
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.json)
+        arrived = self.client.post("/api/tours/tour_01/action", headers=self.auth("token-driver"), json={
+            "action": "arrived-home", "driverId": "drv_one", "homeDecision": "DEIXOU_NA_CASA",
+        })
+        self.assertEqual(arrived.status_code, 200, arrived.json)
+        self.assertEqual(self.database["hostessRequests"][0]["status"], tour_app.HOSTESS_REQUEST_CLOSED)
+        self.database["tours"].append(self._tour("tour_05", "Tour 05"))
+        support = self.client.post("/api/consultant/support-requests", headers=self.self_gen_headers(), json={
+            "consultantId": "con_dimitri", "tourId": "tour_05", "routeStage": "PRESTIGE", "guestLocation": "SELECTION",
+        })
+        self.assertEqual(support.status_code, 201, support.json)
+        started = self.client.post(
+            f"/api/consultant-tour-requests/{support.json['request']['id']}/start", headers=self.auth("token-driver-two"),
+        )
+        self.assertEqual(started.status_code, 200, started.json)
+        self.assertEqual(started.json["tour"]["selfGenId"], "self_ana")
+        self.assertEqual(self.database["tours"][0]["status"], tour_app.STATE_WAITING_HOME)
+
+    def test_other_consultants_pending_request_does_not_block_start(self) -> None:
+        created = self.client.post("/api/consultant/support-requests", headers=self.auth("token-consultant"), json={
+            "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.json)
+        self.database["consultants"].append({"id": "con_other", "name": "Outra", "active": True})
+        self.database["tours"].append(self._tour("tour_05", "Tour 05"))
+        started = self.client.post("/api/tours/tour_05/action", headers=self.auth("token-driver"), json={
+            "action": "start", "consultantId": "con_other", "allocations": [{"driverId": "drv_one"}],
+        })
+        self.assertEqual(started.status_code, 200, started.json)
+        self.assertEqual(started.json["tour"]["consultantId"], "con_other")
 
     def test_self_gen_crud_and_only_active_names_in_public_options(self) -> None:
         created = self.client.post(

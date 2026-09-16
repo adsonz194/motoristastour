@@ -13,7 +13,7 @@ No administrador: cadastre o nome em **Consultores → Self Gen**, depois crie/e
 
 ## Ordem de publicação
 
-1. Publique estas alterações do servidor/site primeiro. O `mobile-update.json` começa com `versionCode: 0`, sem bloquear ninguém.
+1. Publique estas alterações do servidor/site primeiro. `versionCode: 0` desativa somente a exigência de versão mínima. O bloqueio temporário do Android é independente: enquanto `mobileAppEnabled: false`, o APK permanece suspenso e o site continua funcionando.
 2. Aplique as alterações no projeto completo `motoristastourapk` no Windows e use a versão 2.5.0 (código 13), ou um código maior que qualquer APK já distribuído.
 3. Execute `.\COMPILAR-APK.bat` na pasta do projeto Android. Ele roda os testes e gera `MotoristasTour-Nativo.apk` e `mobile-update.json` na pasta principal, reutilizando sua chave existente. Não depende de Codemagic nem de Python. Se falhar, não publique arquivos antigos que tenham ficado na pasta.
 4. Crie uma Release no GitHub `adsonz194/motoristastourapk`, com a tag indicada no JSON (exemplo `v2.5.0`), e anexe `MotoristasTour-Nativo.apk` **sem mudar seu nome**.

@@ -3099,6 +3099,58 @@ def tour_identity_matches(
     return bool(linked_identity_name) and linked_identity_name == normalized_identity_name(identity.get("name"))
 
 
+def validate_tour_route_identities(
+    db: dict[str, Any], tour: dict[str, Any], payload: dict[str, Any]
+) -> None:
+    """Protect bound identities before starting a Tour or creating its request."""
+    for id_field, name_field, collection, label, primary_identity in (
+        ("consultantId", "consultantName", "consultants", "consultor", not tour.get("selfGuide")),
+        ("selfGenId", "selfGenName", "selfGens", "Self Gen", bool(tour.get("selfGuide"))),
+    ):
+        supplied_id = str(payload.get(id_field) or "").strip()
+        linked_id = str(tour.get(id_field) or "").strip()
+        linked_name = normalized_identity_name(tour.get(name_field))
+        may_bind_identity = bool(tour.get("requiresDetails") and primary_identity)
+        supplied_identity = None
+        if supplied_id:
+            if linked_id and supplied_id != linked_id:
+                raise APIError(f"O {label} informado não corresponde ao nome vinculado a este Tour. Atualize o painel.", 409)
+            if not linked_id and not linked_name and not may_bind_identity:
+                raise APIError(f"Este Tour não está vinculado ao {label} informado. Atualize o painel.", 409)
+            supplied_identity = find(db.get(collection, []), supplied_id, label)
+            if not linked_id and linked_name and linked_name != normalized_identity_name(supplied_identity.get("name")):
+                raise APIError(f"O {label} informado não corresponde ao nome vinculado a este Tour. Atualize o painel.", 409)
+
+        identity_id = linked_id or supplied_id
+        identity = supplied_identity or next(
+            (item for item in db.get(collection, []) if item.get("id") == identity_id),
+            None,
+        )
+        identity_name = linked_name or normalized_identity_name((identity or {}).get("name"))
+        if not identity_id and not identity_name:
+            continue
+        for car_request in db.get("hostessRequests", []):
+            if (
+                not is_consultant_route_request(car_request)
+                or car_request.get("tourId") == tour.get("id")
+                or car_request.get("status") not in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+            ):
+                continue
+            request_identity_id = str(car_request.get(id_field) or "").strip()
+            matches = (
+                identity_id == request_identity_id
+                if identity_id and request_identity_id
+                else bool(identity_name) and identity_name == normalized_identity_name(car_request.get(name_field))
+            )
+            if matches:
+                tour_label = car_request.get("tourLabel") or "outro Tour"
+                raise APIError(
+                    f"Este {label} já possui um pedido de carrinho em {tour_label}. "
+                    "Atenda o pedido vinculado ao número correto antes de iniciar outro Tour.",
+                    409,
+                )
+
+
 def consultant_for_account(db: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     if user.get("role") == ROLE_SELF_GEN:
         person = find(db.get("selfGens", []), user.get("selfGenId"), "Self Gen vinculado")
@@ -3307,6 +3359,7 @@ def apply_action(
         if tour["status"] != STATE_AVAILABLE:
             raise APIError("Apenas grupos disponíveis podem iniciar tour.")
         require_tours_open(db)
+        validate_tour_route_identities(db, tour, payload)
         if tour.get("requiresDetails"):
             confirm_quantity_tour_start(db, tour, payload.get("consultantId"), payload.get("selfGenId"))
         tour["allocations"] = normalized_allocations(db, payload.get("allocations"))
@@ -3498,8 +3551,9 @@ def enforce_android_version():
     # Also cover mobile tokens sent to the site's aliases, without blocking the web UI.
     if request.method == "OPTIONS" or not request.path.startswith("/api/"):
         return None
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     native = (request.path.startswith("/api/mobile/v1/")
-              or request.headers.get("Authorization", "").startswith("Bearer " + MOBILE_API_TOKEN_PREFIX))
+              or token.startswith(MOBILE_API_TOKEN_PREFIX))
     exempt = {"/api/mobile/v1/app-update", "/api/mobile/v1/auth/logout", "/api/auth/logout",
               "/api/mobile/v1/health", "/api/mobile/v1/openapi.yaml"}
     if not native or request.path in exempt:
@@ -4027,6 +4081,26 @@ def create_public_consultant_support_request():
                 raise APIError("Este número de Tour já está ligado a outro nome.", 409)
             if route_stage != "PRESTIGE" and not identity_matches:
                 raise APIError("Este Tour ainda não foi ligado a esse nome no Prestige.", 409)
+            if any(
+                item.get("tourId") == tour["id"]
+                and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+                for item in db.get("hostessRequests", [])
+            ):
+                raise APIError("Este número de Tour já possui uma solicitação de carrinho aberta.", 409)
+            # Validate the prospective links without changing the stored Tour.
+            # A Self Gen support call also reserves its consultant, regardless
+            # of whether the other request was created by a consultant or Self Gen.
+            requested_tour = {
+                **tour,
+                identity_id_field: identity["id"],
+                identity_name_field: identity["name"],
+            }
+            if supporting_consultant:
+                requested_tour.update(
+                    consultantId=supporting_consultant["id"],
+                    consultantName=supporting_consultant["name"],
+                )
+            validate_tour_route_identities(db, requested_tour, {})
             if route_stage != "PRESTIGE" and not linked_identity_id:
                 # Repair legacy Tours that kept the responsible name but not the
                 # newer stable ID, so Casa and Galeria remain selectable.
@@ -4043,11 +4117,6 @@ def create_public_consultant_support_request():
                     # Keep the normal Tour category and its consultant; record
                     # the Self Gen separately so the next legs remain scoped.
                     tour.update(selfGenId=identity["id"], selfGenName=identity["name"])
-            if any(
-                item.get("tourId") == tour["id"] and item.get("status") == HOSTESS_REQUEST_OPEN
-                for item in db.get("hostessRequests", [])
-            ):
-                raise APIError("Este número de Tour já possui uma solicitação de carrinho aberta.", 409)
             destination = None
             if route_stage == "GALERIA_EXIT":
                 destination_id = str(payload.get("destinationId") or "").strip()

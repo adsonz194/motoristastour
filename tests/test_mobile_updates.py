@@ -70,9 +70,10 @@ class MobileUpdateTest(unittest.TestCase):
                     self.assertEqual(response.json["code"], "MOBILE_APP_DISABLED")
                     self.assertFalse(response.json["mobileAppEnabled"])
                     self.assertIn("no-store", response.headers["Cache-Control"])
-            response = self.client.get("/api/bootstrap", headers={"Authorization": "Bearer mta_existing"})
-            self.assertEqual(response.status_code, 503)
-            self.assertEqual(response.json["code"], "MOBILE_APP_DISABLED")
+            for authorization in ("Bearer mta_existing", "Bearer  mta_existing", "mta_existing"):
+                response = self.client.get("/api/bootstrap", headers={"Authorization": authorization})
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json["code"], "MOBILE_APP_DISABLED")
 
     def test_maintenance_keeps_browser_public_pages_and_browser_auth_available(self):
         policy = {"versionCode": 0, "mobileAppEnabled": False}
