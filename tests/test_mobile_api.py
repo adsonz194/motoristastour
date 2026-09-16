@@ -42,6 +42,7 @@ class MobileApiTest(unittest.TestCase):
             "activities": [],
         })
         self.patchers = [
+            patch.object(tour_app, "update_policy", return_value={"mobileAppEnabled": True, "minVersionCode": 0}),
             patch.object(tour_app, "POSTGRES_URL", ""),
             patch.object(tour_app, "operational_database", return_value=self.database),
             patch.object(tour_app, "save_database", return_value=None),

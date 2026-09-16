@@ -9,6 +9,9 @@ POLICY_PATH = Path(__file__).with_name("mobile-update.json")
 
 def update_policy():
     policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    enabled = policy.get("mobileAppEnabled", True)
+    if type(enabled) is not bool:
+        raise ValueError("mobileAppEnabled deve ser true ou false")
     code = policy.get("versionCode")
     if type(code) is not int or not 0 <= code <= 2_100_000_000:
         raise ValueError("versionCode inválido")
@@ -24,6 +27,9 @@ def update_policy():
         if not isinstance(policy.get("versionName"), str) or not policy["versionName"].strip():
             raise ValueError("Informe o nome da versão")
     return {
+        "mobileAppEnabled": enabled,
+        "maintenanceMessage": str(policy.get("maintenanceMessage") or "O aplicativo Android está temporariamente desativado para atualização. Use o site pelo navegador."),
+        "websiteUrl": "https://motoristastour.onrender.com/",
         "versionCode": code,
         "minVersionCode": code,
         "versionName": str(policy.get("versionName", "")),

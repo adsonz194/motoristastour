@@ -1,4 +1,6 @@
 {
+  "mobileAppEnabled": false,
+  "maintenanceMessage": "O aplicativo Android está temporariamente desativado para correção. Acesse https://motoristastour.onrender.com pelo navegador para continuar trabalhando.",
   "versionCode": 0,
   "versionName": "",
   "apkUrl": "",

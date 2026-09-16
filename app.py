@@ -3508,6 +3508,16 @@ def enforce_android_version():
         policy = update_policy()
     except (OSError, ValueError, TypeError, AttributeError):
         return jsonify(error="Não foi possível verificar a versão do app. Tente novamente.", code="UPDATE_CHECK_UNAVAILABLE"), 503
+    if not policy["mobileAppEnabled"]:
+        response = jsonify(
+            error=policy["maintenanceMessage"],
+            code="MOBILE_APP_DISABLED",
+            mobileAppEnabled=False,
+            websiteUrl=policy["websiteUrl"],
+        )
+        response.status_code = 503
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
     if requires_update(policy, request.headers.get("X-App-Version-Code")):
         return jsonify(error=policy["message"], code="APP_UPDATE_REQUIRED", update=policy), 426
     return None

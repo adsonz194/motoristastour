@@ -104,6 +104,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         })
 
         self.patchers = [
+            patch.object(tour_app, "update_policy", return_value={"mobileAppEnabled": True, "minVersionCode": 0}),
             patch.object(tour_app, "POSTGRES_URL", ""),
             patch.object(tour_app, "operation_date", return_value=self.OPERATION_DAY),
             patch.object(tour_app, "operational_database", return_value=self.database),

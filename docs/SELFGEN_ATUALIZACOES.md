@@ -51,6 +51,9 @@ Referência: [requisitos de atualização do Android](https://developer.android.
 
 ## Recuperação e validação
 
+- Para bloquear temporariamente **somente o APK Android**, use `mobileAppEnabled: false` em `mobile-update.json`. O login e as operações da API móvel retornam `503 MOBILE_APP_DISABLED`, inclusive para sessões móveis já abertas. O site, o navegador no Android e o atalho/PWA no iPhone continuam disponíveis.
+- O aviso é definido em `maintenanceMessage`. O endpoint `app-update` informa a manutenção, e o logout continua permitido. Para liberar novamente o APK, altere explicitamente para `mobileAppEnabled: true`, preservando os campos de versão/assinatura. Ao substituir o JSON por uma versão compilada, preserve o bloqueio até a liberação autorizada.
+
 - Para suspender a exigência numa emergência, publique `versionCode: 0` no JSON. Não apague cadastros/dados e não revogue sessões em massa.
 - Um JSON inválido retorna 503 no app (não contorna uma exigência já conhecida); o site permanece disponível.
 - Não reutilize uma tag/URL para trocar o APK de uma versão já publicada. Use código e tag novos.
