@@ -481,5 +481,96 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         )
 
 
+    def self_gen_headers(self):
+        self.database["users"].append({
+            "id": "user_self", "username": "self", "name": "Ana", "role": tour_app.ROLE_SELF_GEN,
+            "selfGenId": "self_ana", "permissions": [], "active": True,
+        })
+        tour_app.SESSIONS["token-self"] = {
+            "userId": "user_self", "expiresAt": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
+        return self.auth("token-self")
+
+    def test_self_gen_account_can_be_created_and_cannot_elevate_permissions(self):
+        payload = dict(name="Ana", username="ana", password="safe-test-pass", role="SELF_GEN", selfGenId="self_ana", permissions=["MANAGE_USERS"])
+        created = self.client.post("/api/users", headers=self.auth("token-admin"), json=payload)
+        self.assertEqual(created.status_code, 201, created.get_json())
+        self.assertEqual(created.json["user"]["selfGenId"], "self_ana")
+        self.assertEqual(created.json["user"]["permissions"], [])
+        duplicate = self.client.post("/api/users", headers=self.auth("token-admin"), json={**payload, "username": "ana2"})
+        self.assertEqual(duplicate.status_code, 409)
+        removed = self.client.delete("/api/self-gens/self_ana", headers=self.auth("token-admin"))
+        self.assertEqual(removed.status_code, 409)
+
+    def test_self_gen_has_same_request_flow_but_identity_is_bound_to_login(self):
+        headers = self.self_gen_headers()
+        self.database["tours"].append(self._tour("self_01", "Self Gen 1", self_guide=True))
+        response = self.client.post("/api/mobile/v1/consultant/support-requests", headers=headers, json={
+            "identityType": "CONSULTANT", "selfGenId": "self_inactive", "consultantId": "con_dimitri",
+            "tourId": "self_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
+        })
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(self.database["hostessRequests"][0]["selfGenId"], "self_ana")
+        self.assertEqual(response.json["request"]["requesterType"], "SELF_GEN")
+        self.assertEqual(self.database["tours"][1]["selfGenName"], "Ana")
+        scoped = self.client.get("/api/consultant/support/options", headers=headers)
+        self.assertEqual(scoped.json["selfGens"], [{"id": "self_ana", "name": "Ana"}])
+        self.assertEqual(scoped.json["activeRequest"]["id"], response.json["request"]["id"])
+        bootstrap = self.client.get("/api/bootstrap", headers=headers)
+        self.assertEqual(bootstrap.json["data"]["tours"], [])
+
+    def test_self_gen_supports_normal_tour_preserves_consultant_and_category(self):
+        headers = self.self_gen_headers()
+        response = self.client.post("/api/consultant/support-requests", headers=headers, json={
+            "consultantId": "con_dimitri", "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "SELECTION",
+        })
+        self.assertEqual(response.status_code, 201, response.json)
+        request_id = response.json["request"]["id"]
+        tour = self.database["tours"][0]
+        self.assertFalse(tour["selfGuide"])
+        self.assertEqual(tour["consultantId"], "con_dimitri")
+        self.assertEqual(tour["selfGenId"], "self_ana")
+        self.assertEqual(response.json["request"]["requestedByName"], "Ana")
+        self.assertEqual(self.database["hostessRequests"][0]["consultantId"], "con_dimitri")
+        for token in ("token-self", "token-consultant"):
+            tracked = self.client.get(f"/api/consultant/support-requests/{request_id}", headers=self.auth(token))
+            self.assertEqual(tracked.status_code, 200, tracked.json)
+        started = self.client.post(f"/api/consultant-tour-requests/{request_id}/start",
+                                   headers=self.auth("token-admin"), json={"driverId": "drv_one"})
+        self.assertEqual(started.status_code, 200, started.json)
+        self.assertEqual(tour["status"], tour_app.STATE_IN_TOUR)
+        self.assertEqual(tour["selfGenId"], "self_ana")
+        self.assertFalse(tour["selfGuide"])
+
+    def test_self_gen_cannot_claim_another_self_gen_or_use_public_support_mode(self):
+        headers = self.self_gen_headers()
+        self.database["tours"][0].update(selfGenId="self_other", selfGenName="Outro")
+        body = {"consultantId": "con_dimitri", "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES"}
+        response = self.client.post("/api/consultant/support-requests", headers=headers, json=body)
+        self.assertEqual(response.status_code, 409)
+        public = self.client.post("/api/public/consultant-support-requests", json={**body, "identityType": "SELF_GEN", "selfGenId": "self_ana"})
+        self.assertEqual(public.status_code, 409)
+        self.assertEqual(self.database["hostessRequests"], [])
+
+    def test_self_gen_support_next_legs_only_for_own_linked_tour(self):
+        headers = self.self_gen_headers()
+        tour = self.database["tours"][0]
+        tour.update(status=tour_app.STATE_WAITING_HOME, consultantId="con_dimitri", consultantName="Dimitri", selfGenId="self_ana", selfGenName="Ana")
+        response = self.client.post("/api/consultant/support-requests", headers=headers, json={"tourId": "tour_01", "routeStage": "CASA"})
+        self.assertEqual(response.status_code, 201, response.json)
+        self.database["hostessRequests"][0]["status"] = tour_app.HOSTESS_REQUEST_CLOSED
+        tour.update(status=tour_app.STATE_WAITING_DESTINATION)
+        destination_id = self.database["destinations"][0]["id"]
+        response = self.client.post("/api/consultant/support-requests", headers=headers, json={"tourId": "tour_01", "routeStage": "GALERIA_EXIT", "destinationId": destination_id})
+        self.assertEqual(response.status_code, 201, response.json)
+        self.assertEqual(self.database["hostessRequests"][0]["selfGenId"], "self_ana")
+
+    def test_inactive_self_gen_cannot_request_or_track(self):
+        headers = self.self_gen_headers()
+        self.database["selfGens"][0]["active"] = False
+        self.assertEqual(self.client.get("/api/consultant/support/options", headers=headers).status_code, 403)
+        self.assertEqual(self.client.post("/api/consultant/support-requests", headers=headers, json={"tourId": "tour_01"}).status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
