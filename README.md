@@ -112,3 +112,6 @@ O primeiro acesso administrativo usa o usuário e a senha definidos pela operaç
 - Ao criar uma conta com perfil Motorista sem selecionar um cadastro existente, o sistema cria e vincula automaticamente o motorista com o mesmo nome. Contas antigas sem vínculo também são corrigidas automaticamente.
 - Administradores podem criar, editar, desativar e excluir usuários, motoristas e consultores. A própria conta e o último administrador são protegidos contra perda de acesso; motoristas em tour ativo precisam ser liberados antes de excluir ou mudar a disponibilidade.
 - Toda transição gera histórico com data, responsável, estado anterior e novo estado. Qualquer motorista com permissão para operar tours pode assumir, avançar ou corrigir um tour de outro motorista quando for necessário. Alterações de rota e destino ficam destacadas com o nome, conta e perfil de quem executou, além do tour, consultor, rota anterior → nova e motoristas afetados.
+# Self Gen e versão obrigatória do app
+
+Veja [o guia de implantação](docs/SELFGEN_ATUALIZACOES.md). As alterações do site/API e do app Android precisam ser publicadas em conjunto, começando pelo servidor. A exigência de versão vem desativada (`mobile-update.json`, código 0) até haver um APK assinado, publicado e testado.

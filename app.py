@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
+from mobile_updates import update_policy, requires_update
 
 try:
     import psycopg
@@ -53,8 +54,9 @@ ROLE_DRIVER = "MOTORISTA"
 ROLE_HOSTESS = "HOSTESS"
 ROLE_CONCIERGE = "CONCIERGE"
 ROLE_CONSULTANT = "CONSULTOR"
+ROLE_SELF_GEN = "SELF_GEN"
 ROLE_VIEWER = "VISUALIZADOR"
-ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE, ROLE_CONSULTANT, ROLE_VIEWER}
+ROLES = {ROLE_ADMIN, ROLE_DRIVER, ROLE_HOSTESS, ROLE_CONCIERGE, ROLE_CONSULTANT, ROLE_SELF_GEN, ROLE_VIEWER}
 
 # A role is an initial access template, not an irrevocable authorization.
 # Administrators can tailor the explicit permissions of every account when it
@@ -146,6 +148,7 @@ DEFAULT_ROLE_PERMISSIONS = {
     # Consultants use a dedicated, identity-scoped portal. They never inherit
     # access to the operational dashboard or another consultant's requests.
     ROLE_CONSULTANT: set(),
+    ROLE_SELF_GEN: set(),
     ROLE_VIEWER: {PERMISSION_VIEW_DASHBOARD},
 }
 
@@ -339,6 +342,8 @@ def normalize_permissions(value: Any, role: Any, *, strict: bool = False) -> lis
     # Hostess accounts. Stale/custom grants on other roles never become active.
     if role != ROLE_HOSTESS:
         selected.discard(PERMISSION_VIEW_DRIVER_LOCATIONS)
+    if role in {ROLE_CONSULTANT, ROLE_SELF_GEN}:
+        selected.clear()
 
     # Never allow the last administrator to turn an account into a user
     # manager-less dead end. Other grants may be customized freely.
@@ -2163,6 +2168,19 @@ def validate_consultant_link(db: dict[str, Any], consultant_id: Any, user_id: st
     return consultant_id
 
 
+def validate_self_gen_link(db: dict[str, Any], self_gen_id: Any, user_id: str | None = None) -> str:
+    self_gen_id = str(self_gen_id or "").strip()
+    if not self_gen_id:
+        raise APIError("Selecione o Self Gen vinculado a este login.")
+    person = find(db.get("selfGens", []), self_gen_id, "Self Gen")
+    if not person.get("active", True):
+        raise APIError("Esse Self Gen está inativo e não pode receber um login.", 409)
+    if any(item.get("role") == ROLE_SELF_GEN and item.get("selfGenId") == self_gen_id
+           and item.get("id") != user_id for item in db.get("users", [])):
+        raise APIError("Esse Self Gen já está vinculado a outro usuário.", 409)
+    return self_gen_id
+
+
 def remove_driver_for_role_change(db: dict[str, Any], driver_id: str, user_id: str) -> None:
     """Remove the operational record when its account stops being a driver."""
     assigned_tour = active_driver_assignment(db, driver_id)
@@ -2831,9 +2849,10 @@ def consultant_support_request_for_access(
         ),
         None,
     )
-    if requester_user and requester_user.get("role") == ROLE_CONSULTANT:
+    if requester_user and requester_user.get("role") in {ROLE_CONSULTANT, ROLE_SELF_GEN}:
         consultant = consultant_for_account(db, requester_user)
-        if car_request and car_request.get("consultantId") == consultant.get("id"):
+        identity_field = "selfGenId" if requester_user["role"] == ROLE_SELF_GEN else "consultantId"
+        if car_request and car_request.get(identity_field) == consultant.get("id"):
             return car_request
         raise APIError("Acompanhamento de apoio não encontrado.", 404)
     token = str(access_token or "").strip()
@@ -3081,8 +3100,13 @@ def tour_identity_matches(
 
 
 def consultant_for_account(db: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    if user.get("role") == ROLE_SELF_GEN:
+        person = find(db.get("selfGens", []), user.get("selfGenId"), "Self Gen vinculado")
+        if not person.get("active", True):
+            raise APIError("O cadastro deste Self Gen está inativo.", 403)
+        return person
     if user.get("role") != ROLE_CONSULTANT:
-        raise APIError("Esta área é exclusiva dos consultores.", 403)
+        raise APIError("Esta área é exclusiva dos consultores e Self Gen.", 403)
     consultant = find(db.get("consultants", []), user.get("consultantId"), "Consultor vinculado")
     if not consultant.get("active", True):
         raise APIError("O cadastro deste consultor está inativo.", 403)
@@ -3468,6 +3492,35 @@ app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
 
+@app.before_request
+def enforce_android_version():
+    # Old native clients do not send a version header: treat them as version 0.
+    # Also cover mobile tokens sent to the site's aliases, without blocking the web UI.
+    if request.method == "OPTIONS" or not request.path.startswith("/api/"):
+        return None
+    native = (request.path.startswith("/api/mobile/v1/")
+              or request.headers.get("Authorization", "").startswith("Bearer " + MOBILE_API_TOKEN_PREFIX))
+    exempt = {"/api/mobile/v1/app-update", "/api/mobile/v1/auth/logout", "/api/auth/logout",
+              "/api/mobile/v1/health", "/api/mobile/v1/openapi.yaml"}
+    if not native or request.path in exempt:
+        return None
+    try:
+        policy = update_policy()
+    except (OSError, ValueError, TypeError, AttributeError):
+        return jsonify(error="Não foi possível verificar a versão do app. Tente novamente.", code="UPDATE_CHECK_UNAVAILABLE"), 503
+    if requires_update(policy, request.headers.get("X-App-Version-Code")):
+        return jsonify(error=policy["message"], code="APP_UPDATE_REQUIRED", update=policy), 426
+    return None
+
+
+@app.get("/api/mobile/v1/app-update")
+def android_app_update():
+    try:
+        return jsonify(update_policy())
+    except (OSError, ValueError, TypeError, AttributeError):
+        return jsonify(error="A atualização está temporariamente indisponível. Tente novamente."), 503
+
+
 @app.after_request
 def location_permissions_policy(response):
     # Geolocation remains available only to this first-party application.
@@ -3746,8 +3799,11 @@ def public_consultant_support_options():
     with DB_LOCK:
         db = operational_database()
         authenticated_consultant = None
+        authenticated_self_gen = False
         if "/consultant/" in request.path:
-            authenticated_consultant = consultant_for_account(db, get_current_user(db))
+            account = get_current_user(db)
+            authenticated_self_gen = account.get("role") == ROLE_SELF_GEN
+            authenticated_consultant = consultant_for_account(db, account)
         consultants = sorted(
             (
                 {"id": item.get("id"), "name": item.get("name")}
@@ -3790,7 +3846,7 @@ def public_consultant_support_options():
             }
         ])
         active_request = None
-        if authenticated_consultant:
+        if authenticated_consultant and not authenticated_self_gen:
             consultants = [{"id": authenticated_consultant["id"], "name": authenticated_consultant["name"]}]
             self_gens = []
             tours = [
@@ -3819,6 +3875,18 @@ def public_consultant_support_options():
                 ),
                 None,
             )
+        elif authenticated_self_gen:
+            self_gens = [{"id": authenticated_consultant["id"], "name": authenticated_consultant["name"]}]
+            tours = [item for item in tours if (
+                (item.get("status") == STATE_AVAILABLE and not item.get("selfGenId") and not item.get("selfGenName"))
+                or tour_identity_matches(item, authenticated_consultant, "selfGenId", "selfGenName")
+            )]
+            active_request = next((
+                public_consultant_support_request_payload(item)
+                for item in db.get("hostessRequests", [])
+                if item.get("selfGenId") == authenticated_consultant["id"]
+                and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+            ), None)
         response = jsonify(
             operationDate=db["operationDate"],
             consultants=consultants,
@@ -3831,6 +3899,7 @@ def public_consultant_support_options():
                 for item in db.get("destinations", []) if item.get("active", True)
             ],
             consultantMode=bool(authenticated_consultant),
+            selfGenMode=authenticated_self_gen,
             activeRequest=active_request,
         )
         response.headers["Cache-Control"] = "private, no-store"
@@ -3865,9 +3934,13 @@ def create_public_consultant_support_request():
         if "/consultant/" in request.path:
             requester_user = get_current_user(db)
             authenticated_consultant = consultant_for_account(db, requester_user)
-            identity_type = CONSULTANT_REQUESTER
-            consultant_id = authenticated_consultant["id"]
-            self_gen_id = ""
+            if requester_user.get("role") == ROLE_SELF_GEN:
+                identity_type = SELF_GEN_REQUESTER
+                self_gen_id = authenticated_consultant["id"]
+            else:
+                identity_type = CONSULTANT_REQUESTER
+                consultant_id = authenticated_consultant["id"]
+                self_gen_id = ""
         if identity_type == SELF_GEN_REQUESTER:
             identity = find(db.get("selfGens", []), self_gen_id, "Self Gen")
             identity_id_field = "selfGenId"
@@ -3887,6 +3960,7 @@ def create_public_consultant_support_request():
             raise APIError(f"{identity['name']} já possui uma solicitação de carrinho aberta.", 409)
 
         route_fields: dict[str, Any] = {}
+        supporting_consultant = None
         tour = None
         if tour_id:
             route_stage = str(payload.get("routeStage") or "").strip().upper()
@@ -3915,8 +3989,19 @@ def create_public_consultant_support_request():
                         f"Este Tour precisa de {requested_carts} carrinhos na Casa. Use o painel da equipe para uma chamada com vários motoristas.",
                         409,
                     )
-            if bool(tour.get("selfGuide")) != (identity_type == SELF_GEN_REQUESTER):
+            normal_support = (identity_type == SELF_GEN_REQUESTER and not tour.get("selfGuide")
+                              and requester_user and requester_user.get("role") == ROLE_SELF_GEN)
+            if bool(tour.get("selfGuide")) != (identity_type == SELF_GEN_REQUESTER) and not normal_support:
                 raise APIError("Escolha um número de Tour compatível com Consultor ou Self Gen.", 409)
+            if normal_support:
+                support_id = consultant_id if route_stage == "PRESTIGE" else tour.get("consultantId")
+                supporting_consultant = find(db.get("consultants", []), support_id, "Consultor apoiado")
+                if not supporting_consultant.get("active", True):
+                    raise APIError("O consultor apoiado está inativo.", 409)
+                if (tour.get("consultantId") or tour.get("consultantName")) and not tour_identity_matches(
+                    tour, supporting_consultant, "consultantId", "consultantName"
+                ):
+                    raise APIError("Este Tour pertence a outro consultor. Selecione o consultor correto.", 409)
             linked_identity_id = str(tour.get(identity_id_field) or "").strip()
             linked_identity_name = normalized_identity_name(tour.get(identity_name_field))
             identity_name = normalized_identity_name(identity.get("name"))
@@ -3941,9 +4026,13 @@ def create_public_consultant_support_request():
                 confirm_quantity_tour_start(
                     db,
                     tour,
-                    consultant_id=identity["id"] if identity_type == CONSULTANT_REQUESTER else None,
+                    consultant_id=supporting_consultant["id"] if supporting_consultant else (identity["id"] if identity_type == CONSULTANT_REQUESTER else None),
                     self_gen_id=identity["id"] if identity_type == SELF_GEN_REQUESTER else None,
                 )
+                if normal_support:
+                    # Keep the normal Tour category and its consultant; record
+                    # the Self Gen separately so the next legs remain scoped.
+                    tour.update(selfGenId=identity["id"], selfGenName=identity["name"])
             if any(
                 item.get("tourId") == tour["id"] and item.get("status") == HOSTESS_REQUEST_OPEN
                 for item in db.get("hostessRequests", [])
@@ -3982,8 +4071,8 @@ def create_public_consultant_support_request():
             "requesterType": identity_type,
             "requestedById": requester_user.get("id") if requester_user else None,
             "requestedByName": identity["name"],
-            "consultantId": identity["id"] if identity_type == CONSULTANT_REQUESTER else None,
-            "consultantName": identity["name"] if identity_type == CONSULTANT_REQUESTER else None,
+            "consultantId": supporting_consultant["id"] if supporting_consultant else (identity["id"] if identity_type == CONSULTANT_REQUESTER else None),
+            "consultantName": supporting_consultant["name"] if supporting_consultant else (identity["name"] if identity_type == CONSULTANT_REQUESTER else None),
             "selfGenId": identity["id"] if identity_type == SELF_GEN_REQUESTER else None,
             "selfGenName": identity["name"] if identity_type == SELF_GEN_REQUESTER else None,
             "note": note,
@@ -4394,8 +4483,11 @@ def create_user():
             raise APIError("Esse usuário já existe.", 409)
         driver_id = validate_driver_link(db, payload.get("driverId")) if role == ROLE_DRIVER else None
         consultant_id = validate_consultant_link(db, payload.get("consultantId")) if role == ROLE_CONSULTANT else None
+        self_gen_id = validate_self_gen_link(db, payload.get("selfGenId")) if role == ROLE_SELF_GEN else None
         if consultant_id:
             name = find(db.get("consultants", []), consultant_id, "Consultor")["name"]
+        if self_gen_id:
+            name = find(db.get("selfGens", []), self_gen_id, "Self Gen")["name"]
         permissions = normalize_permissions(payload.get("permissions"), role, strict=True) if "permissions" in payload else default_permissions_for_role(role)
         if role == ROLE_CONSULTANT:
             permissions = []
@@ -4405,6 +4497,8 @@ def create_user():
             new_user["driverId"] = driver_id
         if consultant_id:
             new_user["consultantId"] = consultant_id
+        if self_gen_id:
+            new_user["selfGenId"] = self_gen_id
         if role in {ROLE_DRIVER, ROLE_HOSTESS} or PERMISSION_CHECK_IN in permissions:
             new_user["checkInLocation"] = str(payload.get("checkInLocation", "")).strip() or "Prestige Praia do Forte"
         db["users"].append(new_user)
@@ -4459,8 +4553,11 @@ def update_user(user_id: str):
         driver_id = validate_driver_link(db, driver_id, target["id"])
         consultant_id = payload.get("consultantId", target.get("consultantId")) if role == ROLE_CONSULTANT else None
         consultant_id = validate_consultant_link(db, consultant_id, target["id"]) if role == ROLE_CONSULTANT else None
+        self_gen_id = validate_self_gen_link(db, payload.get("selfGenId", target.get("selfGenId")), target["id"]) if role == ROLE_SELF_GEN else None
         if consultant_id:
             name = find(db.get("consultants", []), consultant_id, "Consultor")["name"]
+        if self_gen_id:
+            name = find(db.get("selfGens", []), self_gen_id, "Self Gen")["name"]
         if previous_role == ROLE_DRIVER and role != ROLE_DRIVER and previous_driver_id:
             remove_driver_for_role_change(db, previous_driver_id, target["id"])
         target.update({"name": name, "username": username, "role": role, "permissions": permissions, "active": active})
@@ -4474,6 +4571,10 @@ def update_user(user_id: str):
             target["consultantId"] = consultant_id
         else:
             target.pop("consultantId", None)
+        if self_gen_id:
+            target["selfGenId"] = self_gen_id
+        else:
+            target.pop("selfGenId", None)
         if role in {ROLE_DRIVER, ROLE_HOSTESS} or PERMISSION_CHECK_IN in permissions:
             target["checkInLocation"] = str(payload.get("checkInLocation", target.get("checkInLocation", ""))).strip() or "Prestige Praia do Forte"
         else:
@@ -5411,6 +5512,11 @@ def update_self_gen(self_gen_id: str):
             "name": name,
             "active": bool(payload["active"]) if "active" in payload else self_gen.get("active", True),
         })
+        for account in db.get("users", []):
+            if account.get("role") == ROLE_SELF_GEN and account.get("selfGenId") == self_gen_id:
+                account["name"] = name
+                if not self_gen["active"]:
+                    delete_mobile_api_sessions_for_user(db, account["id"])
         log_activity(db, user, None, None, None, f"Self Gen {name} atualizado.")
         save_database(db)
         return jsonify(selfGen=self_gen)
@@ -5423,6 +5529,8 @@ def delete_self_gen(self_gen_id: str):
         user = get_current_user(db)
         require_permission(user, PERMISSION_MANAGE_CONSULTANTS, "Seu usuário não possui permissão para gerenciar Self Gen.")
         self_gen = find(db.setdefault("selfGens", []), self_gen_id, "Self Gen")
+        if any(item.get("role") == ROLE_SELF_GEN and item.get("selfGenId") == self_gen_id for item in db.get("users", [])):
+            raise APIError("Exclua primeiro o usuário de acesso vinculado a este Self Gen.", 409)
         db["selfGens"] = [item for item in db["selfGens"] if item["id"] != self_gen_id]
         log_activity(db, user, None, None, None, f"Self Gen {self_gen['name']} excluído.")
         save_database(db)

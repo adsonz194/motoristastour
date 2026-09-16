@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "ui:dev": "vite",
-    "ui:build": "vite build"
+    "ui:build": "vite build --outDir static --emptyOutDir false"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
