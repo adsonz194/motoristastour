@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: motoristastour
+    name: homologa-o-gbti
     runtime: python
     plan: free
     numInstances: 1

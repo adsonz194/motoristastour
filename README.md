@@ -18,7 +18,7 @@ Em desenvolvimento, sem `DATABASE_URL`, os dados são salvos em `data/database.j
 
 ## API para aplicativo Android
 
-A API móvel versionada usa a base `https://motoristastour.onrender.com/api/mobile/v1`. Ela fornece login persistente e revogável por aparelho e espelha todas as rotas autenticadas do painel, mantendo no servidor as mesmas permissões e regras operacionais. Comece por `POST /auth/login` e depois carregue `GET /bootstrap` com o cabeçalho `Authorization: Bearer mta_...`.
+A API móvel versionada de homologação usa a base `https://homologa-o-gbti.onrender.com/api/mobile/v1`. Ela fornece login persistente e revogável por aparelho e espelha todas as rotas autenticadas do painel, mantendo no servidor as mesmas permissões e regras operacionais. Comece por `POST /auth/login` e depois carregue `GET /bootstrap` com o cabeçalho `Authorization: Bearer mta_...`.
 
 O guia de integração, exemplo Retrofit/Kotlin, fluxo de GPS e tabela de rotas estão em [`docs/ANDROID_API.md`](docs/ANDROID_API.md). O contrato OpenAPI está em [`docs/mobile-api.openapi.yaml`](docs/mobile-api.openapi.yaml) e também é servido pela aplicação em `/api/mobile/v1/openapi.yaml`.
 
@@ -53,7 +53,7 @@ No iPhone e iPad com iOS/iPadOS 16.4 ou mais recente, abra o menu Compartilhar d
 
 O WhatsApp Business Cloud API permite que consultores iniciem e continuem o Tour sem abrir o painel: o número cadastrado identifica o consultor, mostra os Tours livres e cria a solicitação de carrinho que aparece no site/app dos motoristas. O estado oficial continua no PostgreSQL; a primeira pessoa que assume a chamada permanece protegida pela mesma regra de concorrência já aplicada no painel.
 
-1. No Meta for Developers, configure o webhook como `https://motoristastour.onrender.com/whatsapp/webhook` e use exatamente o mesmo token de verificação definido em `WHATSAPP_WEBHOOK_VERIFY_TOKEN`.
+1. Para homologação no Meta for Developers, configure o webhook como `https://homologa-o-gbti.onrender.com/whatsapp/webhook` e use exatamente o mesmo token de verificação definido em `WHATSAPP_WEBHOOK_VERIFY_TOKEN`.
 2. No Render, crie como segredos `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_GRAPH_API_VERSION`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN` e `WHATSAPP_APP_SECRET`. Não salve nenhum deles no repositório.
 3. Em **Consultores**, informe o WhatsApp de cada pessoa com DDI, por exemplo `+55 71 99999-9999`. Um número só pode pertencer a um consultor ativo.
 4. O consultor envia `MENU` ao número comercial. Ele seleciona o Tour, confirma a solicitação no Prestige e, depois, recebe as opções adequadas para Casa e Galeria. Na Galeria, o WhatsApp exige um dos destinos cadastrados antes de abrir o chamado.
