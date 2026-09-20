@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -11,7 +12,9 @@ import threading
 from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -43,6 +46,15 @@ POSTGRES_STATE_KEY = "primary"
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "").strip()
 VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "").strip()
+# WhatsApp uses the official WhatsApp Business Cloud API. Keep all credentials
+# in the deployment environment; the public webhook remains unavailable until
+# its verification token and signature secret are configured.
+WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+WHATSAPP_GRAPH_API_VERSION = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v22.0").strip() or "v22.0"
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "").strip()
+WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
+WHATSAPP_PROCESSED_MESSAGE_LIMIT = 500
 DB_LOCK = threading.RLock()
 SESSIONS: dict[str, dict[str, Any]] = {}
 MOBILE_API_TOKEN_PREFIX = "mta_"
@@ -667,6 +679,9 @@ def initial_database() -> dict[str, Any]:
         # them in their own PostgreSQL table so device endpoints never enter
         # the operational state blob.
         "pushSubscriptions": [],
+        # Keep only message IDs to make Meta webhook retries idempotent.
+        # Message contents and telephone numbers are never logged.
+        "whatsappProcessedMessages": [],
         "hotelClosures": [],
         "defaultDeparturePrestige": PRESTIGE_BAHIA,
         "attendance": [],
@@ -834,6 +849,152 @@ def save_database(db: dict[str, Any]) -> None:
 def push_is_configured() -> bool:
     """Whether this deployment can send authenticated Web Push messages."""
     return bool(send_web_push and VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and VAPID_SUBJECT)
+
+
+def normalize_whatsapp_number(value: Any) -> str | None:
+    """Return an E.164-like WhatsApp destination without retaining formatting."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if len(raw) > 64 or any(character not in "+0123456789() -" for character in raw):
+        raise APIError("Informe o WhatsApp somente com DDI e números.")
+    if "+" in raw and (raw.count("+") != 1 or not raw.lstrip().startswith("+")):
+        raise APIError("O número de WhatsApp está inválido.")
+    number = "".join(character for character in raw if character.isdigit())
+    if not 10 <= len(number) <= 15 or number.startswith("0"):
+        raise APIError("Informe o WhatsApp com DDI e número válido.")
+    return number
+
+
+def whatsapp_messaging_is_configured() -> bool:
+    return bool(WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_GRAPH_API_VERSION)
+
+
+def whatsapp_webhook_is_configured() -> bool:
+    return bool(
+        whatsapp_messaging_is_configured()
+        and WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        and WHATSAPP_APP_SECRET
+    )
+
+
+def whatsapp_message_endpoint() -> str:
+    return (
+        f"https://graph.facebook.com/{WHATSAPP_GRAPH_API_VERSION}/"
+        f"{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    )
+
+
+def whatsapp_text_payload(body: str) -> dict[str, Any]:
+    return {
+        "type": "text",
+        "text": {"preview_url": False, "body": str(body)[:4096]},
+    }
+
+
+def whatsapp_button_payload(body: str, buttons: list[tuple[str, str]]) -> dict[str, Any]:
+    return {
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": str(body)[:1024]},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": button_id, "title": title[:20]}}
+                    for button_id, title in buttons[:3]
+                ],
+            },
+        },
+    }
+
+
+def whatsapp_list_payload(
+    body: str,
+    button_label: str,
+    rows: list[dict[str, str]],
+) -> dict[str, Any]:
+    return {
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": str(body)[:1024]},
+            "action": {
+                "button": button_label[:20],
+                "sections": [{"title": "Opções", "rows": rows[:10]}],
+            },
+        },
+    }
+
+
+def send_whatsapp_message(recipient: Any, message: dict[str, Any]) -> bool:
+    """Send one WhatsApp Cloud API message; failures never stop operations."""
+    if not whatsapp_messaging_is_configured():
+        return False
+    try:
+        number = normalize_whatsapp_number(recipient)
+    except APIError:
+        return False
+    if not number or not isinstance(message, dict):
+        return False
+    payload = {"messaging_product": "whatsapp", "to": number, **message}
+    try:
+        request_payload = Request(
+            whatsapp_message_endpoint(),
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(request_payload, timeout=5) as response:
+            status_code = getattr(response, "status", response.getcode())
+            return 200 <= int(status_code) < 300
+    except (HTTPError, URLError, OSError, ValueError, TypeError):
+        return False
+
+
+def send_whatsapp_messages(messages: list[tuple[str, dict[str, Any]]]) -> dict[str, int | bool]:
+    """Deliver a small batch without letting a delivery failure halt operations."""
+    if not whatsapp_messaging_is_configured():
+        return {"attempted": 0, "delivered": 0, "disabled": True}
+    attempted = 0
+    delivered = 0
+    for recipient, message in messages:
+        attempted += 1
+        if send_whatsapp_message(recipient, message):
+            delivered += 1
+    return {"attempted": attempted, "delivered": delivered, "disabled": False}
+
+
+def valid_whatsapp_webhook_signature(raw_body: bytes, value: Any) -> bool:
+    """Authenticate Meta webhooks with the app secret before reading payloads."""
+    signature = str(value or "").strip()
+    if not WHATSAPP_APP_SECRET or not signature.startswith("sha256="):
+        return False
+    expected = hmac.new(
+        WHATSAPP_APP_SECRET.encode("utf-8"), raw_body, hashlib.sha256,
+    ).hexdigest()
+    return secrets.compare_digest(signature.removeprefix("sha256="), expected)
+
+
+def whatsapp_message_already_processed(db: dict[str, Any], message_id: Any) -> bool:
+    normalized_id = str(message_id or "").strip()
+    if not normalized_id:
+        return True
+    return normalized_id in db.setdefault("whatsappProcessedMessages", [])
+
+
+def remember_whatsapp_message(db: dict[str, Any], message_id: Any) -> None:
+    normalized_id = str(message_id or "").strip()
+    if not normalized_id:
+        return
+    entries = [
+        item for item in db.setdefault("whatsappProcessedMessages", [])
+        if isinstance(item, str) and item != normalized_id
+    ]
+    entries.insert(0, normalized_id)
+    db["whatsappProcessedMessages"] = entries[:WHATSAPP_PROCESSED_MESSAGE_LIMIT]
 
 
 def normalize_push_subscription(value: Any) -> dict[str, Any]:
@@ -1119,6 +1280,82 @@ def notify_hostess_car_update(
     return send_push_messages(db, hostess_push_messages(db, event_type, driver_name, requester_type))
 
 
+def whatsapp_consultant_for_tour(db: dict[str, Any], tour: dict[str, Any]) -> dict[str, Any] | None:
+    consultant_id = str(tour.get("consultantId") or "").strip()
+    consultant = next((
+        item for item in db.get("consultants", []) if item.get("id") == consultant_id
+    ), None)
+    if not consultant_id:
+        legacy_name = normalized_identity_name(tour.get("consultantName"))
+        legacy_matches = [
+            item for item in db.get("consultants", [])
+            if legacy_name and normalized_identity_name(item.get("name")) == legacy_name
+        ]
+        # Old Tours can have only a consultant name. Deliver to it only when
+        # that name maps unambiguously to one current consultant.
+        consultant = legacy_matches[0] if len(legacy_matches) == 1 else None
+    if not consultant or not consultant.get("active", True) or not consultant.get("whatsappNumber"):
+        return None
+    return consultant
+
+
+def tour_whatsapp_label(tour: dict[str, Any]) -> str:
+    return str(tour.get("slotLabel") or tour.get("groupName") or "Tour").strip() or "Tour"
+
+
+def whatsapp_gallery_destination_message(db: dict[str, Any], tour: dict[str, Any]) -> dict[str, Any]:
+    rows = [
+        {
+            "id": f"destination:{tour['id']}:{destination['id']}",
+            "title": str(destination.get("name") or "Destino")[:24],
+            "description": "Solicitar carrinho",
+        }
+        for destination in db.get("destinations", [])
+        if destination.get("active", True)
+    ]
+    if not rows:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(tour)} está na Galeria. Os destinos estão temporariamente indisponíveis."
+        )
+    return whatsapp_list_payload(
+        f"{tour_whatsapp_label(tour)} chegou à Galeria. Escolha o destino para solicitar um carrinho.",
+        "Escolher destino",
+        rows,
+    )
+
+
+def notify_whatsapp_consultant_for_route_event(
+    db: dict[str, Any],
+    tour: dict[str, Any],
+    event_type: str,
+    driver_name: str | None = None,
+) -> dict[str, int | bool]:
+    """Notify only the consultant attached to this Tour's WhatsApp number."""
+    consultant = whatsapp_consultant_for_tour(db, tour)
+    if not consultant:
+        return {"attempted": 0, "delivered": 0, "disabled": not whatsapp_messaging_is_configured()}
+    label = tour_whatsapp_label(tour)
+    if event_type == "DRIVER_ASSIGNED":
+        name = str(driver_name or "Um motorista").strip()
+        message = whatsapp_text_payload(
+            f"{name} assumiu {label}. O atendimento está em andamento."
+        )
+    elif event_type == "WAITING_HOME":
+        message = whatsapp_button_payload(
+            f"{label}: o motorista foi liberado e você está aguardando na Casa. Quando precisar, solicite outro carrinho.",
+            [(f"request:{tour['id']}:CASA", "Solicitar na Casa")],
+        )
+    elif event_type == "GALLERY":
+        message = whatsapp_gallery_destination_message(db, tour)
+    elif event_type == "COMPLETE":
+        message = whatsapp_text_payload(
+            f"{label} foi finalizado. Obrigado. Envie MENU quando precisar iniciar outro Tour."
+        )
+    else:
+        return {"attempted": 0, "delivered": 0, "disabled": not whatsapp_messaging_is_configured()}
+    return send_whatsapp_messages([(consultant["whatsappNumber"], message)])
+
+
 def reset_operational_data(db: dict[str, Any], message: str) -> None:
     """Keep people and system setup, but start a clean operational day."""
     current_time = timestamp()
@@ -1252,6 +1489,9 @@ def operational_database() -> dict[str, Any]:
         # Used only by local JSON development. Neon subscriptions are stored
         # separately by endpoint in tour_control_push_subscriptions.
         db["pushSubscriptions"] = []
+        schema_updated = True
+    if not isinstance(db.get("whatsappProcessedMessages"), list):
+        db["whatsappProcessedMessages"] = []
         schema_updated = True
     if "hotelClosures" not in db:
         db["hotelClosures"] = []
@@ -1387,6 +1627,18 @@ def clean_user(user: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def clean_consultant(consultant: dict[str, Any], *, include_whatsapp_number: bool = False) -> dict[str, Any]:
+    """Expose a consultant without leaking their WhatsApp number by default."""
+    result = {
+        "id": consultant.get("id"),
+        "name": consultant.get("name"),
+        "active": bool(consultant.get("active", True)),
+    }
+    if include_whatsapp_number and consultant.get("whatsappNumber"):
+        result["whatsappNumber"] = consultant["whatsappNumber"]
+    return result
+
+
 def safe_database(db: dict[str, Any]) -> dict[str, Any]:
     result = dict(db)
     result["users"] = [clean_user(user) for user in db["users"]]
@@ -1397,6 +1649,7 @@ def safe_database(db: dict[str, Any]) -> dict[str, Any]:
     result.pop("driverLocations", None)
     result.pop("hostessRequestLocations", None)
     result.pop("mobileApiSessions", None)
+    result.pop("whatsappProcessedMessages", None)
     return result
 
 
@@ -3618,6 +3871,243 @@ def handle_http_error(error: HTTPException):
     return error
 
 
+def whatsapp_consultant_by_number(db: dict[str, Any], number: Any) -> dict[str, Any] | None:
+    try:
+        normalized_number = normalize_whatsapp_number(number)
+    except APIError:
+        return None
+    if not normalized_number:
+        return None
+    return next(
+        (
+            consultant
+            for consultant in db.get("consultants", [])
+            if consultant.get("active", True)
+            and consultant.get("whatsappNumber") == normalized_number
+        ),
+        None,
+    )
+
+
+def whatsapp_free_tours(db: dict[str, Any]) -> list[dict[str, Any]]:
+    return tours_for_display([
+        tour for tour in db.get("tours", [])
+        if tour.get("status") == STATE_AVAILABLE
+        and not tour.get("selfGuide")
+        and not tour.get("consultantId")
+        and not tour.get("consultantName")
+        and not tour.get("pendingConsultantRequestId")
+    ])
+
+
+def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dict[str, Any]:
+    """Build the next valid WhatsApp action from the Tour's persisted state."""
+    active_request = next(
+        (
+            item for item in db.get("hostessRequests", [])
+            if item.get("consultantId") == consultant["id"]
+            and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+        ),
+        None,
+    )
+    if active_request:
+        label = str(active_request.get("tourLabel") or "Seu Tour")
+        driver_name = str(active_request.get("assignedDriverName") or "").strip()
+        status = "foi assumido por " + driver_name if driver_name else "está aguardando um motorista"
+        return whatsapp_text_payload(f"{label}: seu pedido {status}.")
+
+    linked_tours = tours_for_display([
+        tour for tour in db.get("tours", [])
+        if tour_identity_matches(tour, consultant, "consultantId", "consultantName")
+        and tour.get("status") not in TERMINAL_TOUR_STATES
+    ])
+    waiting_home = next((tour for tour in linked_tours if tour.get("status") == STATE_WAITING_HOME), None)
+    if waiting_home:
+        return whatsapp_button_payload(
+            f"{tour_whatsapp_label(waiting_home)} está aguardando na Casa. Solicite um carrinho quando o grupo precisar continuar.",
+            [(f"request:{waiting_home['id']}:CASA", "Solicitar na Casa")],
+        )
+    waiting_gallery = next((tour for tour in linked_tours if tour.get("status") == STATE_WAITING_DESTINATION), None)
+    if waiting_gallery:
+        return whatsapp_gallery_destination_message(db, waiting_gallery)
+    in_progress = next((tour for tour in linked_tours if tour.get("status") == STATE_IN_TOUR), None)
+    if in_progress:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(in_progress)} está em atendimento. Aguarde o motorista registrar a próxima etapa."
+        )
+    at_home = next((tour for tour in linked_tours if tour.get("status") == STATE_HOME), None)
+    if at_home:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(at_home)} está na Casa com um motorista. Quando ele for liberado, você receberá a opção de solicitar outro carrinho."
+        )
+    at_destination = next((tour for tour in linked_tours if tour.get("status") == STATE_FINAL_DESTINATION), None)
+    if at_destination:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(at_destination)} está a caminho do destino final."
+        )
+
+    tours = whatsapp_free_tours(db)
+    if not tours:
+        return whatsapp_text_payload("Não há Tours disponíveis agora. Envie MENU novamente em alguns instantes.")
+    rows = [
+        {
+            "id": f"select-tour:{tour['id']}",
+            "title": tour_whatsapp_label(tour)[:24],
+            "description": f"{TRANSFER_SCHEDULES.get(tour.get('wave'), {}).get('label', 'Tour')} - disponível"[:72],
+        }
+        for tour in tours[:10]
+    ]
+    suffix = " Os primeiros 10 aparecem abaixo." if len(tours) > len(rows) else ""
+    return whatsapp_list_payload(
+        f"Olá, {consultant['name']}. Há {len(tours)} Tour(es) disponível(is). Escolha o seu Tour para solicitar o carrinho no Prestige.{suffix}",
+        "Escolher Tour",
+        rows,
+    )
+
+
+def whatsapp_message_interaction_id(message: dict[str, Any]) -> str:
+    message_type = str(message.get("type") or "").strip().lower()
+    if message_type == "interactive":
+        interactive = message.get("interactive")
+        if not isinstance(interactive, dict):
+            return ""
+        for field in ("button_reply", "list_reply"):
+            reply = interactive.get(field)
+            if isinstance(reply, dict) and reply.get("id"):
+                return str(reply["id"]).strip()
+    if message_type == "text":
+        text = message.get("text")
+        return str(text.get("body") or "").strip() if isinstance(text, dict) else ""
+    return ""
+
+
+def whatsapp_reply_for_incoming_message(
+    db: dict[str, Any], message: dict[str, Any]
+) -> tuple[str | None, dict[str, Any] | None, bool]:
+    """Handle one already-authenticated inbound event without retaining its text."""
+    sender = str(message.get("from") or "").strip()
+    try:
+        recipient = normalize_whatsapp_number(sender)
+    except APIError:
+        return None, None, False
+    if not recipient:
+        return None, None, False
+    consultant = whatsapp_consultant_by_number(db, recipient)
+    if not consultant:
+        return recipient, whatsapp_text_payload(
+            "Este número não está vinculado a um consultor ativo no Motoristas Tour. Peça à coordenação para cadastrá-lo com DDI."
+        ), False
+    interaction_id = whatsapp_message_interaction_id(message)
+    normalized_action = interaction_id.casefold()
+    if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
+        return recipient, whatsapp_menu_message(db, consultant), False
+    if interaction_id.startswith("select-tour:"):
+        tour_id = interaction_id.removeprefix("select-tour:").strip()
+        tour = next((item for item in whatsapp_free_tours(db) if item.get("id") == tour_id), None)
+        if not tour:
+            return recipient, whatsapp_text_payload("Esse Tour não está mais disponível. Envie MENU para atualizar a lista."), False
+        return recipient, whatsapp_button_payload(
+            f"{tour_whatsapp_label(tour)} selecionado. Confirme para solicitar o carrinho no Prestige.",
+            [(f"request:{tour['id']}:PRESTIGE", "Solicitar carrinho"), ("menu", "Voltar")],
+        ), False
+    if interaction_id.startswith("request:"):
+        parts = interaction_id.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), False
+        _, tour_id, stage = parts
+        car_request = create_whatsapp_consultant_route_request(db, consultant, tour_id, stage)
+        return recipient, whatsapp_text_payload(
+            f"Solicitação enviada: {car_request['tourLabel']} em {car_request['guestLocationLabel']}. Aguarde um motorista assumir."
+        ), True
+    if interaction_id.startswith("destination:"):
+        parts = interaction_id.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), False
+        _, tour_id, destination_id = parts
+        car_request = create_whatsapp_consultant_route_request(
+            db, consultant, tour_id, "GALERIA_EXIT", destination_id,
+        )
+        return recipient, whatsapp_text_payload(
+            f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
+        ), True
+    return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para ver o próximo passo."), False
+
+
+def incoming_whatsapp_messages(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or payload.get("object") != "whatsapp_business_account":
+        return []
+    messages: list[dict[str, Any]] = []
+    for entry in payload.get("entry", []):
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes", []):
+            if not isinstance(change, dict) or change.get("field") != "messages":
+                continue
+            value = change.get("value")
+            if isinstance(value, dict):
+                messages.extend(item for item in value.get("messages", []) if isinstance(item, dict))
+    return messages
+
+
+@app.get("/whatsapp/webhook")
+def verify_whatsapp_webhook():
+    mode = request.args.get("hub.mode", "")
+    verify_token = request.args.get("hub.verify_token", "")
+    challenge = request.args.get("hub.challenge", "")
+    if (
+        whatsapp_webhook_is_configured()
+        and mode == "subscribe"
+        and secrets.compare_digest(verify_token, WHATSAPP_WEBHOOK_VERIFY_TOKEN)
+        and challenge
+    ):
+        return challenge, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    return "Forbidden", 403, {"Content-Type": "text/plain; charset=utf-8"}
+
+
+@app.post("/whatsapp/webhook")
+def receive_whatsapp_webhook():
+    raw_body = request.get_data(cache=True)
+    if not whatsapp_webhook_is_configured() or not valid_whatsapp_webhook_signature(
+        raw_body, request.headers.get("X-Hub-Signature-256"),
+    ):
+        return jsonify(error="Webhook do WhatsApp não autorizado."), 401
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(error="Webhook do WhatsApp inválido."), 400
+
+    replies: list[tuple[str, dict[str, Any]]] = []
+    notify_drivers = 0
+    changed = False
+    with DB_LOCK:
+        db = operational_database()
+        for message in incoming_whatsapp_messages(payload):
+            message_id = str(message.get("id") or "").strip()
+            if whatsapp_message_already_processed(db, message_id):
+                continue
+            try:
+                recipient, reply, opened_request = whatsapp_reply_for_incoming_message(db, message)
+            except APIError as error:
+                try:
+                    recipient = normalize_whatsapp_number(message.get("from"))
+                except APIError:
+                    recipient = None
+                reply = whatsapp_text_payload(error.message)
+                opened_request = False
+            remember_whatsapp_message(db, message_id)
+            changed = True
+            if recipient and reply:
+                replies.append((recipient, reply))
+            if opened_request:
+                notify_drivers += 1
+        if changed:
+            save_database(db)
+
+    for _ in range(notify_drivers):
+        notify_hostess_car_update(db, "REQUESTED", requester_type=CONSULTANT_REQUESTER)
+    send_whatsapp_messages(replies)
+    return "OK", 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+
 @app.post("/api/auth/login")
 def login():
     payload = request.get_json(silent=True) or {}
@@ -4201,6 +4691,124 @@ def create_public_consultant_support_request():
     return response
 
 
+def create_whatsapp_consultant_route_request(
+    db: dict[str, Any],
+    consultant: dict[str, Any],
+    tour_id: Any,
+    route_stage: str,
+    destination_id: Any = None,
+) -> dict[str, Any]:
+    """Create a single-cart request through the same Tour state machine as the UI."""
+    normalized_tour_id = str(tour_id or "").strip()
+    if not normalized_tour_id:
+        raise APIError("Escolha o Tour antes de solicitar o carrinho.")
+    stage = str(route_stage or "").strip().upper()
+    if stage not in CONSULTANT_ROUTE_STAGES:
+        raise APIError("A etapa solicitada não está disponível.")
+    tour = find(db.get("tours", []), normalized_tour_id, "Tour")
+    expected_states = {
+        "PRESTIGE": {STATE_AVAILABLE},
+        "CASA": {STATE_WAITING_HOME},
+        "GALERIA_EXIT": {STATE_WAITING_DESTINATION},
+    }[stage]
+    label = tour_whatsapp_label(tour)
+    if tour.get("status") not in expected_states:
+        raise APIError(f"{label} não está disponível nesta etapa.", 409)
+    if tour.get("selfGuide"):
+        raise APIError("Este Tour é exclusivo de Self Gen.", 409)
+    if stage == "PRESTIGE":
+        linked_id = str(tour.get("consultantId") or "").strip()
+        linked_name = normalized_identity_name(tour.get("consultantName"))
+        if linked_id and linked_id != consultant["id"]:
+            raise APIError("Este Tour já está ligado a outro consultor.", 409)
+        if not linked_id and linked_name and linked_name != normalized_identity_name(consultant.get("name")):
+            raise APIError("Este Tour já está ligado a outro consultor.", 409)
+    elif not tour_identity_matches(tour, consultant, "consultantId", "consultantName"):
+        raise APIError("Este Tour não está ligado ao seu WhatsApp.", 409)
+    if any(
+        item.get("tourId") == tour["id"]
+        and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+        for item in db.get("hostessRequests", [])
+    ):
+        raise APIError(f"{label} já possui uma solicitação de carrinho aberta.", 409)
+    if stage == "CASA":
+        required_carts = int(tour.get("requiredCartCount") or 1)
+        if required_carts != 1:
+            raise APIError(
+                f"{label} precisa de {required_carts} carrinhos na Casa. Solicite a coordenação pelo painel.",
+                409,
+            )
+    destination = None
+    if stage == "GALERIA_EXIT":
+        normalized_destination_id = str(destination_id or "").strip()
+        if not normalized_destination_id:
+            raise APIError("Escolha o destino para sair da Galeria.")
+        destination = find(db.get("destinations", []), normalized_destination_id, "Destino")
+        if not destination.get("active", True):
+            raise APIError("Esse destino está inativo.", 409)
+    if stage == "PRESTIGE":
+        confirm_quantity_tour_start(db, tour, consultant_id=consultant["id"])
+    guest_location = (
+        "SELECTION"
+        if active_operation_settings(db).get("defaultDeparturePrestige") == PRESTIGE_SELECTION
+        else "WAVES"
+    )
+    stage_label = CONSULTANT_ROUTE_STAGES[stage]
+    location_label = (
+        f"{stage_label} {CONSULTANT_GUEST_LOCATIONS[guest_location]}"
+        if stage == "PRESTIGE" else stage_label
+    )
+    created_at = timestamp()
+    car_request = {
+        "id": new_id("supportreq"),
+        "status": HOSTESS_REQUEST_OPEN,
+        "requesterType": CONSULTANT_REQUESTER,
+        "requestedById": None,
+        "requestedByName": consultant["name"],
+        "consultantId": consultant["id"],
+        "consultantName": consultant["name"],
+        "selfGenId": None,
+        "selfGenName": None,
+        "note": "Solicitação recebida pelo WhatsApp.",
+        "assignedDriverId": None,
+        "assignedDriverName": None,
+        "acceptedAt": None,
+        "operationDate": operation_date(),
+        "publicAccessTokenHash": public_support_access_token_digest(secrets.token_urlsafe(32)),
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "tourId": tour["id"],
+        "tourLabel": tour_whatsapp_label(tour),
+        "routeStage": stage,
+        "routeStageLabel": stage_label,
+        "guestLocation": guest_location if stage == "PRESTIGE" else None,
+        "guestLocationLabel": location_label,
+        "destinationId": destination.get("id") if destination else None,
+        "destinationName": destination.get("name") if destination else None,
+    }
+    db.setdefault("hostessRequests", []).insert(0, car_request)
+    tour.update({
+        "pendingConsultantRequestId": car_request["id"],
+        "routeRequestStage": stage,
+        "routeRequestLocation": location_label,
+        "routeRequestDestinationId": car_request["destinationId"],
+        "routeRequestDestinationName": car_request["destinationName"],
+        "updatedAt": created_at,
+    })
+    whatsapp_actor = {
+        "id": consultant["id"],
+        "name": consultant["name"],
+        "username": "whatsapp",
+        "role": ROLE_CONSULTANT,
+    }
+    destination_text = f" para {car_request['destinationName']}" if car_request["destinationName"] else ""
+    log_activity(
+        db, whatsapp_actor, tour, tour.get("status"), tour.get("status"),
+        f"{consultant['name']} solicitou carrinho pelo WhatsApp para {car_request['tourLabel']} em {location_label}{destination_text}.",
+    )
+    return car_request
+
+
 @app.get("/api/public/consultant-support-requests/<request_id>")
 @app.get("/api/consultant/support-requests/<request_id>")
 def public_consultant_support_request(request_id: str):
@@ -4304,6 +4912,9 @@ def start_consultant_tour_request(request_id: str):
             action=action,
         )
     notify_operation_update(db, "TOURS")
+    notify_whatsapp_consultant_for_route_event(
+        db, tour, "DRIVER_ASSIGNED", driver["name"],
+    )
     return response
 
 
@@ -4510,6 +5121,18 @@ def bootstrap_data_for_user(
     if PERMISSION_MANAGE_SETTINGS in permissions:
         data["hotelClosures"] = db.get("hotelClosures", [])
         data["defaultDeparturePrestige"] = db.get("defaultDeparturePrestige", PRESTIGE_BAHIA)
+
+    # A WhatsApp number identifies a consultant in an external messaging
+    # channel. Only people allowed to manage consultant registrations receive
+    # it; all other operational screens only need names and active status.
+    if "consultants" in data:
+        data["consultants"] = [
+            clean_consultant(
+                consultant,
+                include_whatsapp_number=PERMISSION_MANAGE_CONSULTANTS in permissions,
+            )
+            for consultant in data["consultants"]
+        ]
 
     # Pages are defensive in the browser, but returning empty collections
     # keeps a custom, narrowly scoped account from crashing a shared view.
@@ -5514,7 +6137,12 @@ def create_consultant():
         name = str(payload.get("name", "")).strip()
         if not name:
             raise APIError("Informe o nome do consultor.")
+        whatsapp_number = normalize_whatsapp_number(payload.get("whatsappNumber"))
+        if whatsapp_number and any(item.get("whatsappNumber") == whatsapp_number for item in db.get("consultants", [])):
+            raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)
         consultant = {"id": new_id("con"), "name": name, "active": bool(payload.get("active", True))}
+        if whatsapp_number:
+            consultant["whatsappNumber"] = whatsapp_number
         db["consultants"].append(consultant)
         log_activity(db, user, None, None, None, f"Consultor {name} cadastrado.")
         save_database(db)
@@ -5532,7 +6160,20 @@ def update_consultant(consultant_id: str):
         name = str(payload.get("name", consultant["name"])).strip()
         if not name:
             raise APIError("Informe o nome do consultor.")
+        whatsapp_number = (
+            normalize_whatsapp_number(payload.get("whatsappNumber"))
+            if "whatsappNumber" in payload else consultant.get("whatsappNumber")
+        )
+        if whatsapp_number and any(
+            item.get("id") != consultant_id and item.get("whatsappNumber") == whatsapp_number
+            for item in db.get("consultants", [])
+        ):
+            raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)
         consultant.update({"name": name, "active": bool(payload["active"]) if "active" in payload else consultant.get("active", True)})
+        if whatsapp_number:
+            consultant["whatsappNumber"] = whatsapp_number
+        else:
+            consultant.pop("whatsappNumber", None)
         for account in db.get("users", []):
             if account.get("role") == ROLE_CONSULTANT and account.get("consultantId") == consultant_id:
                 account["name"] = name
@@ -5638,6 +6279,15 @@ def tour_action(tour_id: str):
         # A cancellation changes the operational tour/Self Gen total, so
         # notify the same subscribed profiles as a quantity registration.
         notify_operation_update(db, "TOURS")
+    whatsapp_event = None
+    if action in {"arrived-home", "return-prestige"} and tour.get("status") == STATE_WAITING_HOME:
+        whatsapp_event = "WAITING_HOME"
+    elif action == "deliver-gallery" and tour.get("status") == STATE_WAITING_DESTINATION:
+        whatsapp_event = "GALLERY"
+    elif action == "complete-destination" and tour.get("status") == STATE_COMPLETE:
+        whatsapp_event = "COMPLETE"
+    if whatsapp_event:
+        notify_whatsapp_consultant_for_route_event(db, tour, whatsapp_event)
     return response
 
 

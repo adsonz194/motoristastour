@@ -49,6 +49,17 @@ Para testar, toque novamente no sino: ele envia outro aviso de teste para o apar
 
 No iPhone e iPad com iOS/iPadOS 16.4 ou mais recente, abra o menu Compartilhar do Safari e use **Adicionar à Tela de Início** antes de ativar o sino: Web Push no iOS funciona para o app instalado na Tela de Início. Em Android e computadores, use um navegador com suporte a notificações e permita os avisos do site.
 
+## Consultores pelo WhatsApp
+
+O WhatsApp Business Cloud API permite que consultores iniciem e continuem o Tour sem abrir o painel: o número cadastrado identifica o consultor, mostra os Tours livres e cria a solicitação de carrinho que aparece no site/app dos motoristas. O estado oficial continua no PostgreSQL; a primeira pessoa que assume a chamada permanece protegida pela mesma regra de concorrência já aplicada no painel.
+
+1. No Meta for Developers, configure o webhook como `https://motoristastour.onrender.com/whatsapp/webhook` e use exatamente o mesmo token de verificação definido em `WHATSAPP_WEBHOOK_VERIFY_TOKEN`.
+2. No Render, crie como segredos `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_GRAPH_API_VERSION`, `WHATSAPP_WEBHOOK_VERIFY_TOKEN` e `WHATSAPP_APP_SECRET`. Não salve nenhum deles no repositório.
+3. Em **Consultores**, informe o WhatsApp de cada pessoa com DDI, por exemplo `+55 71 99999-9999`. Um número só pode pertencer a um consultor ativo.
+4. O consultor envia `MENU` ao número comercial. Ele seleciona o Tour, confirma a solicitação no Prestige e, depois, recebe as opções adequadas para Casa e Galeria. Na Galeria, o WhatsApp exige um dos destinos cadastrados antes de abrir o chamado.
+
+O webhook aceita somente chamadas com a assinatura `X-Hub-Signature-256` válida da Meta e ignora reentregas pelo ID da mensagem. Não armazena o conteúdo da conversa; o sistema mantém apenas os IDs necessários para evitar duplicidade. O token de acesso e o `App Secret` nunca são enviados ao navegador nem registrados no banco operacional.
+
 ## Localização dos motoristas no mapa
 
 Somente com um check-in ativo, o motorista pode tocar em **Compartilhar minha localização** no próprio celular. O compartilhamento funciona estritamente antes das **15:00 no horário de Salvador/Bahia**; às 15:00, novos inícios e atualizações são bloqueados e os pontos existentes deixam de ser exibidos e são removidos. O navegador pede autorização para usar o GPS e, enquanto o painel permanecer aberto, envia somente a posição mais recente. O sistema não cria histórico de percurso. O motorista também pode parar manualmente; sair da conta e zerar a operação removem a posição.

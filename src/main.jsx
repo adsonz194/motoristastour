@@ -969,13 +969,13 @@ function ResponsibleEditorModal({ person, kind, onClose, token, refresh, notify 
   const label = selfGen ? 'Self Gen' : 'consultor';
   const endpoint = selfGen ? '/api/self-gens' : '/api/consultants';
   const editing = Boolean(person);
-  const [form, setForm] = useState({ name: person?.name || '', active: person?.active ?? true });
+  const [form, setForm] = useState({ name: person?.name || '', whatsappNumber: person?.whatsappNumber || '', active: person?.active ?? true });
   const [saving, setSaving] = useState(false);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
     try { await api(token, editing ? `${endpoint}/${person.id}` : endpoint, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? `${label} atualizado.` : `${label} cadastrado.`, 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={editing ? `Editar ${label}` : `Novo ${label}`} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label><label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : `Cadastrar ${label}`}</button></form></Modal>;
+  return <Modal title={editing ? `Editar ${label}` : `Novo ${label}`} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>{!selfGen && <label>WhatsApp com DDI (opcional)<input type="tel" value={form.whatsappNumber} onChange={(event) => setForm({ ...form, whatsappNumber: event.target.value })} placeholder="Ex.: +55 71 99999-9999" /><small>Este número identifica o consultor no atendimento pelo WhatsApp.</small></label>}<label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : `Cadastrar ${label}`}</button></form></Modal>;
 }
 
 function ConsultantsPage({ data, user, token, refresh, notify }) {
