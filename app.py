@@ -870,12 +870,14 @@ def whatsapp_messaging_is_configured() -> bool:
     return bool(WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_GRAPH_API_VERSION)
 
 
+def whatsapp_webhook_verification_is_configured() -> bool:
+    """Meta's initial callback check needs only the verification token."""
+    return bool(WHATSAPP_WEBHOOK_VERIFY_TOKEN)
+
+
 def whatsapp_webhook_is_configured() -> bool:
-    return bool(
-        whatsapp_messaging_is_configured()
-        and WHATSAPP_WEBHOOK_VERIFY_TOKEN
-        and WHATSAPP_APP_SECRET
-    )
+    """Inbound events must be authenticated with the Meta app secret."""
+    return bool(WHATSAPP_APP_SECRET)
 
 
 def whatsapp_message_endpoint() -> str:
@@ -4055,7 +4057,7 @@ def verify_whatsapp_webhook():
     verify_token = request.args.get("hub.verify_token", "")
     challenge = request.args.get("hub.challenge", "")
     if (
-        whatsapp_webhook_is_configured()
+        whatsapp_webhook_verification_is_configured()
         and mode == "subscribe"
         and secrets.compare_digest(verify_token, WHATSAPP_WEBHOOK_VERIFY_TOKEN)
         and challenge

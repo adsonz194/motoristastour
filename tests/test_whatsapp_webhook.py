@@ -117,6 +117,21 @@ class WhatsAppWebhookTest(unittest.TestCase):
         )
         self.assertEqual(rejected.status_code, 403)
 
+    def test_meta_verification_does_not_depend_on_messaging_credentials(self) -> None:
+        with patch.object(tour_app, "WHATSAPP_ACCESS_TOKEN", ""), patch.object(
+            tour_app, "WHATSAPP_PHONE_NUMBER_ID", ""
+        ), patch.object(tour_app, "WHATSAPP_APP_SECRET", ""):
+            verified = self.client.get(
+                "/whatsapp/webhook",
+                query_string={
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": self.VERIFY_TOKEN,
+                    "hub.challenge": "verification-only",
+                },
+            )
+        self.assertEqual(verified.status_code, 200)
+        self.assertEqual(verified.get_data(as_text=True), "verification-only")
+
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
         selection = self._post_webhook({
             "id": "wamid-select",
