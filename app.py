@@ -869,6 +869,35 @@ def normalize_whatsapp_number(value: Any) -> str | None:
     return number
 
 
+def whatsapp_number_variants(value: Any) -> tuple[str, ...]:
+    """Return equivalent identifiers for the same WhatsApp account.
+
+    Meta can send some Brazilian mobile accounts using its legacy eight-digit
+    local representation (without the ninth mobile digit).  The complete
+    nine-digit representation remains the canonical stored value, but both
+    forms must identify the same consultant and be protected from duplicates.
+    """
+    number = normalize_whatsapp_number(value)
+    if not number:
+        return ()
+    variants = [number]
+    # Brazil: 55 + two-digit DDD + nine-digit mobile.  Fixed lines begin with
+    # 2-5, so only mobile prefixes receive the legacy-form equivalence.
+    if len(number) == 13 and number.startswith("55") and number[4] == "9" and number[5] in "6789":
+        variants.append(number[:4] + number[5:])
+    elif len(number) == 12 and number.startswith("55") and number[4] in "6789":
+        variants.append(number[:4] + "9" + number[4:])
+    return tuple(variants)
+
+
+def whatsapp_numbers_match(left: Any, right: Any) -> bool:
+    """Compare validated WhatsApp identifiers, including Brazil's legacy form."""
+    try:
+        return bool(set(whatsapp_number_variants(left)) & set(whatsapp_number_variants(right)))
+    except APIError:
+        return False
+
+
 def whatsapp_messaging_is_configured() -> bool:
     return bool(WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_GRAPH_API_VERSION)
 
@@ -936,27 +965,34 @@ def send_whatsapp_message(recipient: Any, message: dict[str, Any]) -> bool:
     if not whatsapp_messaging_is_configured():
         return False
     try:
-        number = normalize_whatsapp_number(recipient)
+        numbers = whatsapp_number_variants(recipient)
     except APIError:
         return False
-    if not number or not isinstance(message, dict):
+    if not numbers or not isinstance(message, dict):
         return False
-    payload = {"messaging_product": "whatsapp", "to": number, **message}
-    try:
-        request_payload = Request(
-            whatsapp_message_endpoint(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urlopen(request_payload, timeout=5) as response:
-            status_code = getattr(response, "status", response.getcode())
-            return 200 <= int(status_code) < 300
-    except (HTTPError, URLError, OSError, ValueError, TypeError):
-        return False
+    for number in numbers:
+        payload = {"messaging_product": "whatsapp", "to": number, **message}
+        try:
+            request_payload = Request(
+                whatsapp_message_endpoint(),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urlopen(request_payload, timeout=5) as response:
+                status_code = getattr(response, "status", response.getcode())
+                if 200 <= int(status_code) < 300:
+                    return True
+        except HTTPError:
+            # The first number can be rejected by Meta's identifier registry;
+            # try only its known Brazilian equivalent, never an unknown retry.
+            continue
+        except (URLError, OSError, ValueError, TypeError):
+            return False
+    return False
 
 
 def send_whatsapp_messages(messages: list[tuple[str, dict[str, Any]]]) -> dict[str, int | bool]:
@@ -3878,21 +3914,21 @@ def handle_http_error(error: HTTPException):
 
 def whatsapp_consultant_by_number(db: dict[str, Any], number: Any) -> dict[str, Any] | None:
     try:
-        normalized_number = normalize_whatsapp_number(number)
+        incoming_variants = set(whatsapp_number_variants(number))
     except APIError:
         return None
-    if not normalized_number:
+    if not incoming_variants:
         return None
     for consultant in db.get("consultants", []):
         if not consultant.get("active", True):
             continue
         try:
-            saved_number = normalize_whatsapp_number(consultant.get("whatsappNumber"))
+            saved_variants = set(whatsapp_number_variants(consultant.get("whatsappNumber")))
         except APIError:
             # A malformed legacy entry must not prevent other consultants from
             # being identified by their valid WhatsApp number.
             continue
-        if saved_number == normalized_number:
+        if incoming_variants & saved_variants:
             return consultant
     return None
 
@@ -6160,7 +6196,7 @@ def create_consultant():
             raise APIError("Informe o nome do consultor.")
         whatsapp_number = normalize_whatsapp_number(payload.get("whatsappNumber"))
         if whatsapp_number and any(
-            normalize_whatsapp_number(item.get("whatsappNumber")) == whatsapp_number
+            whatsapp_numbers_match(item.get("whatsappNumber"), whatsapp_number)
             for item in db.get("consultants", [])
         ):
             raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)
@@ -6190,7 +6226,7 @@ def update_consultant(consultant_id: str):
         )
         if whatsapp_number and any(
             item.get("id") != consultant_id
-            and normalize_whatsapp_number(item.get("whatsappNumber")) == whatsapp_number
+            and whatsapp_numbers_match(item.get("whatsappNumber"), whatsapp_number)
             for item in db.get("consultants", [])
         ):
             raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)

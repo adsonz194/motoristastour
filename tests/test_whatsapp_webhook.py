@@ -146,6 +146,22 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(self.sent_messages[-1][0][0], self.CONSULTANT_NUMBER)
         self.assertEqual(self.sent_messages[-1][0][1]["type"], "interactive")
 
+    def test_webhook_matches_meta_legacy_brazilian_mobile_identifier(self) -> None:
+        self.database["consultants"][0]["whatsappNumber"] = "5571992843791"
+        meta_identifier = "557192843791"
+
+        response = self._post_webhook({
+            "id": "wamid-brazilian-mobile",
+            "from": meta_identifier,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.sent_messages[-1][0][0], meta_identifier)
+        self.assertEqual(self.sent_messages[-1][0][1]["type"], "interactive")
+        self.assertTrue(tour_app.whatsapp_numbers_match("5571992843791", meta_identifier))
+
     def test_unknown_consultant_receives_the_meta_identifier_for_homologation(self) -> None:
         unknown_number = "5571888888888"
 
