@@ -13,7 +13,7 @@ from datetime import datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -874,6 +874,33 @@ def normalize_whatsapp_number(value: Any) -> str | None:
     return number
 
 
+def normalize_hostess_phone_numbers(value: Any) -> list[str]:
+    """Keep the contact phones for one Hostess login in a uniform format.
+
+    These are registration contacts, not WhatsApp webhook identifiers.  In
+    particular, a Brazilian mobile contact keeps its ninth digit here.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise APIError("Informe os telefones da Hostess em uma lista.")
+    if len(value) > 12:
+        raise APIError("Uma Hostess pode ter no máximo 12 telefones cadastrados.")
+    phones: list[str] = []
+    for raw in value:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if len(text) > 64 or any(character not in "+0123456789() -" for character in text):
+            raise APIError("Informe os telefones da Hostess somente com DDI e números.")
+        digits = "".join(character for character in text if character.isdigit())
+        if not 10 <= len(digits) <= 15 or digits.startswith("0"):
+            raise APIError("Informe cada telefone da Hostess com DDI e número válido.")
+        if digits not in phones:
+            phones.append(digits)
+    return phones
+
+
 def whatsapp_number_variants(value: Any) -> tuple[str, ...]:
     """Return equivalent identifiers for the same WhatsApp account.
 
@@ -1266,11 +1293,29 @@ def hostess_push_messages(
     event_type: str,
     driver_name: str | None = None,
     requester_type: str = HOSTESS_REQUESTER,
+    car_request: dict[str, Any] | None = None,
 ) -> list[tuple[dict[str, Any], dict[str, str]]]:
     """Build driver-only push messages for the shared support-call queue."""
     consultant_request = requester_type in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}
     if event_type == "REQUESTED":
-        if consultant_request:
+        if car_request and is_consultant_route_request(car_request):
+            tour_label = str(car_request.get("tourLabel") or "Tour").strip()
+            requester_name = str(car_request.get("requestedByName") or "Consultor").strip()
+            location = str(
+                car_request.get("guestLocationLabel")
+                or car_request.get("routeStageLabel")
+                or "local informado"
+            ).strip()
+            destination = str(car_request.get("destinationName") or "").strip()
+            route = f"{location}{f' → {destination}' if destination else ''}"
+            request_id = quote(str(car_request.get("id") or ""), safe="")
+            payload = {
+                "title": f"Carrinho solicitado · {tour_label}",
+                "body": f"{requester_name} solicitou em {route}. Abra o Tour para iniciar o trecho.",
+                "tag": f"iberostar-tour-request-{request_id or 'new'}",
+                "url": f"/?page=tours&request={request_id}",
+            }
+        elif consultant_request:
             payload = {
                 "title": "Solicitação de apoio de consultor",
                 "body": "Um consultor solicitou apoio. Se estiver livre e com check-in, assuma o chamado no painel.",
@@ -1307,10 +1352,7 @@ def hostess_push_messages(
     return [
         (record, payload)
         for record in load_push_subscriptions(db)
-        if (
-            users.get(record.get("userId"), {}).get("role") == ROLE_DRIVER
-            and user_has_permission(users[record["userId"]], PERMISSION_MANAGE_HOSTESS_SUPPORT)
-        )
+        if users.get(record.get("userId"), {}).get("role") == ROLE_DRIVER
     ]
 
 
@@ -1319,8 +1361,12 @@ def notify_hostess_car_update(
     event_type: str,
     driver_name: str | None = None,
     requester_type: str = HOSTESS_REQUESTER,
+    car_request: dict[str, Any] | None = None,
 ) -> dict[str, int | bool]:
-    return send_push_messages(db, hostess_push_messages(db, event_type, driver_name, requester_type))
+    return send_push_messages(
+        db,
+        hostess_push_messages(db, event_type, driver_name, requester_type, car_request),
+    )
 
 
 def whatsapp_consultant_for_tour(db: dict[str, Any], tour: dict[str, Any]) -> dict[str, Any] | None:
@@ -1662,11 +1708,19 @@ def operational_database() -> dict[str, Any]:
     return db
 
 
-def clean_user(user: dict[str, Any]) -> dict[str, Any]:
-    result = {key: value for key, value in user.items() if key != "passwordHash"}
+def clean_user(
+    user: dict[str, Any], *, include_hostess_phone_numbers: bool = False
+) -> dict[str, Any]:
+    result = {
+        key: value
+        for key, value in user.items()
+        if key not in {"passwordHash", "hostessPhoneNumbers"}
+    }
     # Always return the effective list, including for a session that was
     # loaded just before a legacy account is persisted by the migration.
     result["permissions"] = normalize_permissions(user.get("permissions"), user.get("role"))
+    if include_hostess_phone_numbers and user.get("role") == ROLE_HOSTESS:
+        result["hostessPhoneNumbers"] = list(user.get("hostessPhoneNumbers") or [])
     return result
 
 
@@ -4044,52 +4098,52 @@ def whatsapp_message_interaction_id(message: dict[str, Any]) -> str:
 
 def whatsapp_reply_for_incoming_message(
     db: dict[str, Any], message: dict[str, Any]
-) -> tuple[str | None, dict[str, Any] | None, bool]:
+) -> tuple[str | None, dict[str, Any] | None, dict[str, Any] | None]:
     """Handle one already-authenticated inbound event without retaining its text."""
     sender = str(message.get("from") or "").strip()
     try:
         recipient = normalize_whatsapp_number(sender)
     except APIError:
-        return None, None, False
+        return None, None, None
     if not recipient:
-        return None, None, False
+        return None, None, None
     consultant = whatsapp_consultant_by_number(db, recipient)
     if not consultant:
-        return recipient, whatsapp_unknown_consultant_message(recipient), False
+        return recipient, whatsapp_unknown_consultant_message(recipient), None
     interaction_id = whatsapp_message_interaction_id(message)
     normalized_action = interaction_id.casefold()
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
-        return recipient, whatsapp_menu_message(db, consultant), False
+        return recipient, whatsapp_menu_message(db, consultant), None
     if interaction_id.startswith("select-tour:"):
         tour_id = interaction_id.removeprefix("select-tour:").strip()
         tour = next((item for item in whatsapp_free_tours(db) if item.get("id") == tour_id), None)
         if not tour:
-            return recipient, whatsapp_text_payload("Esse Tour não está mais disponível. Envie MENU para atualizar a lista."), False
+            return recipient, whatsapp_text_payload("Esse Tour não está mais disponível. Envie MENU para atualizar a lista."), None
         return recipient, whatsapp_button_payload(
             f"{tour_whatsapp_label(tour)} selecionado. Confirme para solicitar o carrinho no Prestige.",
             [(f"request:{tour['id']}:PRESTIGE", "Solicitar carrinho"), ("menu", "Voltar")],
-        ), False
+        ), None
     if interaction_id.startswith("request:"):
         parts = interaction_id.split(":", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:
-            return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), False
+            return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
         _, tour_id, stage = parts
         car_request = create_whatsapp_consultant_route_request(db, consultant, tour_id, stage)
         return recipient, whatsapp_text_payload(
             f"Solicitação enviada: {car_request['tourLabel']} em {car_request['guestLocationLabel']}. Aguarde um motorista assumir."
-        ), True
+        ), car_request
     if interaction_id.startswith("destination:"):
         parts = interaction_id.split(":", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:
-            return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), False
+            return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
         _, tour_id, destination_id = parts
         car_request = create_whatsapp_consultant_route_request(
             db, consultant, tour_id, "GALERIA_EXIT", destination_id,
         )
         return recipient, whatsapp_text_payload(
             f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
-        ), True
-    return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para ver o próximo passo."), False
+        ), car_request
+    return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para ver o próximo passo."), None
 
 
 def incoming_whatsapp_messages(payload: Any) -> list[dict[str, Any]]:
@@ -4135,7 +4189,7 @@ def receive_whatsapp_webhook():
         return jsonify(error="Webhook do WhatsApp inválido."), 400
 
     replies: list[tuple[str, dict[str, Any]]] = []
-    notify_drivers = 0
+    driver_notifications: list[dict[str, Any]] = []
     changed = False
     with DB_LOCK:
         db = operational_database()
@@ -4151,18 +4205,23 @@ def receive_whatsapp_webhook():
                 except APIError:
                     recipient = None
                 reply = whatsapp_text_payload(error.message)
-                opened_request = False
+                opened_request = None
             remember_whatsapp_message(db, message_id)
             changed = True
             if recipient and reply:
                 replies.append((recipient, reply))
             if opened_request:
-                notify_drivers += 1
+                driver_notifications.append(opened_request)
         if changed:
             save_database(db)
 
-    for _ in range(notify_drivers):
-        notify_hostess_car_update(db, "REQUESTED", requester_type=CONSULTANT_REQUESTER)
+    for car_request in driver_notifications:
+        notify_hostess_car_update(
+            db,
+            "REQUESTED",
+            requester_type=car_request.get("requesterType", CONSULTANT_REQUESTER),
+            car_request=car_request,
+        )
     send_whatsapp_messages(replies)
     return "OK", 200, {"Content-Type": "text/plain; charset=utf-8"}
 
@@ -4183,7 +4242,13 @@ def login():
             save_database(db)
         token = secrets.token_urlsafe(48)
         SESSIONS[token] = {"userId": user["id"], "expiresAt": datetime.now(timezone.utc) + timedelta(hours=12)}
-        return jsonify(token=token, user=clean_user(user))
+        return jsonify(
+            token=token,
+            user=clean_user(
+                user,
+                include_hostess_phone_numbers=user.get("role") == ROLE_HOSTESS,
+            ),
+        )
 
 
 @app.post("/api/auth/logout")
@@ -4387,21 +4452,38 @@ def test_push():
 
 
 @app.get("/api/public/driver-status")
+@app.get("/api/consultant/driver-status")
 def public_driver_status():
     """Read-only driver board intended for the consultants' shared screen."""
     with DB_LOCK:
         db = operational_database()
+        include_tour_responsible = request.path == "/api/consultant/driver-status"
+        if include_tour_responsible:
+            account = get_current_user(db)
+            if account.get("role") not in {ROLE_CONSULTANT, ROLE_SELF_GEN}:
+                raise APIError("Somente um consultor ou Self Gen pode ver a equipe nesta tela.", 403)
         drivers = []
         for driver in db.get("drivers", []):
             if not driver.get("active", True):
                 continue
             display_status, _ = public_driver_location(db, driver)
-            drivers.append({
+            assignment = active_driver_assignment(db, driver["id"])
+            responsible_name = ""
+            if assignment:
+                responsible_name = str(
+                    assignment.get("consultantName")
+                    or assignment.get("selfGenName")
+                    or ""
+                ).strip()
+            driver_payload = {
                 "name": driver["name"],
                 "status": display_status,
                 "active": True,
                 "lastActivity": driver.get("lastActivity"),
-            })
+            }
+            if include_tour_responsible:
+                driver_payload["consultantName"] = responsible_name or None
+            drivers.append(driver_payload)
         return jsonify(operationDate=db["operationDate"], drivers=drivers)
 
 
@@ -4746,7 +4828,12 @@ def create_public_consultant_support_request():
         response.status_code = 201
         response.headers["Cache-Control"] = "private, no-store"
 
-    notify_hostess_car_update(db, "REQUESTED", requester_type=identity_type)
+    notify_hostess_car_update(
+        db,
+        "REQUESTED",
+        requester_type=identity_type,
+        car_request=car_request,
+    )
     return response
 
 
@@ -5175,7 +5262,10 @@ def bootstrap_data_for_user(
         data["attendance"] = [current_attendance] if current_attendance else []
 
     if PERMISSION_MANAGE_USERS in permissions:
-        data["users"] = [clean_user(account) for account in db.get("users", [])]
+        data["users"] = [
+            clean_user(account, include_hostess_phone_numbers=True)
+            for account in db.get("users", [])
+        ]
         data["attendance"] = db.get("attendance", [])
     if PERMISSION_MANAGE_SETTINGS in permissions:
         data["hotelClosures"] = db.get("hotelClosures", [])
@@ -5214,7 +5304,10 @@ def bootstrap():
         settings = operation_settings_for_user(db, user)
         data = bootstrap_data_for_user(db, user, current_attendance, settings)
         return jsonify(
-            user=clean_user(user),
+            user=clean_user(
+                user,
+                include_hostess_phone_numbers=user.get("role") == ROLE_HOSTESS,
+            ),
             data=data,
             permissionsCatalog=PERMISSION_CATALOG,
             rolePermissionDefaults={role: default_permissions_for_role(role) for role in sorted(ROLES)},
@@ -5253,7 +5346,12 @@ def create_user():
         if role == ROLE_CONSULTANT:
             permissions = []
         require_user_management_scope(user, role, permissions)
+        hostess_phone_numbers = normalize_hostess_phone_numbers(
+            payload.get("hostessPhoneNumbers")
+        ) if role == ROLE_HOSTESS else []
         new_user = {"id": new_id("user"), "username": username, "name": name, "role": role, "permissions": permissions, "active": True, "passwordHash": generate_password_hash(password), "createdAt": timestamp()}
+        if hostess_phone_numbers:
+            new_user["hostessPhoneNumbers"] = hostess_phone_numbers
         if driver_id:
             new_user["driverId"] = driver_id
         if consultant_id:
@@ -5267,7 +5365,7 @@ def create_user():
             create_linked_driver(db, new_user)
         log_activity(db, user, None, None, None, f"Usuário {name} criado com perfil {role} e {len(permissions)} permissões.")
         save_database(db)
-        return jsonify(user=clean_user(new_user)), 201
+        return jsonify(user=clean_user(new_user, include_hostess_phone_numbers=True)), 201
 
 
 @app.put("/api/users/<user_id>")
@@ -5310,6 +5408,9 @@ def update_user(user_id: str):
         if role == ROLE_CONSULTANT:
             permissions = []
         require_user_management_scope(current_user, role, permissions, target)
+        hostess_phone_numbers = normalize_hostess_phone_numbers(
+            payload.get("hostessPhoneNumbers", target.get("hostessPhoneNumbers"))
+        ) if role == ROLE_HOSTESS else []
         driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
         driver_id = validate_driver_link(db, driver_id, target["id"])
         consultant_id = payload.get("consultantId", target.get("consultantId")) if role == ROLE_CONSULTANT else None
@@ -5322,6 +5423,10 @@ def update_user(user_id: str):
         if previous_role == ROLE_DRIVER and role != ROLE_DRIVER and previous_driver_id:
             remove_driver_for_role_change(db, previous_driver_id, target["id"])
         target.update({"name": name, "username": username, "role": role, "permissions": permissions, "active": active})
+        if hostess_phone_numbers:
+            target["hostessPhoneNumbers"] = hostess_phone_numbers
+        else:
+            target.pop("hostessPhoneNumbers", None)
         if role == ROLE_DRIVER and not driver_id:
             driver_id = create_linked_driver(db, target, active=active)["id"]
         if driver_id:
@@ -5363,7 +5468,7 @@ def update_user(user_id: str):
         permission_note = "" if permissions == previous_permissions else f" Permissões: {len(previous_permissions)} → {len(permissions)}."
         log_activity(db, current_user, None, None, None, f"Usuário {name} atualizado.{permission_note}")
         save_database(db)
-        return jsonify(user=clean_user(target))
+        return jsonify(user=clean_user(target, include_hostess_phone_numbers=True))
 
 
 @app.post("/api/tours")
@@ -5759,7 +5864,7 @@ def create_hostess_request():
         response = jsonify(request=clean_hostess_request(car_request)), 201
     # Send after persisting the request. This must not hold the operational
     # lock while the remote push provider is contacted.
-    notify_hostess_car_update(db, "REQUESTED")
+    notify_hostess_car_update(db, "REQUESTED", car_request=car_request)
     return response
 
 

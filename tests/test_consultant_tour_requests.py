@@ -189,6 +189,30 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(started.get_json()["request"]["status"], tour_app.HOSTESS_REQUEST_IN_PROGRESS)
         self.assertEqual(started.get_json()["request"]["assignedDriverName"], "Motorista Um")
 
+    def test_consultant_board_shows_the_responsible_name_for_a_driver_in_tour(self) -> None:
+        tour = self.database["tours"][0]
+        tour.update({
+            "status": tour_app.STATE_IN_TOUR,
+            "consultantId": "con_dimitri",
+            "consultantName": "Dimitri",
+            "allocations": [{"driverId": "drv_one"}],
+        })
+        self.database["drivers"][0]["status"] = tour_app.DRIVER_IN_TOUR
+
+        board = self.client.get(
+            "/api/consultant/driver-status",
+            headers=self.auth("token-consultant"),
+        )
+        self.assertEqual(board.status_code, 200, board.get_json())
+        driver = next(item for item in board.get_json()["drivers"] if item["name"] == "Motorista Um")
+        self.assertEqual(driver["consultantName"], "Dimitri")
+
+        denied = self.client.get(
+            "/api/consultant/driver-status",
+            headers=self.auth("token-driver"),
+        )
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+
     def test_legacy_start_cannot_bypass_another_tours_active_request(self) -> None:
         self.database["tours"].append(self._tour("tour_05", "Tour 05"))
         created = self.client.post("/api/consultant/support-requests", headers=self.auth("token-consultant"), json={

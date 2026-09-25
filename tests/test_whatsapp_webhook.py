@@ -181,6 +181,40 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertIn(tour_app.WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION, body)
         self.assertIn(unknown_number, body)
 
+    def test_tour_request_push_reaches_every_active_driver_and_opens_the_tour(self) -> None:
+        self.database["users"] = [
+            {"id": "driver_one", "role": tour_app.ROLE_DRIVER, "active": True, "permissions": []},
+            {"id": "driver_two", "role": tour_app.ROLE_DRIVER, "active": True, "permissions": []},
+            {"id": "hostess", "role": tour_app.ROLE_HOSTESS, "active": True, "permissions": []},
+        ]
+        self.database["pushSubscriptions"] = [
+            {"userId": "driver_one", "subscription": {"endpoint": "https://push.example/one"}},
+            {"userId": "driver_two", "subscription": {"endpoint": "https://push.example/two"}},
+            {"userId": "hostess", "subscription": {"endpoint": "https://push.example/hostess"}},
+        ]
+        request_record = {
+            "id": "support request/1",
+            "requesterType": tour_app.CONSULTANT_REQUESTER,
+            "requestedByName": "Yasmin",
+            "tourId": "tour_02",
+            "tourLabel": "Tour 2",
+            "guestLocationLabel": "Prestige Waves",
+            "destinationName": None,
+        }
+
+        messages = tour_app.hostess_push_messages(
+            self.database,
+            "REQUESTED",
+            requester_type=tour_app.CONSULTANT_REQUESTER,
+            car_request=request_record,
+        )
+
+        self.assertEqual({record["userId"] for record, _ in messages}, {"driver_one", "driver_two"})
+        payload = messages[0][1]
+        self.assertEqual(payload["title"], "Carrinho solicitado · Tour 2")
+        self.assertIn("Yasmin solicitou em Prestige Waves", payload["body"])
+        self.assertEqual(payload["url"], "/?page=tours&request=support%20request%2F1")
+
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
         selection = self._post_webhook({
             "id": "wamid-select",

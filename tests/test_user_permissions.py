@@ -212,6 +212,43 @@ class UserPermissionsApiTest(unittest.TestCase):
         saved = next(item for item in self.database["users"] if item["id"] == account["id"])
         self.assertEqual(saved["permissions"], updated_permissions)
 
+    def test_one_hostess_login_can_store_multiple_contact_phones(self) -> None:
+        created = self._request(
+            "token-admin",
+            "POST",
+            "/api/users",
+            json={
+                "name": "Hostess de Teste",
+                "username": "hostess.telefones",
+                "password": "senha-segura",
+                "role": tour_app.ROLE_HOSTESS,
+                "permissions": [tour_app.PERMISSION_VIEW_DASHBOARD],
+                "hostessPhoneNumbers": ["+55 71 99999-1234", "55 (71) 98888-5678"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        account = created.get_json()["user"]
+        self.assertEqual(
+            account["hostessPhoneNumbers"],
+            ["5571999991234", "5571988885678"],
+        )
+
+        updated = self._request(
+            "token-admin",
+            "PUT",
+            f"/api/users/{account['id']}",
+            json={"hostessPhoneNumbers": ["+55 71 97777-0000"]},
+        )
+        self.assertEqual(updated.status_code, 200, updated.get_json())
+        self.assertEqual(updated.get_json()["user"]["hostessPhoneNumbers"], ["5571977770000"])
+
+        bootstrap = self._request("token-admin", "GET", "/api/bootstrap")
+        self.assertEqual(bootstrap.status_code, 200, bootstrap.get_json())
+        managed_account = next(
+            item for item in bootstrap.get_json()["data"]["users"] if item["id"] == account["id"]
+        )
+        self.assertEqual(managed_account["hostessPhoneNumbers"], ["5571977770000"])
+
     def test_delegated_user_manager_cannot_escalate_permissions(self) -> None:
         promoted = self._request(
             "token-manager",
