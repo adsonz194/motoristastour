@@ -278,6 +278,33 @@ class UserPermissionsApiTest(unittest.TestCase):
         )
         self.assertEqual(extra_access.status_code, 403, extra_access.get_json())
 
+    def test_admin_can_delete_multiple_users_in_one_request(self) -> None:
+        deleted = self._request(
+            "token-admin",
+            "POST",
+            "/api/users/bulk-delete",
+            json={"userIds": ["user_viewer", "user_manager", "user_viewer"]},
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        self.assertEqual(deleted.get_json()["deletedCount"], 2)
+        self.assertEqual(deleted.get_json()["deletedUserIds"], ["user_viewer", "user_manager"])
+        self.assertEqual([account["id"] for account in self.database["users"]], ["user_admin"])
+        self.assertNotIn("token-viewer", tour_app.SESSIONS)
+        self.assertNotIn("token-manager", tour_app.SESSIONS)
+
+    def test_bulk_deletion_is_atomic_when_one_selected_user_is_invalid(self) -> None:
+        failed = self._request(
+            "token-admin",
+            "POST",
+            "/api/users/bulk-delete",
+            json={"userIds": ["user_viewer", "missing-user"]},
+        )
+        self.assertEqual(failed.status_code, 404, failed.get_json())
+        self.assertEqual(
+            {account["id"] for account in self.database["users"]},
+            {"user_admin", "user_viewer", "user_manager"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

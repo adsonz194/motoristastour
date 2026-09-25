@@ -1247,12 +1247,25 @@ function SettingsPage({ data, user, token, refresh, notify }) {
   const [editor, setEditor] = useState(null);
   const [resetOpen, setResetOpen] = useState(false);
   const [deletingUser, setDeletingUser] = useState(null);
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const canManageUsers = can(user, 'MANAGE_USERS');
   const canManageSettings = can(user, 'MANAGE_SETTINGS');
   const catalog = permissionCatalog(data);
   const checkins = new Map((data.attendance || []).map((item) => [item.userId, item]));
+  const managedUsers = data.users || [];
+  const deletableUsers = managedUsers.filter((item) => item.id !== user.id);
+  const deletableUserIdsKey = deletableUsers.map((item) => item.id).join('|');
+  const selectedUsers = deletableUsers.filter((item) => selectedUserIds.includes(item.id));
+  const allDeletableUsersSelected = deletableUsers.length > 0 && selectedUserIds.length === deletableUsers.length;
+
+  useEffect(() => {
+    const availableIds = new Set(deletableUsers.map((item) => item.id));
+    setSelectedUserIds((current) => current.filter((id) => availableIds.has(id)));
+  }, [deletableUserIdsKey]);
 
   async function resetOperation() {
     setResetting(true);
@@ -1282,6 +1295,35 @@ function SettingsPage({ data, user, token, refresh, notify }) {
     }
   }
 
+  function toggleUserSelection(userId) {
+    setSelectedUserIds((current) => current.includes(userId)
+      ? current.filter((id) => id !== userId)
+      : [...current, userId]);
+  }
+
+  function toggleAllUserSelections() {
+    setSelectedUserIds(allDeletableUsersSelected ? [] : deletableUsers.map((item) => item.id));
+  }
+
+  async function deleteSelectedUsers() {
+    if (!selectedUserIds.length) return;
+    setBulkDeleting(true);
+    try {
+      const result = await api(token, '/api/users/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({ userIds: selectedUserIds })
+      });
+      await refresh();
+      setSelectedUserIds([]);
+      setBulkDeleteOpen(false);
+      notify(`${result.deletedCount} usuário${result.deletedCount === 1 ? '' : 's'} excluído${result.deletedCount === 1 ? '' : 's'} com sucesso.`, 'success');
+    } catch (error) {
+      notify(error.message, 'error');
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   if (!canManageUsers && !canManageSettings) {
     return <section className="restricted"><LockKeyhole size={35} /><h1>Acesso restrito</h1><p>Você não possui permissão para alterar as configurações da operação.</p></section>;
   }
@@ -1289,12 +1331,14 @@ function SettingsPage({ data, user, token, refresh, notify }) {
   return <>
     <SectionHeader title="Configurações" description="Gerencie usuários, acessos e presença diária da equipe." action={canManageUsers ? () => setEditor({}) : undefined} actionText="Novo usuário" />
     {canManageUsers && <section className="panel full-panel">
-      <div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Defina perfil e permissões específicas para cada conta.</p></div></div>
-      <div className="table-wrap users-table"><table><thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Acessos</th><th>Status</th><th>Check-in hoje</th><th>Ações</th></tr></thead><tbody>{data.users.map((item) => {
+      <div className="panel-heading"><div><h2>Usuários cadastrados</h2><p>Defina perfil e permissões específicas para cada conta.</p></div><div className="user-selection-toolbar"><strong className="selection-count">{selectedUserIds.length} selecionado{selectedUserIds.length === 1 ? '' : 's'}</strong><button className="button button-danger" type="button" onClick={() => setBulkDeleteOpen(true)} disabled={!selectedUserIds.length}><Trash2 size={16} /> Excluir selecionados</button></div></div>
+      <div className="table-wrap users-table"><table><thead><tr><th><label className="selection-checkbox"><input type="checkbox" checked={allDeletableUsersSelected} onChange={toggleAllUserSelections} disabled={!deletableUsers.length} aria-label="Selecionar todos os usuários que podem ser excluídos" /><span>Todos</span></label></th><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Acessos</th><th>Status</th><th>Check-in hoje</th><th>Ações</th></tr></thead><tbody>{managedUsers.map((item) => {
         const checkin = checkins.get(item.id);
         const requiresCheckIn = can(item, 'CHECK_IN');
         const userPermissions = selectedPermissionsForAccount(item, catalog);
-        return <tr key={item.id}><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{roleLabel(item.role)}</span></td><td><PermissionSummary permissions={userPermissions} catalog={catalog} fallbackRole={item.role} /></td><td><span className={item.active ? 'active-dot' : 'inactive-dot'}>{item.active ? 'Ativo' : 'Inativo'}</span></td><td>{requiresCheckIn ? checkin ? <span className="active-dot">Trabalhando · {time(checkin.checkInAt)}</span> : <span className="inactive-dot">Folga / atestado</span> : '—'}</td><td className="actions-cell"><button className="mini-action" onClick={() => setEditor(item)}>Editar</button>{item.id === user.id ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td></tr>;
+        const isCurrentUser = item.id === user.id;
+        const selected = selectedUserIds.includes(item.id);
+        return <tr key={item.id} className={selected ? 'selected-row' : undefined}><td><label className="selection-checkbox"><input type="checkbox" checked={selected} onChange={() => toggleUserSelection(item.id)} disabled={isCurrentUser} aria-label={isCurrentUser ? 'Usuário atual não pode ser excluído' : `Selecionar ${item.name}`} /><span className="mobile-selection-label">Selecionar</span></label></td><td><div className="name-cell"><Avatar name={item.name} color="blue" /><strong>{item.name}</strong></div></td><td>{item.username}</td><td><span className="role-tag">{roleLabel(item.role)}</span></td><td><PermissionSummary permissions={userPermissions} catalog={catalog} fallbackRole={item.role} /></td><td><span className={item.active ? 'active-dot' : 'inactive-dot'}>{item.active ? 'Ativo' : 'Inativo'}</span></td><td>{requiresCheckIn ? checkin ? <span className="active-dot">Trabalhando · {time(checkin.checkInAt)}</span> : <span className="inactive-dot">Folga / atestado</span> : '—'}</td><td className="actions-cell"><button className="mini-action" onClick={() => setEditor(item)}>Editar</button>{isCurrentUser ? <span className="current-user-note">Usuário atual</span> : <button className="mini-action danger-mini" onClick={() => setDeletingUser(item)}>Excluir</button>}</td></tr>;
       })}</tbody></table></div>
     </section>}
     {canManageSettings && <>
@@ -1304,6 +1348,7 @@ function SettingsPage({ data, user, token, refresh, notify }) {
     {editor && canManageUsers && <UserEditorModal key={editor.id || 'new'} account={editor.id ? editor : null} drivers={data.drivers} consultants={data.consultants || []} selfGens={data.selfGens || []} permissionCatalog={catalog} onClose={() => setEditor(null)} token={token} refresh={refresh} notify={notify} />}
     {resetOpen && canManageSettings && <Modal title="Zerar operação do dia" onClose={() => setResetOpen(false)}><div className="danger-copy"><CircleUserRound size={25} /><p>Esta ação remove tours, convites Waves, filas, histórico, check-ins e contadores. Usuários, consultores, motoristas, carrinhos e destinos permanecem cadastrados.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setResetOpen(false)}>Cancelar</button><button className="button button-danger" onClick={resetOperation} disabled={resetting}>{resetting && <LoaderCircle className="spin" size={17} />} Confirmar e zerar</button></div></Modal>}
     {deletingUser && canManageUsers && <Modal title="Excluir usuário" onClose={() => setDeletingUser(null)}><div className="danger-copy"><CircleUserRound size={25} /><p>Excluir <strong>{deletingUser.name}</strong> removerá seu acesso imediatamente.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeletingUser(null)}>Cancelar</button><button className="button button-danger" onClick={deleteUser} disabled={deleting}>{deleting && <LoaderCircle className="spin" size={17} />} Excluir usuário</button></div></Modal>}
+    {bulkDeleteOpen && canManageUsers && <Modal title="Excluir usuários selecionados" onClose={() => !bulkDeleting && setBulkDeleteOpen(false)}><div className="danger-copy"><Trash2 size={25} /><p>Confirme a exclusão de <strong>{selectedUsers.length} usuário{selectedUsers.length === 1 ? '' : 's'}</strong>. O acesso será removido imediatamente e esta ação não pode ser desfeita.</p></div><div className="selected-user-names">{selectedUsers.map((item) => <span key={item.id}>{item.name}</span>)}</div><div className="modal-actions"><button className="button button-secondary" onClick={() => setBulkDeleteOpen(false)} disabled={bulkDeleting}>Cancelar</button><button className="button button-danger" onClick={deleteSelectedUsers} disabled={bulkDeleting || !selectedUsers.length}>{bulkDeleting && <LoaderCircle className="spin" size={17} />} Excluir selecionados</button></div></Modal>}
   </>;
 }
 

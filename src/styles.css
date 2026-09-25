@@ -303,3 +303,19 @@ input:focus, select:focus { border-color: #197db7; box-shadow: 0 0 0 3px rgba(25
   .consultant-support-reset .button { width: 100%; justify-content: center; }
   .consultant-public-section-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
+
+.user-selection-toolbar { display: flex; align-items: center; gap: 10px; }
+.user-selection-toolbar .button { min-height: 34px; padding: 7px 10px; font-size: 10px; box-shadow: none; }
+.users-table .selection-checkbox { display: inline-flex; align-items: center; gap: 6px; color: #536b7f; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.users-table .selection-checkbox input { width: 15px; height: 15px; margin: 0; accent-color: #12659f; }
+.users-table .mobile-selection-label { display: none; }
+.users-table tr.selected-row td { background: #fff8f8; }
+.selected-user-names { display: flex; max-height: 150px; flex-wrap: wrap; gap: 6px; overflow-y: auto; margin: -3px 0 18px; }
+.selected-user-names span { padding: 5px 8px; color: #7e3140; background: #ffe9ec; border-radius: 5px; font-size: 10px; font-weight: 700; }
+
+@media (max-width: 760px) {
+  .user-selection-toolbar { width: 100%; justify-content: space-between; }
+  .user-selection-toolbar .button { width: auto; }
+  .users-table .selection-checkbox > span:not(.mobile-selection-label) { display: none; }
+  .users-table .mobile-selection-label { display: inline; }
+}

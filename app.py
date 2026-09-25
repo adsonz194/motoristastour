@@ -5883,6 +5883,88 @@ def delete_hostess_tour_selection():
     return response
 
 
+def validate_user_deletions(
+    db: dict[str, Any], current_user: dict[str, Any], targets: list[dict[str, Any]]
+) -> None:
+    """Validate a complete deletion set before removing any account.
+
+    Bulk deletion must be all-or-nothing.  In particular, removing two
+    administrators cannot be validated one at a time because the second
+    deletion could otherwise leave the system without an active administrator.
+    """
+    if not targets:
+        raise APIError("Selecione ao menos um usuário para excluir.")
+    target_ids = {item["id"] for item in targets}
+    if current_user["id"] in target_ids:
+        raise APIError("O administrador conectado não pode excluir a própria conta.")
+    for target in targets:
+        require_user_management_scope(
+            current_user,
+            target["role"],
+            normalize_permissions(target.get("permissions"), target["role"]),
+            target,
+        )
+    remaining_active_admins = sum(
+        1
+        for item in db["users"]
+        if item.get("id") not in target_ids
+        and item.get("role") == ROLE_ADMIN
+        and item.get("active", True)
+    )
+    if remaining_active_admins < 1:
+        raise APIError("Mantenha ao menos um administrador ativo no sistema.")
+
+
+def remove_user_account(db: dict[str, Any], target: dict[str, Any]) -> None:
+    """Remove one account and all of its access credentials from the database."""
+    db["users"] = [item for item in db["users"] if item["id"] != target["id"]]
+    if target.get("driverId"):
+        remove_driver_location(db, target["driverId"])
+    for car_request in db.get("hostessRequests", []):
+        if car_request.get("requestedById") == target.get("id"):
+            remove_hostess_request_location(db, car_request.get("id"))
+    for token, session in list(SESSIONS.items()):
+        if session["userId"] == target["id"]:
+            SESSIONS.pop(token, None)
+    db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
+    delete_user_push_subscriptions(db, target["id"])
+    delete_mobile_api_sessions_for_user(db, target["id"])
+
+
+@app.post("/api/users/bulk-delete")
+def bulk_delete_users():
+    payload = request.get_json(silent=True) or {}
+    raw_user_ids = payload.get("userIds")
+    if not isinstance(raw_user_ids, list):
+        raise APIError("Envie a lista de usuários selecionados para excluir.")
+    user_ids: list[str] = []
+    for value in raw_user_ids:
+        user_id = str(value or "").strip()
+        if user_id and user_id not in user_ids:
+            user_ids.append(user_id)
+    if not user_ids:
+        raise APIError("Selecione ao menos um usuário para excluir.")
+    with DB_LOCK:
+        db = operational_database()
+        current_user = get_current_user(db)
+        require_user_management(current_user)
+        targets = [find(db["users"], user_id, "Usuário") for user_id in user_ids]
+        validate_user_deletions(db, current_user, targets)
+        for target in targets:
+            remove_user_account(db, target)
+        names = ", ".join(target["name"] for target in targets)
+        log_activity(
+            db,
+            current_user,
+            None,
+            None,
+            None,
+            f"{len(targets)} usuário(s) excluído(s) em lote: {names}.",
+        )
+        save_database(db)
+        return jsonify(ok=True, deletedCount=len(targets), deletedUserIds=user_ids)
+
+
 @app.delete("/api/users/<user_id>")
 def delete_user(user_id: str):
     with DB_LOCK:
@@ -5890,24 +5972,9 @@ def delete_user(user_id: str):
         current_user = get_current_user(db)
         require_user_management(current_user)
         target = find(db["users"], user_id, "Usuário")
-        require_user_management_scope(current_user, target["role"], normalize_permissions(target.get("permissions"), target["role"]), target)
-        if target["id"] == current_user["id"]:
-            raise APIError("O administrador conectado não pode excluir a própria conta.")
-        if target["role"] == ROLE_ADMIN and sum(1 for item in db["users"] if item["role"] == ROLE_ADMIN and item["active"]) <= 1:
-            raise APIError("Mantenha ao menos um administrador ativo no sistema.")
-        db["users"] = [item for item in db["users"] if item["id"] != target["id"]]
-        if target.get("driverId"):
-            remove_driver_location(db, target["driverId"])
-        for car_request in db.get("hostessRequests", []):
-            if car_request.get("requestedById") == target.get("id"):
-                remove_hostess_request_location(db, car_request.get("id"))
+        validate_user_deletions(db, current_user, [target])
+        remove_user_account(db, target)
         log_activity(db, current_user, None, None, None, f"Usuário {target['name']} excluído.")
-        for token, session in list(SESSIONS.items()):
-            if session["userId"] == target["id"]:
-                SESSIONS.pop(token, None)
-        db["attendance"] = [item for item in db.setdefault("attendance", []) if item.get("userId") != target["id"]]
-        delete_user_push_subscriptions(db, target["id"])
-        delete_mobile_api_sessions_for_user(db, target["id"])
         save_database(db)
         return jsonify(ok=True)
 
