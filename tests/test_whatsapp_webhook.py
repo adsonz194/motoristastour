@@ -143,7 +143,10 @@ class WhatsAppWebhookTest(unittest.TestCase):
         })
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.sent_messages[-1][0][0], self.CONSULTANT_NUMBER)
+        self.assertEqual(
+            self.sent_messages[-1][0][0],
+            tour_app.normalize_whatsapp_number(self.CONSULTANT_NUMBER),
+        )
         self.assertEqual(self.sent_messages[-1][0][1]["type"], "interactive")
 
     def test_webhook_matches_meta_legacy_brazilian_mobile_identifier(self) -> None:
@@ -160,6 +163,7 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.sent_messages[-1][0][0], meta_identifier)
         self.assertEqual(self.sent_messages[-1][0][1]["type"], "interactive")
+        self.assertEqual(tour_app.normalize_whatsapp_number("5571992843791"), meta_identifier)
         self.assertTrue(tour_app.whatsapp_numbers_match("5571992843791", meta_identifier))
 
     def test_unknown_consultant_receives_the_meta_identifier_for_homologation(self) -> None:

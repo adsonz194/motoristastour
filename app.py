@@ -866,16 +866,20 @@ def normalize_whatsapp_number(value: Any) -> str | None:
     number = "".join(character for character in raw if character.isdigit())
     if not 10 <= len(number) <= 15 or number.startswith("0"):
         raise APIError("Informe o WhatsApp com DDI e número válido.")
+    # Meta identifies Brazilian mobile WhatsApp accounts without the ninth
+    # local digit. Store that identifier consistently, even when the usual
+    # public-facing nine-digit mobile number was entered on the form.
+    if len(number) == 13 and number.startswith("55") and number[4] == "9" and number[5] in "6789":
+        number = number[:4] + number[5:]
     return number
 
 
 def whatsapp_number_variants(value: Any) -> tuple[str, ...]:
     """Return equivalent identifiers for the same WhatsApp account.
 
-    Meta can send some Brazilian mobile accounts using its legacy eight-digit
-    local representation (without the ninth mobile digit).  The complete
-    nine-digit representation remains the canonical stored value, but both
-    forms must identify the same consultant and be protected from duplicates.
+    The canonical Brazilian representation is Meta's identifier without the
+    ninth mobile digit. The expanded variant is retained only as a fallback
+    when delivering an outbound message through an older Meta registry.
     """
     number = normalize_whatsapp_number(value)
     if not number:
@@ -883,9 +887,7 @@ def whatsapp_number_variants(value: Any) -> tuple[str, ...]:
     variants = [number]
     # Brazil: 55 + two-digit DDD + nine-digit mobile.  Fixed lines begin with
     # 2-5, so only mobile prefixes receive the legacy-form equivalence.
-    if len(number) == 13 and number.startswith("55") and number[4] == "9" and number[5] in "6789":
-        variants.append(number[:4] + number[5:])
-    elif len(number) == 12 and number.startswith("55") and number[4] in "6789":
+    if len(number) == 12 and number.startswith("55") and number[4] in "6789":
         variants.append(number[:4] + "9" + number[4:])
     return tuple(variants)
 
