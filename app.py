@@ -4237,6 +4237,38 @@ def create_whatsapp_hostess_tours(
     )
 
 
+def whatsapp_hostess_assignment_messages(
+    db: dict[str, Any], car_request: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Notify every WhatsApp phone registered on the requesting Hostess login."""
+    if car_request.get("requesterType", HOSTESS_REQUESTER) != HOSTESS_REQUESTER:
+        return []
+    hostess = next(
+        (
+            user for user in db.get("users", [])
+            if user.get("id") == car_request.get("requestedById")
+            and user.get("role") == ROLE_HOSTESS
+            and user.get("active", True)
+        ),
+        None,
+    )
+    driver_name = str(car_request.get("assignedDriverName") or "").strip()
+    if not hostess or not driver_name:
+        return []
+    recipients: list[str] = []
+    for saved_number in hostess.get("hostessPhoneNumbers", []):
+        try:
+            number = normalize_whatsapp_number(saved_number)
+        except APIError:
+            continue
+        if number and number not in recipients:
+            recipients.append(number)
+    message = whatsapp_text_payload(
+        f"Motorista {driver_name} assumiu sua solicitação de carro e está a caminho."
+    )
+    return [(number, message) for number in recipients]
+
+
 def whatsapp_message_interaction_id(message: dict[str, Any]) -> str:
     message_type = str(message.get("type") or "").strip().lower()
     if message_type == "interactive":
@@ -6180,6 +6212,7 @@ def driver_hostess_availability():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         raise APIError("Envie os dados da solicitação em um objeto JSON válido.")
+    accepted_hostess_request: dict[str, Any] | None = None
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
@@ -6230,6 +6263,7 @@ def driver_hostess_availability():
                 action = f"assumiu a solicitação de apoio de {requester_name}"
             else:
                 action = f"assumiu a solicitação de carro de {requester_name} para a Hostess"
+                accepted_hostess_request = car_request
             closed_request = None
         else:
             car_request = hostess_request_for_driver(db, driver)
@@ -6268,6 +6302,13 @@ def driver_hostess_availability():
             "ACCEPTED",
             accepted_driver_name,
             requester_type=notification_requester_type,
+        )
+    if accepted_hostess_request:
+        # The Hostess may use more than one WhatsApp device/number under the
+        # same login.  Notify all registered numbers only after the accepted
+        # request has been saved successfully.
+        send_whatsapp_messages(
+            whatsapp_hostess_assignment_messages(db, accepted_hostess_request)
         )
     return response
 

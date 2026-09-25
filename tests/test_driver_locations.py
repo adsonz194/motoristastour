@@ -1306,13 +1306,21 @@ class DriverLocationApiTest(unittest.TestCase):
         driver_session = self._start()
         driver_update = self._update(driver_session["sharingId"])
         self.assertEqual(driver_update.status_code, 200, driver_update.get_json())
-        accepted = self._request(
-            "token-driver",
-            "POST",
-            "/api/drivers/hostess-availability",
-            json={"available": True, "requestId": car_request["id"]},
-        )
+        hostess_account = next(item for item in self.database["users"] if item["id"] == "user_hostess")
+        hostess_account["hostessPhoneNumbers"] = ["+55 71 99284-3791", "+55 71 98888-5678"]
+        with patch.object(tour_app, "send_whatsapp_messages", return_value={"attempted": 2, "delivered": 2}) as whatsapp_delivery:
+            accepted = self._request(
+                "token-driver",
+                "POST",
+                "/api/drivers/hostess-availability",
+                json={"available": True, "requestId": car_request["id"]},
+            )
         self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        whatsapp_delivery.assert_called_once()
+        self.assertEqual(
+            {recipient for recipient, _ in whatsapp_delivery.call_args.args[0]},
+            {"557192843791", "557188885678"},
+        )
 
         assigned_driver = self._request(
             "token-driver",

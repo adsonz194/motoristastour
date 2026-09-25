@@ -296,6 +296,26 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertIn("Yasmin solicitou em Prestige Waves", payload["body"])
         self.assertEqual(payload["url"], "/?page=tours&request=support%20request%2F1")
 
+    def test_hostess_assignment_notifies_every_phone_on_her_login(self) -> None:
+        self.database["users"].append({
+            "id": "user_hostess",
+            "username": "hostess",
+            "name": "Hostess Teste",
+            "role": tour_app.ROLE_HOSTESS,
+            "active": True,
+            "hostessPhoneNumbers": ["+55 71 99284-3791", "+55 71 98888-5678"],
+        })
+        car_request = {
+            "requesterType": tour_app.HOSTESS_REQUESTER,
+            "requestedById": "user_hostess",
+            "assignedDriverName": "Motorista Um",
+        }
+
+        messages = tour_app.whatsapp_hostess_assignment_messages(self.database, car_request)
+
+        self.assertEqual({recipient for recipient, _ in messages}, {"557192843791", "557188885678"})
+        self.assertTrue(all("Motorista Um assumiu" in message["text"]["body"] for _, message in messages))
+
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
         selection = self._post_webhook({
             "id": "wamid-select",
