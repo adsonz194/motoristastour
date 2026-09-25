@@ -3880,15 +3880,18 @@ def whatsapp_consultant_by_number(db: dict[str, Any], number: Any) -> dict[str, 
         return None
     if not normalized_number:
         return None
-    return next(
-        (
-            consultant
-            for consultant in db.get("consultants", [])
-            if consultant.get("active", True)
-            and consultant.get("whatsappNumber") == normalized_number
-        ),
-        None,
-    )
+    for consultant in db.get("consultants", []):
+        if not consultant.get("active", True):
+            continue
+        try:
+            saved_number = normalize_whatsapp_number(consultant.get("whatsappNumber"))
+        except APIError:
+            # A malformed legacy entry must not prevent other consultants from
+            # being identified by their valid WhatsApp number.
+            continue
+        if saved_number == normalized_number:
+            return consultant
+    return None
 
 
 def whatsapp_free_tours(db: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6140,7 +6143,10 @@ def create_consultant():
         if not name:
             raise APIError("Informe o nome do consultor.")
         whatsapp_number = normalize_whatsapp_number(payload.get("whatsappNumber"))
-        if whatsapp_number and any(item.get("whatsappNumber") == whatsapp_number for item in db.get("consultants", [])):
+        if whatsapp_number and any(
+            normalize_whatsapp_number(item.get("whatsappNumber")) == whatsapp_number
+            for item in db.get("consultants", [])
+        ):
             raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)
         consultant = {"id": new_id("con"), "name": name, "active": bool(payload.get("active", True))}
         if whatsapp_number:
@@ -6167,7 +6173,8 @@ def update_consultant(consultant_id: str):
             if "whatsappNumber" in payload else consultant.get("whatsappNumber")
         )
         if whatsapp_number and any(
-            item.get("id") != consultant_id and item.get("whatsappNumber") == whatsapp_number
+            item.get("id") != consultant_id
+            and normalize_whatsapp_number(item.get("whatsappNumber")) == whatsapp_number
             for item in db.get("consultants", [])
         ):
             raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)

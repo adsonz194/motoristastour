@@ -132,6 +132,20 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(verified.status_code, 200)
         self.assertEqual(verified.get_data(as_text=True), "verification-only")
 
+    def test_webhook_matches_a_legacy_formatted_consultant_number(self) -> None:
+        self.database["consultants"][0]["whatsappNumber"] = "+55 (71) 99999-9999"
+
+        response = self._post_webhook({
+            "id": "wamid-formatted-number",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.sent_messages[-1][0][0], self.CONSULTANT_NUMBER)
+        self.assertEqual(self.sent_messages[-1][0][1]["type"], "interactive")
+
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
         selection = self._post_webhook({
             "id": "wamid-select",
