@@ -181,6 +181,47 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertIn(tour_app.WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION, body)
         self.assertIn(unknown_number, body)
 
+    def test_hostess_phone_is_recognized_and_can_request_a_car(self) -> None:
+        self.database["users"].append({
+            "id": "user_hostess",
+            "username": "hostess",
+            "name": "Hostess Teste",
+            "role": tour_app.ROLE_HOSTESS,
+            "permissions": [tour_app.PERMISSION_REQUEST_HOSTESS_CAR],
+            "hostessPhoneNumbers": ["+55 71 99284-3791"],
+            "active": True,
+        })
+        self.database["attendance"] = [{
+            "id": "attendance_hostess",
+            "userId": "user_hostess",
+            "operationDate": self.OPERATION_DAY,
+            "status": "TRABALHANDO",
+            "checkInAt": "2026-09-20T10:00:00+00:00",
+        }]
+        meta_identifier = "557192843791"
+
+        menu = self._post_webhook({
+            "id": "wamid-hostess-menu",
+            "from": meta_identifier,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+        self.assertEqual(menu.status_code, 200)
+        payload = self.sent_messages[-1][0][1]
+        self.assertEqual(payload["interactive"]["action"]["buttons"][0]["reply"]["id"], "hostess-request")
+
+        requested = self._post_webhook({
+            "id": "wamid-hostess-request",
+            "from": meta_identifier,
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": "hostess-request"}},
+        })
+        self.assertEqual(requested.status_code, 200)
+        self.assertEqual(len(self.database["hostessRequests"]), 1)
+        car_request = self.database["hostessRequests"][0]
+        self.assertEqual(car_request["requesterType"], tour_app.HOSTESS_REQUESTER)
+        self.assertEqual(car_request["requestedById"], "user_hostess")
+
     def test_tour_request_push_reaches_every_active_driver_and_opens_the_tour(self) -> None:
         self.database["users"] = [
             {"id": "driver_one", "role": tour_app.ROLE_DRIVER, "active": True, "permissions": []},

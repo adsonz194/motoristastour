@@ -3989,15 +3989,39 @@ def whatsapp_consultant_by_number(db: dict[str, Any], number: Any) -> dict[str, 
     return None
 
 
-def whatsapp_unknown_consultant_message(number: str) -> dict[str, Any]:
+def whatsapp_hostess_by_number(db: dict[str, Any], number: Any) -> dict[str, Any] | None:
+    """Identify one active Hostess from any WhatsApp phone on her login."""
+    try:
+        incoming_variants = set(whatsapp_number_variants(number))
+    except APIError:
+        return None
+    if not incoming_variants:
+        return None
+    matches: list[dict[str, Any]] = []
+    for user in db.get("users", []):
+        if user.get("role") != ROLE_HOSTESS or not user.get("active", True):
+            continue
+        for saved_number in user.get("hostessPhoneNumbers", []):
+            try:
+                if incoming_variants & set(whatsapp_number_variants(saved_number)):
+                    matches.append(user)
+                    break
+            except APIError:
+                continue
+    # Never let a shared number choose a Hostess account arbitrarily.
+    return matches[0] if len(matches) == 1 else None
+
+
+def whatsapp_unknown_identity_message(number: str) -> dict[str, Any]:
     """Explain a failed mapping to the same WhatsApp account during homologation.
 
     The value is returned solely to the account that sent the message, is never
     written to application logs or state, and lets an operator compare Meta's
-    incoming identifier with the consultant record without guessing formats.
+    incoming identifier with the consultant or Hostess record without guessing
+    formats.
     """
     return whatsapp_text_payload(
-        "Este número não está vinculado a um consultor ativo no Motoristas Tour. "
+        "Este número não está vinculado a um consultor ou hostess ativa no Motoristas Tour. "
         f"Diagnóstico de homologação {WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION}: "
         f"a Meta identificou este WhatsApp como {number}. Cadastre exatamente "
         "esses dígitos, com DDI e sem espaços."
@@ -4080,6 +4104,60 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
     )
 
 
+def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -> dict[str, Any]:
+    """Present the small WhatsApp flow available to a registered Hostess."""
+    current_request = next(
+        (
+            item for item in db.get("hostessRequests", [])
+            if item.get("requestedById") == hostess.get("id")
+            and item.get("requesterType", HOSTESS_REQUESTER) == HOSTESS_REQUESTER
+            and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+        ),
+        None,
+    )
+    if current_request:
+        driver_name = str(current_request.get("assignedDriverName") or "").strip()
+        status = f"foi assumida por {driver_name}" if driver_name else "está aguardando um motorista"
+        return whatsapp_text_payload(f"Sua solicitação de carro {status}.")
+    if not user_has_permission(hostess, PERMISSION_REQUEST_HOSTESS_CAR):
+        return whatsapp_text_payload("Este login de hostess não tem permissão para solicitar carro.")
+    if not user_has_permission(hostess, PERMISSION_MANAGE_SETTINGS) and not attendance_for(db, hostess["id"]):
+        return whatsapp_text_payload("Faça o check-in no Motoristas Tour antes de solicitar um carro pelo WhatsApp.")
+    return whatsapp_button_payload(
+        f"Olá, {hostess['name']}. Deseja solicitar um carro para a Hostess?",
+        [("hostess-request", "Solicitar carro")],
+    )
+
+
+def create_whatsapp_hostess_request(db: dict[str, Any], hostess: dict[str, Any]) -> dict[str, Any]:
+    """Open a Hostess car request after WhatsApp identity and check-in checks."""
+    require_permission(hostess, PERMISSION_REQUEST_HOSTESS_CAR, "Este login de hostess não tem permissão para solicitar carro.")
+    if not user_has_permission(hostess, PERMISSION_MANAGE_SETTINGS) and not attendance_for(db, hostess["id"]):
+        raise APIError("Faça o check-in no Motoristas Tour antes de solicitar um carro pelo WhatsApp.", 409)
+    if any(item.get("requestedById") == hostess["id"] for item in open_hostess_requests(db)):
+        raise APIError("Você já possui uma solicitação de carro aberta.", 409)
+    created_at = timestamp()
+    car_request = {
+        "id": new_id("hostreq"),
+        "status": HOSTESS_REQUEST_OPEN,
+        "requesterType": HOSTESS_REQUESTER,
+        "requestedById": hostess["id"],
+        "requestedByName": hostess["name"],
+        "consultantId": None,
+        "consultantName": None,
+        "note": "",
+        "assignedDriverId": None,
+        "assignedDriverName": None,
+        "acceptedAt": None,
+        "operationDate": operation_date(),
+        "createdAt": created_at,
+        "updatedAt": created_at,
+    }
+    db.setdefault("hostessRequests", []).insert(0, car_request)
+    log_activity(db, hostess, None, None, HOSTESS_REQUEST_OPEN, f"{hostess['name']} solicitou um carro pelo WhatsApp.")
+    return car_request
+
+
 def whatsapp_message_interaction_id(message: dict[str, Any]) -> str:
     message_type = str(message.get("type") or "").strip().lower()
     if message_type == "interactive":
@@ -4108,10 +4186,20 @@ def whatsapp_reply_for_incoming_message(
     if not recipient:
         return None, None, None
     consultant = whatsapp_consultant_by_number(db, recipient)
-    if not consultant:
-        return recipient, whatsapp_unknown_consultant_message(recipient), None
+    hostess = None if consultant else whatsapp_hostess_by_number(db, recipient)
+    if not consultant and not hostess:
+        return recipient, whatsapp_unknown_identity_message(recipient), None
     interaction_id = whatsapp_message_interaction_id(message)
     normalized_action = interaction_id.casefold()
+    if hostess:
+        if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar"}:
+            return recipient, whatsapp_hostess_menu_message(db, hostess), None
+        if interaction_id == "hostess-request":
+            car_request = create_whatsapp_hostess_request(db, hostess)
+            return recipient, whatsapp_text_payload(
+                "Solicitação de carro enviada. Aguarde um motorista assumir."
+            ), car_request
+        return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para solicitar um carro."), None
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
         return recipient, whatsapp_menu_message(db, consultant), None
     if interaction_id.startswith("select-tour:"):
