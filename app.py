@@ -55,6 +55,9 @@ WHATSAPP_GRAPH_API_VERSION = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v22.0").st
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "").strip()
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
 WHATSAPP_PROCESSED_MESSAGE_LIMIT = 500
+# Shown only when a WhatsApp identity cannot be matched. This makes it possible
+# to confirm that a Render deployment contains the current lookup behavior.
+WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION = "2026-09-25.2"
 DB_LOCK = threading.RLock()
 SESSIONS: dict[str, dict[str, Any]] = {}
 MOBILE_API_TOKEN_PREFIX = "mta_"
@@ -3894,6 +3897,21 @@ def whatsapp_consultant_by_number(db: dict[str, Any], number: Any) -> dict[str, 
     return None
 
 
+def whatsapp_unknown_consultant_message(number: str) -> dict[str, Any]:
+    """Explain a failed mapping to the same WhatsApp account during homologation.
+
+    The value is returned solely to the account that sent the message, is never
+    written to application logs or state, and lets an operator compare Meta's
+    incoming identifier with the consultant record without guessing formats.
+    """
+    return whatsapp_text_payload(
+        "Este número não está vinculado a um consultor ativo no Motoristas Tour. "
+        f"Diagnóstico de homologação {WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION}: "
+        f"a Meta identificou este WhatsApp como {number}. Cadastre exatamente "
+        "esses dígitos, com DDI e sem espaços."
+    )
+
+
 def whatsapp_free_tours(db: dict[str, Any]) -> list[dict[str, Any]]:
     return tours_for_display([
         tour for tour in db.get("tours", [])
@@ -3999,9 +4017,7 @@ def whatsapp_reply_for_incoming_message(
         return None, None, False
     consultant = whatsapp_consultant_by_number(db, recipient)
     if not consultant:
-        return recipient, whatsapp_text_payload(
-            "Este número não está vinculado a um consultor ativo no Motoristas Tour. Peça à coordenação para cadastrá-lo com DDI."
-        ), False
+        return recipient, whatsapp_unknown_consultant_message(recipient), False
     interaction_id = whatsapp_message_interaction_id(message)
     normalized_action = interaction_id.casefold()
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:

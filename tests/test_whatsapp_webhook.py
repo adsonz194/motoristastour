@@ -146,6 +146,21 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(self.sent_messages[-1][0][0], self.CONSULTANT_NUMBER)
         self.assertEqual(self.sent_messages[-1][0][1]["type"], "interactive")
 
+    def test_unknown_consultant_receives_the_meta_identifier_for_homologation(self) -> None:
+        unknown_number = "5571888888888"
+
+        response = self._post_webhook({
+            "id": "wamid-unknown-number",
+            "from": unknown_number,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+
+        self.assertEqual(response.status_code, 200)
+        body = self.sent_messages[-1][0][1]["text"]["body"]
+        self.assertIn(tour_app.WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION, body)
+        self.assertIn(unknown_number, body)
+
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
         selection = self._post_webhook({
             "id": "wamid-select",
