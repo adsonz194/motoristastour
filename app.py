@@ -685,6 +685,9 @@ def initial_database() -> dict[str, Any]:
         # Keep only message IDs to make Meta webhook retries idempotent.
         # Message contents and telephone numbers are never logged.
         "whatsappProcessedMessages": [],
+        # A Hostess WhatsApp flow retains only its selected quantity and Ola;
+        # incoming message text is never persisted.
+        "whatsappHostessTourDrafts": [],
         "hotelClosures": [],
         "defaultDeparturePrestige": PRESTIGE_BAHIA,
         "attendance": [],
@@ -1582,6 +1585,9 @@ def operational_database() -> dict[str, Any]:
     if not isinstance(db.get("whatsappProcessedMessages"), list):
         db["whatsappProcessedMessages"] = []
         schema_updated = True
+    if not isinstance(db.get("whatsappHostessTourDrafts"), list):
+        db["whatsappHostessTourDrafts"] = []
+        schema_updated = True
     if "hotelClosures" not in db:
         db["hotelClosures"] = []
         schema_updated = True
@@ -1747,6 +1753,7 @@ def safe_database(db: dict[str, Any]) -> dict[str, Any]:
     result.pop("hostessRequestLocations", None)
     result.pop("mobileApiSessions", None)
     result.pop("whatsappProcessedMessages", None)
+    result.pop("whatsappHostessTourDrafts", None)
     return result
 
 
@@ -4104,8 +4111,48 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
     )
 
 
+def whatsapp_hostess_tour_draft(
+    db: dict[str, Any], hostess: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return this Hostess's current operation-day WhatsApp tour flow."""
+    return next(
+        (
+            item for item in db.setdefault("whatsappHostessTourDrafts", [])
+            if item.get("hostessUserId") == hostess.get("id")
+            and item.get("operationDate") == operation_date()
+        ),
+        None,
+    )
+
+
+def save_whatsapp_hostess_tour_draft(
+    db: dict[str, Any], hostess: dict[str, Any], **values: Any
+) -> dict[str, Any]:
+    """Save only the structured state needed to continue the Hostess flow."""
+    drafts = [
+        item for item in db.setdefault("whatsappHostessTourDrafts", [])
+        if item.get("hostessUserId") != hostess.get("id")
+    ]
+    draft = {
+        "hostessUserId": hostess["id"],
+        "operationDate": operation_date(),
+        "updatedAt": timestamp(),
+        **values,
+    }
+    drafts.insert(0, draft)
+    db["whatsappHostessTourDrafts"] = drafts
+    return draft
+
+
+def clear_whatsapp_hostess_tour_draft(db: dict[str, Any], hostess: dict[str, Any]) -> None:
+    db["whatsappHostessTourDrafts"] = [
+        item for item in db.setdefault("whatsappHostessTourDrafts", [])
+        if item.get("hostessUserId") != hostess.get("id")
+    ]
+
+
 def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -> dict[str, Any]:
-    """Present the small WhatsApp flow available to a registered Hostess."""
+    """Present the required quantity → Ola → car-request Hostess flow."""
     current_request = next(
         (
             item for item in db.get("hostessRequests", [])
@@ -4119,13 +4166,26 @@ def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -
         driver_name = str(current_request.get("assignedDriverName") or "").strip()
         status = f"foi assumida por {driver_name}" if driver_name else "está aguardando um motorista"
         return whatsapp_text_payload(f"Sua solicitação de carro {status}.")
-    if not user_has_permission(hostess, PERMISSION_REQUEST_HOSTESS_CAR):
-        return whatsapp_text_payload("Este login de hostess não tem permissão para solicitar carro.")
-    if not user_has_permission(hostess, PERMISSION_MANAGE_SETTINGS) and not attendance_for(db, hostess["id"]):
-        return whatsapp_text_payload("Faça o check-in no Motoristas Tour antes de solicitar um carro pelo WhatsApp.")
+    draft = whatsapp_hostess_tour_draft(db, hostess)
+    if draft and draft.get("step") == "READY_TO_REQUEST":
+        quantity = draft.get("quantity")
+        wave_label = TRANSFER_SCHEDULES.get(draft.get("wave"), {}).get("label", "Ola selecionada")
+        return whatsapp_button_payload(
+            f"Foram registrados {quantity} Tour(es) para a {wave_label}. Agora solicite o carrinho.",
+            [("hostess-request", "Solicitar carrinho")],
+        )
+    if draft and draft.get("step") == "WAITING_QUANTITY":
+        return whatsapp_text_payload("Envie apenas a quantidade de Tours: um número de 1 a 30.")
+    if draft and draft.get("step") == "WAITING_WAVE":
+        return whatsapp_button_payload(
+            f"Quantidade registrada: {draft.get('quantity')} Tour(es). Escolha a Ola.",
+            [("hostess-wave:WAVE_1", "1ª Ola"), ("hostess-wave:WAVE_2", "2ª Ola")],
+        )
+    if not user_has_permission(hostess, PERMISSION_MANAGE_TOUR_QUANTITIES):
+        return whatsapp_text_payload("Este login de hostess não tem permissão para registrar quantidades de Tours.")
     return whatsapp_button_payload(
-        f"Olá, {hostess['name']}. Deseja solicitar um carro para a Hostess?",
-        [("hostess-request", "Solicitar carro")],
+        f"Olá, {hostess['name']}. Primeiro registre a quantidade de Tours antes de solicitar o carrinho.",
+        [("hostess-register-tours", "Registrar Tours")],
     )
 
 
@@ -4156,6 +4216,25 @@ def create_whatsapp_hostess_request(db: dict[str, Any], hostess: dict[str, Any])
     db.setdefault("hostessRequests", []).insert(0, car_request)
     log_activity(db, hostess, None, None, HOSTESS_REQUEST_OPEN, f"{hostess['name']} solicitou um carro pelo WhatsApp.")
     return car_request
+
+
+def create_whatsapp_hostess_tours(
+    db: dict[str, Any], hostess: dict[str, Any], quantity: Any, wave: str
+) -> list[dict[str, Any]]:
+    """Register normal Tour slots from the authenticated Hostess WhatsApp flow."""
+    require_permission(
+        hostess,
+        PERMISSION_MANAGE_TOUR_QUANTITIES,
+        "Este login de hostess não tem permissão para registrar quantidades de Tours.",
+    )
+    return create_tour_slots(
+        db,
+        hostess,
+        quantity,
+        wave,
+        0,
+        allow_when_tours_closed=True,
+    )
 
 
 def whatsapp_message_interaction_id(message: dict[str, Any]) -> str:
@@ -4192,14 +4271,63 @@ def whatsapp_reply_for_incoming_message(
     interaction_id = whatsapp_message_interaction_id(message)
     normalized_action = interaction_id.casefold()
     if hostess:
+        draft = whatsapp_hostess_tour_draft(db, hostess)
+        if draft and draft.get("step") == "WAITING_QUANTITY" and interaction_id.isdecimal():
+            quantity = int(interaction_id)
+            if not 1 <= quantity <= 30:
+                return recipient, whatsapp_text_payload("Informe uma quantidade de Tours entre 1 e 30."), None
+            save_whatsapp_hostess_tour_draft(
+                db,
+                hostess,
+                step="WAITING_WAVE",
+                quantity=quantity,
+            )
+            return recipient, whatsapp_button_payload(
+                f"Quantidade registrada: {quantity} Tour(es). Escolha a Ola.",
+                [("hostess-wave:WAVE_1", "1ª Ola"), ("hostess-wave:WAVE_2", "2ª Ola")],
+            ), None
         if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar"}:
             return recipient, whatsapp_hostess_menu_message(db, hostess), None
+        if interaction_id == "hostess-register-tours":
+            require_permission(
+                hostess,
+                PERMISSION_MANAGE_TOUR_QUANTITIES,
+                "Este login de hostess não tem permissão para registrar quantidades de Tours.",
+            )
+            save_whatsapp_hostess_tour_draft(db, hostess, step="WAITING_QUANTITY")
+            return recipient, whatsapp_text_payload(
+                "Envie apenas a quantidade de Tours normais: um número de 1 a 30."
+            ), None
+        if interaction_id.startswith("hostess-wave:"):
+            wave = interaction_id.removeprefix("hostess-wave:").strip()
+            if not draft or draft.get("step") != "WAITING_WAVE":
+                return recipient, whatsapp_text_payload(
+                    "Primeiro informe a quantidade de Tours. Envie MENU para recomeçar."
+                ), None
+            tours = create_whatsapp_hostess_tours(db, hostess, draft.get("quantity"), wave)
+            save_whatsapp_hostess_tour_draft(
+                db,
+                hostess,
+                step="READY_TO_REQUEST",
+                quantity=draft.get("quantity"),
+                wave=wave,
+            )
+            wave_label = TRANSFER_SCHEDULES[wave]["label"]
+            return recipient, whatsapp_button_payload(
+                f"{len(tours)} Tour(es) registrado(s) para a {wave_label}. Agora solicite o carrinho.",
+                [("hostess-request", "Solicitar carrinho")],
+            ), None
         if interaction_id == "hostess-request":
+            if not draft or draft.get("step") != "READY_TO_REQUEST":
+                return recipient, whatsapp_text_payload(
+                    "Registre primeiro a quantidade de Tours e a Ola. Envie MENU para começar."
+                ), None
             car_request = create_whatsapp_hostess_request(db, hostess)
+            clear_whatsapp_hostess_tour_draft(db, hostess)
             return recipient, whatsapp_text_payload(
                 "Solicitação de carro enviada. Aguarde um motorista assumir."
             ), car_request
-        return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para solicitar um carro."), None
+        return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para registrar Tours."), None
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
         return recipient, whatsapp_menu_message(db, consultant), None
     if interaction_id.startswith("select-tour:"):

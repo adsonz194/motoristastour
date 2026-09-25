@@ -187,7 +187,10 @@ class WhatsAppWebhookTest(unittest.TestCase):
             "username": "hostess",
             "name": "Hostess Teste",
             "role": tour_app.ROLE_HOSTESS,
-            "permissions": [tour_app.PERMISSION_REQUEST_HOSTESS_CAR],
+            "permissions": [
+                tour_app.PERMISSION_REQUEST_HOSTESS_CAR,
+                tour_app.PERMISSION_MANAGE_TOUR_QUANTITIES,
+            ],
             "hostessPhoneNumbers": ["+55 71 99284-3791"],
             "active": True,
         })
@@ -208,7 +211,44 @@ class WhatsAppWebhookTest(unittest.TestCase):
         })
         self.assertEqual(menu.status_code, 200)
         payload = self.sent_messages[-1][0][1]
-        self.assertEqual(payload["interactive"]["action"]["buttons"][0]["reply"]["id"], "hostess-request")
+        self.assertEqual(
+            payload["interactive"]["action"]["buttons"][0]["reply"]["id"],
+            "hostess-register-tours",
+        )
+
+        register = self._post_webhook({
+            "id": "wamid-hostess-register",
+            "from": meta_identifier,
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": "hostess-register-tours"}},
+        })
+        self.assertEqual(register.status_code, 200)
+
+        quantity = self._post_webhook({
+            "id": "wamid-hostess-quantity",
+            "from": meta_identifier,
+            "type": "text",
+            "text": {"body": "2"},
+        })
+        self.assertEqual(quantity.status_code, 200)
+        self.assertEqual(
+            self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]["id"],
+            "hostess-wave:WAVE_1",
+        )
+
+        wave = self._post_webhook({
+            "id": "wamid-hostess-wave",
+            "from": meta_identifier,
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": "hostess-wave:WAVE_2"}},
+        })
+        self.assertEqual(wave.status_code, 200)
+        self.assertEqual(
+            self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]["id"],
+            "hostess-request",
+        )
+        self.assertEqual([tour["slotLabel"] for tour in self.database["tours"][:2]], ["Tour 2", "Tour 1"])
+        self.assertTrue(all(tour["wave"] == "WAVE_2" for tour in self.database["tours"][:2]))
 
         requested = self._post_webhook({
             "id": "wamid-hostess-request",
