@@ -285,11 +285,17 @@ PRESTIGE_LOCATIONS = {
 OPERATION_TZ = ZoneInfo("America/Sao_Paulo")
 DRIVER_LOCATION_TZ = ZoneInfo("America/Bahia")
 FINAL_DESTINATIONS = [
-    {"id": "dest_lobby_bahia", "name": "Lobby Waves", "active": True},
     {"id": "dest_lobby_selection", "name": "Lobby Selection", "active": True},
     {"id": "dest_prestige", "name": "Prestige Selection", "active": True},
+    {"id": "dest_lobby_bahia", "name": "Lobby Waves", "active": True},
     {"id": "dest_prestige_bahia", "name": "Prestige Waves", "active": True},
 ]
+DESTINATION_PRESTIGE_BY_NAME = {
+    "lobby selection": PRESTIGE_SELECTION,
+    "prestige selection": PRESTIGE_SELECTION,
+    "lobby waves": PRESTIGE_BAHIA,
+    "prestige waves": PRESTIGE_BAHIA,
+}
 
 # IDs used only by the first prototype screen.  They are kept here so that a
 # one-time migration can remove them from an existing database without ever
@@ -579,7 +585,9 @@ def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dic
         if item.get("startDate", "") <= day <= item.get("endDate", "")
     ]
     active_closures.sort(key=lambda item: (item.get("startDate", ""), item.get("createdAt", "")), reverse=True)
-    departure = db.get("defaultDeparturePrestige", PRESTIGE_BAHIA)
+    # With both hotels open, every consultant route starts at Selection. A
+    # configured closure is the only condition that moves the operation.
+    departure = PRESTIGE_SELECTION
     if active_closures and active_closures[0].get("departurePrestige") in PRESTIGE_LOCATIONS:
         departure = active_closures[0]["departurePrestige"]
     closed_hotels = {item.get("hotel") for item in active_closures}
@@ -602,6 +610,26 @@ def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dic
         "locationTestDriverId": location_window["locationTestDriverId"],
         "locationTestDriverName": location_window["locationTestDriverName"],
     }
+
+
+def destinations_for_current_prestige(db: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only destinations that belong to the currently open Prestige."""
+    departure = active_operation_settings(db).get("departurePrestige", PRESTIGE_SELECTION)
+    return [
+        destination
+        for destination in db.get("destinations", [])
+        if destination.get("active", True)
+        and DESTINATION_PRESTIGE_BY_NAME.get(
+            str(destination.get("name") or "").strip().casefold(), departure
+        ) == departure
+    ]
+
+
+def consultant_guest_locations_for_current_prestige(db: dict[str, Any]) -> list[dict[str, str]]:
+    """Expose the one valid origin for a consultant request in this operation."""
+    departure = active_operation_settings(db).get("departurePrestige", PRESTIGE_SELECTION)
+    location = "SELECTION" if departure == PRESTIGE_SELECTION else "WAVES"
+    return [{"id": location, "name": CONSULTANT_GUEST_LOCATIONS[location]}]
 
 
 def operation_settings_for_user(db: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
@@ -689,7 +717,8 @@ def initial_database() -> dict[str, Any]:
         # incoming message text is never persisted.
         "whatsappHostessTourDrafts": [],
         "hotelClosures": [],
-        "defaultDeparturePrestige": PRESTIGE_BAHIA,
+        "defaultDeparturePrestige": PRESTIGE_SELECTION,
+        "departurePrestigePolicyVersion": 2,
         "attendance": [],
         "activities": [
             {"id": new_id("act"), "at": created, "userName": "Sistema", "message": "Painel operacional iniciado sem dados de exemplo.", "previous": None, "next": None},
@@ -1402,8 +1431,7 @@ def whatsapp_gallery_destination_message(db: dict[str, Any], tour: dict[str, Any
             "title": str(destination.get("name") or "Destino")[:24],
             "description": "Solicitar carrinho",
         }
-        for destination in db.get("destinations", [])
-        if destination.get("active", True)
+        for destination in destinations_for_current_prestige(db)
     ]
     if not rows:
         return whatsapp_text_payload(
@@ -1591,8 +1619,14 @@ def operational_database() -> dict[str, Any]:
     if "hotelClosures" not in db:
         db["hotelClosures"] = []
         schema_updated = True
-    if db.get("defaultDeparturePrestige") not in PRESTIGE_LOCATIONS:
-        db["defaultDeparturePrestige"] = PRESTIGE_BAHIA
+    if db.get("departurePrestigePolicyVersion", 0) < 2:
+        # When both hotels operate, Selection is the departure point for the
+        # Lobby and Prestige requests. Existing closures still override it.
+        db["defaultDeparturePrestige"] = PRESTIGE_SELECTION
+        db["departurePrestigePolicyVersion"] = 2
+        schema_updated = True
+    elif db.get("defaultDeparturePrestige") not in PRESTIGE_LOCATIONS:
+        db["defaultDeparturePrestige"] = PRESTIGE_SELECTION
         schema_updated = True
     for cart in db.get("carts", []):
         if cart.get("capacity") != CART_PASSENGER_CAPACITY or cart.get("guestCapacity") != CART_GUEST_CAPACITY:
@@ -4836,10 +4870,10 @@ def public_consultant_support_options():
             selfGens=self_gens,
             tours=tours,
             routeStages=[{"id": key, "name": value} for key, value in CONSULTANT_ROUTE_STAGES.items()],
-            guestLocations=[{"id": key, "name": value} for key, value in CONSULTANT_GUEST_LOCATIONS.items()],
+            guestLocations=consultant_guest_locations_for_current_prestige(db),
             destinations=[
                 {"id": item.get("id"), "name": item.get("name")}
-                for item in db.get("destinations", []) if item.get("active", True)
+                for item in destinations_for_current_prestige(db)
             ],
             consultantMode=bool(authenticated_consultant),
             selfGenMode=authenticated_self_gen,
@@ -4912,6 +4946,10 @@ def create_public_consultant_support_request():
                 raise APIError("Selecione Prestige, Casa ou Saída da Galeria.")
             if route_stage == "PRESTIGE" and guest_location not in CONSULTANT_GUEST_LOCATIONS:
                 raise APIError("Informe se o hóspede está no Waves ou no Selection.")
+            if route_stage == "PRESTIGE":
+                allowed_guest_location = consultant_guest_locations_for_current_prestige(db)[0]["id"]
+                if guest_location != allowed_guest_location:
+                    raise APIError("O local selecionado não é o Prestige ativo da operação.", 409)
             tour = find(db.get("tours", []), tour_id, "Tour")
             expected_states = {
                 "PRESTIGE": {STATE_AVAILABLE},
@@ -5004,6 +5042,8 @@ def create_public_consultant_support_request():
                 destination = find(db.get("destinations", []), destination_id, "Destino")
                 if not destination.get("active", True):
                     raise APIError("Esse destino está inativo.", 409)
+                if not any(item.get("id") == destination.get("id") for item in destinations_for_current_prestige(db)):
+                    raise APIError("Esse destino não está disponível para o Prestige atual.", 409)
             stage_label = CONSULTANT_ROUTE_STAGES[route_stage]
             location_label = (
                 f"{stage_label} {CONSULTANT_GUEST_LOCATIONS[guest_location]}"
@@ -5140,11 +5180,13 @@ def create_whatsapp_consultant_route_request(
         destination = find(db.get("destinations", []), normalized_destination_id, "Destino")
         if not destination.get("active", True):
             raise APIError("Esse destino está inativo.", 409)
+        if not any(item.get("id") == destination.get("id") for item in destinations_for_current_prestige(db)):
+            raise APIError("Esse destino não está disponível para o Prestige atual.", 409)
     if stage == "PRESTIGE":
         confirm_quantity_tour_start(db, tour, consultant_id=consultant["id"])
     guest_location = (
         "SELECTION"
-        if active_operation_settings(db).get("defaultDeparturePrestige") == PRESTIGE_SELECTION
+        if active_operation_settings(db).get("departurePrestige") == PRESTIGE_SELECTION
         else "WAVES"
     )
     stage_label = CONSULTANT_ROUTE_STAGES[stage]
@@ -5517,7 +5559,7 @@ def bootstrap_data_for_user(
         data["attendance"] = db.get("attendance", [])
     if PERMISSION_MANAGE_SETTINGS in permissions:
         data["hotelClosures"] = db.get("hotelClosures", [])
-        data["defaultDeparturePrestige"] = db.get("defaultDeparturePrestige", PRESTIGE_BAHIA)
+        data["defaultDeparturePrestige"] = db.get("defaultDeparturePrestige", PRESTIGE_SELECTION)
 
     # A WhatsApp number identifies a consultant in an external messaging
     # channel. Only people allowed to manage consultant registrations receive
@@ -6829,18 +6871,15 @@ def transfer_action(transfer_id: str):
 
 @app.post("/api/operation/departure-prestige")
 def update_default_departure_prestige():
-    payload = request.get_json(silent=True) or {}
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
         require_admin(user)
-        departure = payload.get("departurePrestige")
-        if departure not in PRESTIGE_LOCATIONS:
-            raise APIError("Selecione Prestige Waves Bahia ou Prestige Praia do Forte Selection.")
-        db["defaultDeparturePrestige"] = departure
-        log_activity(db, user, None, None, None, f"Prestige de saída padrão alterado para {PRESTIGE_LOCATIONS[departure]}.")
-        save_database(db)
-        return jsonify(operationSettings=active_operation_settings(db))
+        raise APIError(
+            "Com os dois hotéis abertos, a saída é sempre o Prestige Selection. "
+            "Cadastre o fechamento de um hotel para alterar a operação.",
+            409,
+        )
 
 
 @app.post("/api/hotel-closures")

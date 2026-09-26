@@ -342,6 +342,7 @@ class WhatsAppWebhookTest(unittest.TestCase):
         car_request = self.database["hostessRequests"][0]
         self.assertEqual(car_request["consultantId"], "con_yasmin")
         self.assertEqual(car_request["routeStage"], "PRESTIGE")
+        self.assertEqual(car_request["guestLocationLabel"], "Prestige Selection")
         self.assertEqual(self.database["tours"][0]["pendingConsultantRequestId"], car_request["id"])
         self.assertEqual(self.database["tours"][0]["consultantName"], "Yasmin")
 
@@ -402,8 +403,21 @@ class WhatsAppWebhookTest(unittest.TestCase):
         rows = gallery_message["interactive"]["action"]["sections"][0]["rows"]
         self.assertEqual([row["id"] for row in rows], [
             "destination:tour_02:lobby-selection",
-            "destination:tour_02:lobby-waves",
             "destination:tour_02:prestige-selection",
+        ])
+
+        self.database["hotelClosures"] = [{
+            "id": "closure_selection",
+            "hotel": tour_app.HOTEL_PRAIA_SELECTION,
+            "startDate": "2026-09-01",
+            "endDate": "2026-09-30",
+            "departurePrestige": tour_app.PRESTIGE_BAHIA,
+            "createdAt": "2026-09-01T10:00:00+00:00",
+        }]
+        gallery_message = tour_app.whatsapp_gallery_destination_message(self.database, tour)
+        rows = gallery_message["interactive"]["action"]["sections"][0]["rows"]
+        self.assertEqual([row["id"] for row in rows], [
+            "destination:tour_02:lobby-waves",
             "destination:tour_02:prestige-waves",
         ])
 

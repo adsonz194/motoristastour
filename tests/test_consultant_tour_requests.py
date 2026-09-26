@@ -24,6 +24,16 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.database = tour_app.initial_database()
         self.database.update({
             "operationDate": self.OPERATION_DAY,
+            # Most route-state tests model a Selection closure, where Waves
+            # becomes the only valid origin and destination group.
+            "hotelClosures": [{
+                "id": "closure_selection",
+                "hotel": tour_app.HOTEL_PRAIA_SELECTION,
+                "startDate": "2026-09-01",
+                "endDate": "2026-09-30",
+                "departurePrestige": tour_app.PRESTIGE_BAHIA,
+                "createdAt": "2026-09-01T10:00:00+00:00",
+            }],
             "consultants": [{"id": "con_dimitri", "name": "Dimitri", "active": True}],
             "selfGens": [
                 {"id": "self_ana", "name": "Ana", "active": True},
@@ -188,6 +198,29 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertNotIn("pendingConsultantRequestId", tour)
         self.assertEqual(started.get_json()["request"]["status"], tour_app.HOSTESS_REQUEST_IN_PROGRESS)
         self.assertEqual(started.get_json()["request"]["assignedDriverName"], "Motorista Um")
+
+    def test_open_operation_defaults_all_consultant_locations_to_selection(self) -> None:
+        self.database["hotelClosures"] = []
+
+        options = self.client.get("/api/public/consultant-support/options")
+
+        self.assertEqual(options.status_code, 200, options.get_json())
+        payload = options.get_json()
+        self.assertEqual(payload["guestLocations"], [{"id": "SELECTION", "name": "Selection"}])
+        self.assertEqual(
+            {item["name"] for item in payload["destinations"]},
+            {"Lobby Selection", "Prestige Selection"},
+        )
+
+        created = self.client.post("/api/public/consultant-support-requests", json={
+            "identityType": "CONSULTANT",
+            "consultantId": "con_dimitri",
+            "tourId": "tour_01",
+            "routeStage": "PRESTIGE",
+            "guestLocation": "SELECTION",
+        })
+        self.assertEqual(created.status_code, 201, created.get_json())
+        self.assertEqual(created.get_json()["request"]["guestLocationLabel"], "Prestige Selection")
 
     def test_consultant_board_shows_the_responsible_name_for_a_driver_in_tour(self) -> None:
         tour = self.database["tours"][0]
@@ -393,7 +426,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(self.database["hostessRequests"][0]["status"], tour_app.HOSTESS_REQUEST_CLOSED)
         self.database["tours"].append(self._tour("tour_05", "Tour 05"))
         support = self.client.post("/api/consultant/support-requests", headers=self.self_gen_headers(), json={
-            "consultantId": "con_dimitri", "tourId": "tour_05", "routeStage": "PRESTIGE", "guestLocation": "SELECTION",
+            "consultantId": "con_dimitri", "tourId": "tour_05", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
         })
         self.assertEqual(support.status_code, 201, support.json)
         started = self.client.post(
@@ -446,7 +479,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "consultantId": "con_dimitri",
             "tourId": "tour_01",
             "routeStage": "PRESTIGE",
-            "guestLocation": "SELECTION",
+            "guestLocation": "WAVES",
         })
         request_id = created.get_json()["request"]["id"]
 
@@ -473,7 +506,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "phase": "Galeria",
         })
         self.database["tours"] = [tour]
-        destination_id = self.database["destinations"][0]["id"]
+        destination_id = next(item["id"] for item in self.database["destinations"] if item["name"] == "Prestige Waves")
 
         created = self.client.post("/api/public/consultant-support-requests", json={
             "identityType": "CONSULTANT",
@@ -537,7 +570,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "phase": "Galeria",
         })
         self.database["tours"] = [tour]
-        destination_id = self.database["destinations"][0]["id"]
+        destination_id = next(item["id"] for item in self.database["destinations"] if item["name"] == "Prestige Waves")
 
         created = self.client.post("/api/public/consultant-support-requests", json={
             "identityType": "CONSULTANT",
@@ -623,7 +656,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertIsNone(gallery_options["activeRequest"])
         self.assertEqual(
             {item["name"] for item in gallery_options["destinations"]},
-            {"Prestige Waves", "Prestige Selection", "Lobby Waves", "Lobby Selection"},
+            {"Prestige Waves", "Lobby Waves"},
         )
         destination_id = next(item["id"] for item in gallery_options["destinations"] if item["name"] == "Prestige Waves")
         gallery = self.client.post("/api/consultant/support-requests", headers=headers, json={
@@ -751,7 +784,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
     def test_self_gen_supports_normal_tour_preserves_consultant_and_category(self):
         headers = self.self_gen_headers()
         response = self.client.post("/api/consultant/support-requests", headers=headers, json={
-            "consultantId": "con_dimitri", "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "SELECTION",
+            "consultantId": "con_dimitri", "tourId": "tour_01", "routeStage": "PRESTIGE", "guestLocation": "WAVES",
         })
         self.assertEqual(response.status_code, 201, response.json)
         request_id = response.json["request"]["id"]
@@ -789,7 +822,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.json)
         self.database["hostessRequests"][0]["status"] = tour_app.HOSTESS_REQUEST_CLOSED
         tour.update(status=tour_app.STATE_WAITING_DESTINATION)
-        destination_id = self.database["destinations"][0]["id"]
+        destination_id = next(item["id"] for item in self.database["destinations"] if item["name"] == "Prestige Waves")
         response = self.client.post("/api/consultant/support-requests", headers=headers, json={"tourId": "tour_01", "routeStage": "GALERIA_EXIT", "destinationId": destination_id})
         self.assertEqual(response.status_code, 201, response.json)
         self.assertEqual(self.database["hostessRequests"][0]["selfGenId"], "self_ana")

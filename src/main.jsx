@@ -554,7 +554,9 @@ function OperationRestriction({ settings }) {
 }
 
 function DriverHostessAvailability({ data, user, token, refresh, notify }) {
-  const requests = (data.hostessRequests || []).filter((item) => item.status === 'SOLICITADO');
+  // A consultant's car request belongs to the numbered Tour. It is started
+  // from that Tour in the driver's board, never claimed as Hostess support.
+  const requests = (data.hostessRequests || []).filter((item) => item.status === 'SOLICITADO' && !isTourRouteRequest(item));
   const driver = (data.drivers || []).find((item) => item.id === user.driverId);
   const checkedIn = (data.attendance || []).some((item) => item.userId === user.id);
   const [saving, setSaving] = useState(false);
@@ -1053,32 +1055,36 @@ function PermissionSummary({ permissions, catalog, fallbackRole }) {
   return <span className="permission-summary" title={labels.join(' · ')}>{visible.join(' · ')}{remaining > 0 && <small>+{remaining}</small>}</span>;
 }
 
+const UserPermissionsFieldset = React.memo(function UserPermissionsFieldset({ role, catalog, permissions, onTogglePermission, onApplyRoleDefaults }) {
+  const permissionGroups = useMemo(() => catalog.filter((permission) => permissionAllowedForRole(permission.code, role)).reduce((groups, permission) => {
+    const group = permission.group || 'Outras permissões';
+    groups[group] = [...(groups[group] || []), permission];
+    return groups;
+  }, {}), [catalog, role]);
+  const selectedPermissions = useMemo(() => new Set(permissions.map(normalizedPermissionCode)), [permissions]);
+  const readOnlyDashboard = selectedPermissions.size === 1 && selectedPermissions.has('VIEW_DASHBOARD');
+  return <fieldset className="permissions-fieldset"><div className="permissions-heading"><div><legend>Permissões de acesso</legend><p>Marque exatamente o que este usuário pode ver ou fazer.</p></div><button type="button" className="text-button" onClick={onApplyRoleDefaults}>Usar sugestão do perfil</button></div><div className="permissions-readonly-note"><ShieldCheck size={17} /><span><strong>Ver Painel Geral</strong> sozinho deixa a conta em modo somente visualização: sem botões para alterar tours, motoristas ou cadastros.</span></div><div className="permission-groups">{Object.entries(permissionGroups).map(([group, groupPermissions]) => <section className="permission-group" key={group}><h3>{group}</h3>{groupPermissions.map((permission) => <label className="permission-option" key={permission.code}><input type="checkbox" checked={selectedPermissions.has(normalizedPermissionCode(permission.code))} onChange={() => onTogglePermission(permission.code)} /><span><strong>{permission.label}</strong><small>{permission.description}</small></span></label>)}</section>)}</div><div className="permission-selection-summary"><span>{selectedPermissions.size} permissão{selectedPermissions.size === 1 ? '' : 'ões'} selecionada{selectedPermissions.size === 1 ? '' : 's'}</span><PermissionSummary permissions={permissions} catalog={catalog} fallbackRole={role} />{readOnlyDashboard && <strong>Esta conta só poderá visualizar o Painel Geral.</strong>}</div></fieldset>;
+});
+
 function UserEditorModal({ account, drivers, consultants, selfGens = [], permissionCatalog: catalogInput, onClose, token, refresh, notify }) {
   const editing = Boolean(account);
-  const catalog = permissionCatalog(catalogInput);
+  const catalog = useMemo(() => permissionCatalog(catalogInput), [catalogInput]);
   const initialPermissions = selectedPermissionsForAccount(account, catalog);
   const [form, setForm] = useState({ name: account?.name || '', username: account?.username || '', password: '', role: account?.role || 'MOTORISTA', active: account?.active ?? true, driverId: account?.driverId || '', consultantId: account?.consultantId || '', selfGenId: account?.selfGenId || '', checkInLocation: account?.checkInLocation || 'Prestige Praia do Forte', hostessPhoneNumbers: account?.hostessPhoneNumbers?.length ? account.hostessPhoneNumbers : [''], permissions: initialPermissions });
   const [saving, setSaving] = useState(false);
   const [permissionsRole, setPermissionsRole] = useState(account?.role || 'MOTORISTA');
-  const permissionGroups = catalog.filter((permission) => permissionAllowedForRole(permission.code, form.role)).reduce((groups, permission) => {
-    const group = permission.group || 'Outras permissões';
-    groups[group] = [...(groups[group] || []), permission];
-    return groups;
-  }, {});
-  const selectedPermissions = new Set(form.permissions.map(normalizedPermissionCode));
-  const readOnlyDashboard = selectedPermissions.size === 1 && selectedPermissions.has('VIEW_DASHBOARD');
   useEffect(() => {
     if (form.role === permissionsRole) return;
     setForm((current) => ({ ...current, permissions: defaultPermissionsForRole(current.role, catalog) }));
     setPermissionsRole(form.role);
   }, [form.role, permissionsRole, catalog]);
-  function togglePermission(code) {
+  const togglePermission = useCallback((code) => {
     const normalized = normalizedPermissionCode(code);
     setForm((current) => ({ ...current, permissions: current.permissions.map(normalizedPermissionCode).includes(normalized) ? current.permissions.filter((item) => normalizedPermissionCode(item) !== normalized) : [...current.permissions, normalized] }));
-  }
-  function applyRoleDefaults() {
+  }, []);
+  const applyRoleDefaults = useCallback(() => {
     setForm((current) => ({ ...current, permissions: defaultPermissionsForRole(current.role, catalog) }));
-  }
+  }, [catalog]);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
     const payload = { ...form, permissions: Array.from(new Set(permissionsAllowedForRole(form.permissions, form.role))) };
@@ -1093,9 +1099,9 @@ function UserEditorModal({ account, drivers, consultants, selfGens = [], permiss
       {form.role === 'MOTORISTA' && <label>Motorista vinculado<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Criar automaticamente com este nome</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}
       {form.role === 'CONSULTOR' && <label>Consultor vinculado<select value={form.consultantId} onChange={(event) => { const consultantId = event.target.value; const selected = consultants.find((item) => String(item.id) === consultantId); setForm({ ...form, consultantId, name: selected?.name || form.name }); }} required><option value="">Selecione o consultor</option>{consultants.filter((item) => item.active !== false).map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}</select></label>}
       {form.role === 'SELF_GEN' && <label>Self Gen vinculado<select value={form.selfGenId} onChange={(event) => { const selfGenId = event.target.value; const person = selfGens.find((item) => String(item.id) === selfGenId); setForm({ ...form, selfGenId, name: person?.name || form.name }); }} required><option value="">Selecione o Self Gen</option>{selfGens.filter((item) => item.active !== false).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><small>Solicita Tours Self Gen e Tours normais em apoio aos consultores.</small></label>}
-      {form.role === 'HOSTESS' && <fieldset className="hostess-phone-fieldset"><legend>Telefones da Hostess</legend><p>Um único login pode ter vários números de contato.</p>{(form.hostessPhoneNumbers || ['']).map((phone, index) => <div className="hostess-phone-row" key={`${index}-${phone}`}><input value={phone} onChange={(event) => setForm({ ...form, hostessPhoneNumbers: (form.hostessPhoneNumbers || ['']).map((item, itemIndex) => itemIndex === index ? event.target.value : item) })} placeholder="Ex.: +55 71 99999-9999" inputMode="tel" aria-label={`Telefone ${index + 1} da Hostess`} /><button type="button" className="mini-action danger-mini" onClick={() => setForm({ ...form, hostessPhoneNumbers: (form.hostessPhoneNumbers || ['']).filter((_, itemIndex) => itemIndex !== index) })} disabled={(form.hostessPhoneNumbers || ['']).length === 1}>Remover</button></div>)}<button type="button" className="text-button" onClick={() => setForm({ ...form, hostessPhoneNumbers: [...(form.hostessPhoneNumbers || ['']), ''] })}>+ Adicionar telefone</button></fieldset>}
+      {form.role === 'HOSTESS' && <fieldset className="hostess-phone-fieldset"><legend>Telefones da Hostess</legend><p>Um único login pode ter vários números de contato.</p>{(form.hostessPhoneNumbers || ['']).map((phone, index) => <div className="hostess-phone-row" key={`hostess-phone-${index}`}><input value={phone} onChange={(event) => setForm({ ...form, hostessPhoneNumbers: (form.hostessPhoneNumbers || ['']).map((item, itemIndex) => itemIndex === index ? event.target.value : item) })} placeholder="Ex.: +55 71 99999-9999" inputMode="tel" aria-label={`Telefone ${index + 1} da Hostess`} /><button type="button" className="mini-action danger-mini" onClick={() => setForm({ ...form, hostessPhoneNumbers: (form.hostessPhoneNumbers || ['']).filter((_, itemIndex) => itemIndex !== index) })} disabled={(form.hostessPhoneNumbers || ['']).length === 1}>Remover</button></div>)}<button type="button" className="text-button" onClick={() => setForm({ ...form, hostessPhoneNumbers: [...(form.hostessPhoneNumbers || ['']), ''] })}>+ Adicionar telefone</button></fieldset>}
       {['MOTORISTA', 'HOSTESS'].includes(form.role) && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}
-      {!['CONSULTOR', 'SELF_GEN'].includes(form.role) && <fieldset className="permissions-fieldset"><div className="permissions-heading"><div><legend>Permissões de acesso</legend><p>Marque exatamente o que este usuário pode ver ou fazer.</p></div><button type="button" className="text-button" onClick={applyRoleDefaults}>Usar sugestão do perfil</button></div><div className="permissions-readonly-note"><ShieldCheck size={17} /><span><strong>Ver Painel Geral</strong> sozinho deixa a conta em modo somente visualização: sem botões para alterar tours, motoristas ou cadastros.</span></div><div className="permission-groups">{Object.entries(permissionGroups).map(([group, permissions]) => <section className="permission-group" key={group}><h3>{group}</h3>{permissions.map((permission) => <label className="permission-option" key={permission.code}><input type="checkbox" checked={selectedPermissions.has(normalizedPermissionCode(permission.code))} onChange={() => togglePermission(permission.code)} /><span><strong>{permission.label}</strong><small>{permission.description}</small></span></label>)}</section>)}</div><div className="permission-selection-summary"><span>{selectedPermissions.size} permissão{selectedPermissions.size === 1 ? '' : 'ões'} selecionada{selectedPermissions.size === 1 ? '' : 's'}</span><PermissionSummary permissions={form.permissions} catalog={catalog} fallbackRole={form.role} />{readOnlyDashboard && <strong>Esta conta só poderá visualizar o Painel Geral.</strong>}</div></fieldset>}
+      {!['CONSULTOR', 'SELF_GEN'].includes(form.role) && <UserPermissionsFieldset role={form.role} catalog={catalog} permissions={form.permissions} onTogglePermission={togglePermission} onApplyRoleDefaults={applyRoleDefaults} />}
       <label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Usuário ativo</label>
       <div className="role-help">{form.role === 'HOSTESS' ? <><strong>Hostess:</strong> registra as quantidades de Tours e 1ª ou 2ª Ola. Os telefones acima pertencem ao mesmo login.</> : form.role === 'CONSULTOR' ? <><strong>Consultor:</strong> acessa somente sua tela de solicitações e os Tours vinculados ao próprio nome.</> : <><strong>Motorista:</strong> sem vínculo selecionado, o cadastro operacional é criado automaticamente e fica disponível após o check-in.</>}</div>
       <button className="button button-primary" disabled={saving || (form.role === 'CONSULTOR' && !form.consultantId) || (form.role === 'SELF_GEN' && !form.selfGenId)}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : 'Criar usuário'}</button>
@@ -1106,7 +1112,6 @@ function UserEditorModal({ account, drivers, consultants, selfGens = [], permiss
 
 function OperationSettingsPanel({ data, token, refresh, notify }) {
   const settings = data.operationSettings || {};
-  const [defaultDeparture, setDefaultDeparture] = useState(data.defaultDeparturePrestige || 'BAHIA');
   const [closure, setClosure] = useState({ hotel: 'WAVES_BAHIA', startDate: data.operationDate || '', endDate: data.operationDate || '', departurePrestige: 'SELECTION' });
   const [saving, setSaving] = useState(false);
   const [savingLocationTest, setSavingLocationTest] = useState(false);
@@ -1167,10 +1172,6 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
     return () => window.clearTimeout(timer);
   }, [settings.locationTestModeActive, settings.locationTestModeEndsAt, locationTestEndsAt]);
   function changeHotel(hotel) { setClosure((current) => ({ ...current, hotel, departurePrestige: hotel === 'WAVES_BAHIA' ? 'SELECTION' : 'BAHIA' })); }
-  async function saveDefault() {
-    setSaving(true);
-    try { await api(token, '/api/operation/departure-prestige', { method: 'POST', body: JSON.stringify({ departurePrestige: defaultDeparture }) }); await refresh(); notify('Prestige de saída padrão atualizado.', 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
-  }
   async function addClosure(event) {
     event.preventDefault(); setSaving(true);
     try { await api(token, '/api/hotel-closures', { method: 'POST', body: JSON.stringify(closure) }); await refresh(); notify('Período de fechamento configurado.', 'success'); setClosure((current) => ({ ...current, startDate: data.operationDate || '', endDate: data.operationDate || '' })); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
@@ -1198,9 +1199,9 @@ function OperationSettingsPanel({ data, token, refresh, notify }) {
     }
   }
   return <section className="operation-settings">
-    <div className="panel-heading"><div><h2>Hotéis, saída e testes operacionais</h2><p>Escolha o ponto padrão de saída, cadastre períodos de fechamento e controle testes temporários sem novo deploy.</p></div></div>
+    <div className="panel-heading"><div><h2>Hotéis, saída e testes operacionais</h2><p>Com os dois hotéis abertos, as solicitações saem pelo Selection. Cadastre fechamentos e controle testes temporários sem novo deploy.</p></div></div>
     <div className="operation-settings-grid">
-      <div className="operation-setting-card"><h3>Saída padrão da operação</h3><p>Usada quando não há hotel fechado no período atual.</p><label>Prestige de saída<select value={defaultDeparture} onChange={(event) => setDefaultDeparture(event.target.value)}><option value="BAHIA">Prestige Waves Bahia</option><option value="SELECTION">Prestige Praia do Forte Selection</option></select></label><button className="button button-secondary" onClick={saveDefault} disabled={saving}>Salvar saída padrão</button></div>
+      <div className="operation-setting-card"><h3>Com os dois hotéis abertos</h3><p>Lobby e Prestige dos pedidos de consultor são sempre direcionados ao Selection.</p><strong>Prestige Praia do Forte Selection</strong></div>
       <form className="operation-setting-card" onSubmit={addClosure}><h3>Fechamento de hotel</h3><p>O sistema bloqueia automaticamente as funções ligadas ao hotel fechado.</p><label>Hotel fechado<select value={closure.hotel} onChange={(event) => changeHotel(event.target.value)}><option value="WAVES_BAHIA">Waves Bahia</option><option value="PRAIA_SELECTION">Praia do Forte Selection</option></select></label><div className="closure-dates"><label>Data inicial<input type="date" value={closure.startDate} onChange={(event) => setClosure({ ...closure, startDate: event.target.value })} required /></label><label>Data final<input type="date" value={closure.endDate} onChange={(event) => setClosure({ ...closure, endDate: event.target.value })} required /></label></div><label>Prestige de saída nesse período<select value={closure.departurePrestige} onChange={(event) => setClosure({ ...closure, departurePrestige: event.target.value })}><option value="BAHIA" disabled={closure.hotel === 'WAVES_BAHIA'}>Prestige Waves Bahia</option><option value="SELECTION" disabled={closure.hotel === 'PRAIA_SELECTION'}>Prestige Praia do Forte Selection</option></select></label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} Adicionar fechamento</button></form>
       <div className={classNames('operation-setting-card', 'location-test-setting-card', locationTestModeActive && 'is-active')}>
         <div className="location-test-setting-copy">
@@ -1468,7 +1469,8 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
   const [selfGenId, setSelfGenId] = useState('');
   const [tourId, setTourId] = useState('');
   const [routeStage, setRouteStage] = useState('PRESTIGE');
-  const [guestLocation, setGuestLocation] = useState('WAVES');
+  const [guestLocations, setGuestLocations] = useState([{ id: 'SELECTION', name: 'Selection' }]);
+  const [guestLocation, setGuestLocation] = useState('SELECTION');
   const [destinationId, setDestinationId] = useState('');
   const [reference, setReference] = useState('');
   const [requestSaving, setRequestSaving] = useState(false);
@@ -1495,6 +1497,9 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
       const scopedTours = Array.isArray(payload.tours) ? payload.tours : [];
       setTours(scopedTours);
       setDestinations(Array.isArray(payload.destinations) ? payload.destinations : []);
+      const locationValues = (Array.isArray(payload.guestLocations) ? payload.guestLocations : []).filter((item) => item?.id && item?.name);
+      setGuestLocations(locationValues);
+      setGuestLocation((current) => locationValues.some((item) => item.id === current) ? current : (locationValues[0]?.id || ''));
       setConsultantId((current) => values.some((item) => String(item.id) === String(current)) ? current : (isSelfGen ? '' : String(values[0]?.id || '')));
       setSelfGenId((current) => selfGenValues.some((item) => String(item.id) === String(current)) ? current : String(selfGenValues[0]?.id || ''));
       const stageHasTour = (stage) => scopedTours.some((tour) => {
@@ -1635,7 +1640,7 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
         {isSelfGen && tourMode === 'NORMAL' && routeStage === 'PRESTIGE' && <label>Consultor apoiado<select value={consultantId} onChange={(event) => { setConsultantId(event.target.value); setTourId(''); }} required disabled={requestSaving}><option value="">Selecione o consultor</option>{consultants.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}
         <div className="consultant-identity-lock"><ShieldCheck size={18} /><div><span>{isSelfGen ? 'Self Gen conectado' : 'Consultor conectado'}</span><strong>{identityName || user?.name || 'Consultor'}</strong></div></div>
         <div className="consultant-route-field"><span>Local do pedido</span><div className="consultant-route-options" role="group" aria-label="Local do pedido">{[['PRESTIGE', 'Prestige'], ['CASA', 'Casa — buscar hóspedes'], ['GALERIA_EXIT', 'Galeria — levar ao destino']].map(([value, label]) => <button key={value} type="button" className={classNames('consultant-route-option', routeStage === value && 'active')} aria-pressed={routeStage === value} onClick={() => { setRouteStage(value); setTourId(''); setDestinationId(''); }} disabled={requestSaving}>{label}</button>)}</div></div>
-        {routeStage === 'PRESTIGE' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving}><option value="WAVES">Waves</option><option value="SELECTION">Selection</option></select></label>}
+        {routeStage === 'PRESTIGE' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving || !guestLocations.length}>{guestLocations.map((location) => <option value={location.id} key={location.id}>{location.name}</option>)}</select></label>}
         <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">{routeStage === 'CASA' ? 'Nenhum Tour deste nome está aguardando busca na Casa.' : routeStage === 'GALERIA_EXIT' ? 'Nenhum Tour deste nome está aguardando saída da Galeria.' : 'Não há Tour disponível para este nome e esta etapa.'}</small>}</label>
         {routeStage === 'GALERIA_EXIT' && <label>Destino<select value={destinationId} onChange={(event) => setDestinationId(event.target.value)} required disabled={requestSaving}><option value="">Selecione o destino</option>{destinations.map((destination) => <option value={destination.id} key={destination.id}>{destination.name}</option>)}</select></label>}
         <label>Referência para o motorista (opcional)<textarea value={reference} onChange={(event) => setReference(event.target.value)} placeholder="Ex.: próximo à recepção" maxLength="300" rows="2" disabled={requestSaving} /></label>
