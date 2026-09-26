@@ -7071,9 +7071,36 @@ def create_self_gen():
         name = str(payload.get("name", "")).strip()
         if not name:
             raise APIError("Informe o nome do Self Gen.")
-        self_gen = {"id": new_id("selfgen"), "name": name, "active": bool(payload.get("active", True))}
+        whatsapp_number = normalize_whatsapp_number(payload.get("whatsappNumber"))
+        acts_as_consultant = bool(payload.get("actsAsConsultant", False))
+        if whatsapp_number and any(
+            whatsapp_numbers_match(item.get("whatsappNumber"), whatsapp_number)
+            for item in db.get("consultants", [])
+        ):
+            raise APIError("Esse número de WhatsApp já está vinculado a um consultor.", 409)
+        self_gen = {
+            "id": new_id("selfgen"),
+            "name": name,
+            "active": bool(payload.get("active", True)),
+            "actsAsConsultant": acts_as_consultant,
+        }
+        if whatsapp_number:
+            self_gen["whatsappNumber"] = whatsapp_number
+        if acts_as_consultant:
+            linked_consultant = {
+                "id": new_id("con"),
+                "name": name,
+                "active": self_gen["active"],
+                "elite": False,
+                "generatedFromSelfGenId": self_gen["id"],
+            }
+            if whatsapp_number:
+                linked_consultant["whatsappNumber"] = whatsapp_number
+            db.setdefault("consultants", []).append(linked_consultant)
+            self_gen["consultantId"] = linked_consultant["id"]
         db.setdefault("selfGens", []).append(self_gen)
-        log_activity(db, user, None, None, None, f"Self Gen {name} cadastrado.")
+        role_note = " também cadastrado como consultor" if acts_as_consultant else ""
+        log_activity(db, user, None, None, None, f"Self Gen {name} cadastrado{role_note}.")
         save_database(db)
         return jsonify(selfGen=self_gen), 201
 
@@ -7089,10 +7116,51 @@ def update_self_gen(self_gen_id: str):
         name = str(payload.get("name", self_gen["name"])).strip()
         if not name:
             raise APIError("Informe o nome do Self Gen.")
+        whatsapp_number = (
+            normalize_whatsapp_number(payload.get("whatsappNumber"))
+            if "whatsappNumber" in payload else self_gen.get("whatsappNumber")
+        )
+        if whatsapp_number and any(
+            item.get("id") != self_gen.get("consultantId")
+            and whatsapp_numbers_match(item.get("whatsappNumber"), whatsapp_number)
+            for item in db.get("consultants", [])
+        ):
+            raise APIError("Esse número de WhatsApp já está vinculado a um consultor.", 409)
+        acts_as_consultant = bool(payload["actsAsConsultant"]) if "actsAsConsultant" in payload else bool(self_gen.get("actsAsConsultant", False))
+        active = bool(payload["active"]) if "active" in payload else self_gen.get("active", True)
         self_gen.update({
             "name": name,
-            "active": bool(payload["active"]) if "active" in payload else self_gen.get("active", True),
+            "active": active,
+            "actsAsConsultant": acts_as_consultant,
         })
+        if whatsapp_number:
+            self_gen["whatsappNumber"] = whatsapp_number
+        else:
+            self_gen.pop("whatsappNumber", None)
+        linked_consultant = next(
+            (
+                item for item in db.get("consultants", [])
+                if item.get("id") == self_gen.get("consultantId")
+                and item.get("generatedFromSelfGenId") == self_gen_id
+            ),
+            None,
+        )
+        if acts_as_consultant and not linked_consultant:
+            linked_consultant = {
+                "id": new_id("con"),
+                "name": name,
+                "active": active,
+                "elite": False,
+                "generatedFromSelfGenId": self_gen_id,
+            }
+            db.setdefault("consultants", []).append(linked_consultant)
+            self_gen["consultantId"] = linked_consultant["id"]
+        if linked_consultant:
+            linked_consultant.update({"name": name, "active": active and acts_as_consultant})
+            if whatsapp_number:
+                linked_consultant["whatsappNumber"] = whatsapp_number
+            else:
+                linked_consultant.pop("whatsappNumber", None)
         for account in db.get("users", []):
             if account.get("role") == ROLE_SELF_GEN and account.get("selfGenId") == self_gen_id:
                 account["name"] = name

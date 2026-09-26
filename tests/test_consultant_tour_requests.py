@@ -473,6 +473,30 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         deleted = self.client.delete(f"/api/self-gens/{self_gen_id}", headers=self.auth("token-admin"))
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
 
+    def test_self_gen_can_also_be_registered_as_consultant_without_a_login(self):
+        created = self.client.post(
+            "/api/self-gens",
+            headers=self.auth("token-admin"),
+            json={
+                "name": "Bruna",
+                "whatsappNumber": "+55 71 99284-3791",
+                "actsAsConsultant": True,
+                "active": True,
+            },
+        )
+
+        self.assertEqual(created.status_code, 201, created.get_json())
+        self_gen = created.json["selfGen"]
+        self.assertTrue(self_gen["actsAsConsultant"])
+        linked_consultant = next(
+            item for item in self.database["consultants"]
+            if item.get("id") == self_gen["consultantId"]
+        )
+        self.assertEqual(linked_consultant["name"], "Bruna")
+        self.assertEqual(linked_consultant["whatsappNumber"], "557192843791")
+        self.assertTrue(linked_consultant["generatedFromSelfGenId"] == self_gen["id"])
+        self.assertFalse(any(user.get("username") == "bruna" for user in self.database["users"]))
+
     def test_operator_selects_driver_before_starting_request(self) -> None:
         created = self.client.post("/api/public/consultant-support-requests", json={
             "identityType": "CONSULTANT",
