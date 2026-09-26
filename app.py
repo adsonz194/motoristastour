@@ -4185,6 +4185,46 @@ def clear_whatsapp_hostess_tour_draft(db: dict[str, Any], hostess: dict[str, Any
     ]
 
 
+def whatsapp_driver_availability_summary(db: dict[str, Any]) -> str:
+    """Format the current driver board for a requester in WhatsApp."""
+    lines: list[str] = []
+    active_drivers = sorted(
+        (driver for driver in db.get("drivers", []) if driver.get("active", True)),
+        key=lambda driver: str(driver.get("name") or "").casefold(),
+    )
+    for driver in active_drivers[:30]:
+        name = str(driver.get("name") or "Motorista").strip() or "Motorista"
+        status = str(driver.get("status") or DRIVER_LEAVE).strip()
+        if status == DRIVER_AVAILABLE:
+            state = "✅ Disponível"
+        elif status in {DRIVER_LEAVE, DRIVER_MEDICAL}:
+            state = "❌ Folga - Férias"
+        else:
+            assignment = active_driver_assignment(db, driver.get("id"))
+            responsible = str(
+                (assignment or {}).get("consultantName")
+                or (assignment or {}).get("selfGenName")
+                or ""
+            ).strip()
+            if responsible:
+                state = f"🚘 Em tour com {responsible}"
+            elif status == DRIVER_HOSTESS_SUPPORT:
+                state = "🚘 Em apoio à Hostess"
+            else:
+                state = f"🚘 {DRIVER_STATUS_LABELS.get(status, 'Em operação')}"
+        lines.append(f"{name}: {state}")
+    if not lines:
+        return "Disponibilidade dos motoristas agora:\nNenhum motorista ativo cadastrado."
+    remaining = len(active_drivers) - len(lines)
+    suffix = f"\n+{remaining} motorista(s) não exibido(s)." if remaining else ""
+    return "Disponibilidade dos motoristas agora:\n" + "\n".join(lines) + suffix
+
+
+def whatsapp_request_confirmation(db: dict[str, Any], message: str) -> dict[str, Any]:
+    """Confirm a request and immediately show who is free in WhatsApp."""
+    return whatsapp_text_payload(f"{message}\n\n{whatsapp_driver_availability_summary(db)}")
+
+
 def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -> dict[str, Any]:
     """Present the required quantity → Ola → car-request Hostess flow."""
     current_request = next(
@@ -4390,8 +4430,8 @@ def whatsapp_reply_for_incoming_message(
                 ), None
             car_request = create_whatsapp_hostess_request(db, hostess)
             clear_whatsapp_hostess_tour_draft(db, hostess)
-            return recipient, whatsapp_text_payload(
-                "Solicitação de carro enviada. Aguarde um motorista assumir."
+            return recipient, whatsapp_request_confirmation(
+                db, "Solicitação de carro enviada. Aguarde um motorista assumir."
             ), car_request
         return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para registrar Tours."), None
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
@@ -4411,8 +4451,8 @@ def whatsapp_reply_for_incoming_message(
             return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
         _, tour_id, stage = parts
         car_request = create_whatsapp_consultant_route_request(db, consultant, tour_id, stage)
-        return recipient, whatsapp_text_payload(
-            f"Solicitação enviada: {car_request['tourLabel']} em {car_request['guestLocationLabel']}. Aguarde um motorista assumir."
+        return recipient, whatsapp_request_confirmation(
+            db, f"Solicitação enviada: {car_request['tourLabel']} em {car_request['guestLocationLabel']}. Aguarde um motorista assumir."
         ), car_request
     if interaction_id.startswith("destination:"):
         parts = interaction_id.split(":", 2)
@@ -4422,8 +4462,8 @@ def whatsapp_reply_for_incoming_message(
         car_request = create_whatsapp_consultant_route_request(
             db, consultant, tour_id, "GALERIA_EXIT", destination_id,
         )
-        return recipient, whatsapp_text_payload(
-            f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
+        return recipient, whatsapp_request_confirmation(
+            db, f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
         ), car_request
     return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para ver o próximo passo."), None
 

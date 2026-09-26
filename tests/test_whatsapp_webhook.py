@@ -201,6 +201,12 @@ class WhatsAppWebhookTest(unittest.TestCase):
             "status": "TRABALHANDO",
             "checkInAt": "2026-09-20T10:00:00+00:00",
         }]
+        self.database["drivers"] = [{
+            "id": "drv_available",
+            "name": "Motorista Livre",
+            "active": True,
+            "status": tour_app.DRIVER_AVAILABLE,
+        }]
         meta_identifier = "557192843791"
 
         menu = self._post_webhook({
@@ -261,6 +267,7 @@ class WhatsAppWebhookTest(unittest.TestCase):
         car_request = self.database["hostessRequests"][0]
         self.assertEqual(car_request["requesterType"], tour_app.HOSTESS_REQUESTER)
         self.assertEqual(car_request["requestedById"], "user_hostess")
+        self.assertIn("Motorista Livre: ✅ Disponível", self.sent_messages[-1][0][1]["text"]["body"])
 
     def test_tour_request_push_reaches_every_active_driver_and_opens_the_tour(self) -> None:
         self.database["users"] = [
@@ -317,6 +324,18 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertTrue(all("Motorista Um assumiu" in message["text"]["body"] for _, message in messages))
 
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
+        self.database["drivers"] = [
+            {"id": "drv_available", "name": "Motorista Livre", "active": True, "status": tour_app.DRIVER_AVAILABLE},
+            {"id": "drv_leave", "name": "Motorista Folga", "active": True, "status": tour_app.DRIVER_LEAVE},
+            {"id": "drv_tour", "name": "Motorista Em Tour", "active": True, "status": tour_app.DRIVER_IN_TOUR},
+        ]
+        self.database["tours"].append({
+            "id": "tour_active",
+            "status": tour_app.STATE_IN_TOUR,
+            "consultantName": "Dimitri",
+            "selfGenName": None,
+            "allocations": [{"driverId": "drv_tour"}],
+        })
         selection = self._post_webhook({
             "id": "wamid-select",
             "from": self.CONSULTANT_NUMBER,
@@ -345,6 +364,11 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(car_request["guestLocationLabel"], "Prestige Selection")
         self.assertEqual(self.database["tours"][0]["pendingConsultantRequestId"], car_request["id"])
         self.assertEqual(self.database["tours"][0]["consultantName"], "Yasmin")
+        reply_body = self.sent_messages[-1][0][1]["text"]["body"]
+        self.assertIn("Disponibilidade dos motoristas agora:", reply_body)
+        self.assertIn("Motorista Livre: ✅ Disponível", reply_body)
+        self.assertIn("Motorista Folga: ❌ Folga - Férias", reply_body)
+        self.assertIn("Motorista Em Tour: 🚘 Em tour com Dimitri", reply_body)
 
         duplicate = self._post_webhook({
             "id": "wamid-request",
