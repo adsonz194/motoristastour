@@ -4243,16 +4243,25 @@ def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -
     draft = whatsapp_hostess_tour_draft(db, hostess)
     if draft and draft.get("step") == "READY_TO_REQUEST":
         quantity = draft.get("quantity")
+        self_gen_quantity = draft.get("selfGenQuantity", 0)
         wave_label = TRANSFER_SCHEDULES.get(draft.get("wave"), {}).get("label", "Ola selecionada")
         return whatsapp_button_payload(
-            f"Foram registrados {quantity} Tour(es) para a {wave_label}. Agora solicite o carrinho.",
+            f"Foram registrados {quantity} Tour(es) e {self_gen_quantity} Self Gen para a {wave_label}. Agora solicite o carrinho.",
             [("hostess-request", "Solicitar carrinho")],
         )
-    if draft and draft.get("step") == "WAITING_QUANTITY":
-        return whatsapp_text_payload("Envie apenas a quantidade de Tours: um número de 1 a 30.")
+    if draft and draft.get("step") in {"WAITING_QUANTITY", "WAITING_TOUR_QUANTITY"}:
+        return whatsapp_text_payload(
+            "Envie a quantidade de Tours normais: um número de 0 a 30. Em seguida você informará os Self Gen."
+        )
+    if draft and draft.get("step") == "WAITING_SELF_GEN_QUANTITY":
+        return whatsapp_text_payload(
+            "Agora envie a quantidade de Self Gen: um número de 0 a 30. Envie 0 se não houver Self Gen."
+        )
     if draft and draft.get("step") == "WAITING_WAVE":
+        quantity = draft.get("quantity", 0)
+        self_gen_quantity = draft.get("selfGenQuantity", 0)
         return whatsapp_button_payload(
-            f"Quantidade registrada: {draft.get('quantity')} Tour(es). Escolha a Ola.",
+            f"Quantidade registrada: {quantity} Tour(es) e {self_gen_quantity} Self Gen. Escolha a Ola.",
             [("hostess-wave:WAVE_1", "1ª Ola"), ("hostess-wave:WAVE_2", "2ª Ola")],
         )
     if not user_has_permission(hostess, PERMISSION_MANAGE_TOUR_QUANTITIES):
@@ -4293,9 +4302,9 @@ def create_whatsapp_hostess_request(db: dict[str, Any], hostess: dict[str, Any])
 
 
 def create_whatsapp_hostess_tours(
-    db: dict[str, Any], hostess: dict[str, Any], quantity: Any, wave: str
+    db: dict[str, Any], hostess: dict[str, Any], quantity: Any, self_gen_quantity: Any, wave: str
 ) -> list[dict[str, Any]]:
-    """Register normal Tour slots from the authenticated Hostess WhatsApp flow."""
+    """Register Tour and Self Gen slots from the authenticated Hostess WhatsApp flow."""
     require_permission(
         hostess,
         PERMISSION_MANAGE_TOUR_QUANTITIES,
@@ -4306,7 +4315,7 @@ def create_whatsapp_hostess_tours(
         hostess,
         quantity,
         wave,
-        0,
+        self_gen_quantity,
         allow_when_tours_closed=True,
     )
 
@@ -4378,18 +4387,36 @@ def whatsapp_reply_for_incoming_message(
     normalized_action = interaction_id.casefold()
     if hostess:
         draft = whatsapp_hostess_tour_draft(db, hostess)
-        if draft and draft.get("step") == "WAITING_QUANTITY" and interaction_id.isdecimal():
+        if draft and draft.get("step") in {"WAITING_QUANTITY", "WAITING_TOUR_QUANTITY"} and interaction_id.isdecimal():
             quantity = int(interaction_id)
-            if not 1 <= quantity <= 30:
-                return recipient, whatsapp_text_payload("Informe uma quantidade de Tours entre 1 e 30."), None
+            if not 0 <= quantity <= 30:
+                return recipient, whatsapp_text_payload("Informe uma quantidade de Tours entre 0 e 30."), None
+            save_whatsapp_hostess_tour_draft(
+                db,
+                hostess,
+                step="WAITING_SELF_GEN_QUANTITY",
+                quantity=quantity,
+            )
+            return recipient, whatsapp_text_payload(
+                f"Foram informados {quantity} Tour(es). Agora envie a quantidade de Self Gen: um número de 0 a 30. Envie 0 se não houver Self Gen."
+            ), None
+        if draft and draft.get("step") == "WAITING_SELF_GEN_QUANTITY" and interaction_id.isdecimal():
+            self_gen_quantity = int(interaction_id)
+            quantity = int(draft.get("quantity", 0))
+            total_quantity = quantity + self_gen_quantity
+            if self_gen_quantity < 0 or not 1 <= total_quantity <= 30:
+                return recipient, whatsapp_text_payload(
+                    "A soma de Tours e Self Gen deve ficar entre 1 e 30. Informe novamente a quantidade de Self Gen."
+                ), None
             save_whatsapp_hostess_tour_draft(
                 db,
                 hostess,
                 step="WAITING_WAVE",
                 quantity=quantity,
+                selfGenQuantity=self_gen_quantity,
             )
             return recipient, whatsapp_button_payload(
-                f"Quantidade registrada: {quantity} Tour(es). Escolha a Ola.",
+                f"Quantidade registrada: {quantity} Tour(es) e {self_gen_quantity} Self Gen. Escolha a Ola.",
                 [("hostess-wave:WAVE_1", "1ª Ola"), ("hostess-wave:WAVE_2", "2ª Ola")],
             ), None
         if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar"}:
@@ -4400,9 +4427,9 @@ def whatsapp_reply_for_incoming_message(
                 PERMISSION_MANAGE_TOUR_QUANTITIES,
                 "Este login de hostess não tem permissão para registrar quantidades de Tours.",
             )
-            save_whatsapp_hostess_tour_draft(db, hostess, step="WAITING_QUANTITY")
+            save_whatsapp_hostess_tour_draft(db, hostess, step="WAITING_TOUR_QUANTITY")
             return recipient, whatsapp_text_payload(
-                "Envie apenas a quantidade de Tours normais: um número de 1 a 30."
+                "Envie a quantidade de Tours normais: um número de 0 a 30. Em seguida você informará os Self Gen."
             ), None
         if interaction_id.startswith("hostess-wave:"):
             wave = interaction_id.removeprefix("hostess-wave:").strip()
@@ -4410,17 +4437,24 @@ def whatsapp_reply_for_incoming_message(
                 return recipient, whatsapp_text_payload(
                     "Primeiro informe a quantidade de Tours. Envie MENU para recomeçar."
                 ), None
-            tours = create_whatsapp_hostess_tours(db, hostess, draft.get("quantity"), wave)
+            tours = create_whatsapp_hostess_tours(
+                db,
+                hostess,
+                draft.get("quantity"),
+                draft.get("selfGenQuantity", 0),
+                wave,
+            )
             save_whatsapp_hostess_tour_draft(
                 db,
                 hostess,
                 step="READY_TO_REQUEST",
                 quantity=draft.get("quantity"),
+                selfGenQuantity=draft.get("selfGenQuantity", 0),
                 wave=wave,
             )
             wave_label = TRANSFER_SCHEDULES[wave]["label"]
             return recipient, whatsapp_button_payload(
-                f"{len(tours)} Tour(es) registrado(s) para a {wave_label}. Agora solicite o carrinho.",
+                f"{len(tours)} lançamento(s) registrado(s): {draft.get('quantity')} Tour(es) e {draft.get('selfGenQuantity', 0)} Self Gen para a {wave_label}. Agora solicite o carrinho.",
                 [("hostess-request", "Solicitar carrinho")],
             ), None
         if interaction_id == "hostess-request":

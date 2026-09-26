@@ -237,6 +237,15 @@ class WhatsAppWebhookTest(unittest.TestCase):
             "text": {"body": "2"},
         })
         self.assertEqual(quantity.status_code, 200)
+        self.assertIn("quantidade de Self Gen", self.sent_messages[-1][0][1]["text"]["body"])
+
+        self_gen_quantity = self._post_webhook({
+            "id": "wamid-hostess-self-gen-quantity",
+            "from": meta_identifier,
+            "type": "text",
+            "text": {"body": "1"},
+        })
+        self.assertEqual(self_gen_quantity.status_code, 200)
         self.assertEqual(
             self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]["id"],
             "hostess-wave:WAVE_1",
@@ -253,8 +262,11 @@ class WhatsAppWebhookTest(unittest.TestCase):
             self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]["id"],
             "hostess-request",
         )
-        self.assertEqual([tour["slotLabel"] for tour in self.database["tours"][:2]], ["Tour 2", "Tour 1"])
-        self.assertTrue(all(tour["wave"] == "WAVE_2" for tour in self.database["tours"][:2]))
+        self.assertEqual(
+            {tour["slotLabel"] for tour in self.database["tours"][:3]},
+            {"Tour 1", "Tour 2", "Self Gen 1"},
+        )
+        self.assertTrue(all(tour["wave"] == "WAVE_2" for tour in self.database["tours"][:3]))
 
         requested = self._post_webhook({
             "id": "wamid-hostess-request",
