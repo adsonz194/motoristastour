@@ -1765,11 +1765,17 @@ def clean_user(
 
 
 def clean_consultant(consultant: dict[str, Any], *, include_whatsapp_number: bool = False) -> dict[str, Any]:
-    """Expose a consultant without leaking their WhatsApp number by default."""
+    """Expose a consultant without leaking their WhatsApp number by default.
+
+    ``elite`` is operational status, rather than contact information.  It
+    must be preserved here so an administrator sees the checkbox state after
+    a fresh bootstrap of the Consultants page.
+    """
     result = {
         "id": consultant.get("id"),
         "name": consultant.get("name"),
         "active": bool(consultant.get("active", True)),
+        "elite": bool(consultant.get("elite", False)),
     }
     if include_whatsapp_number and consultant.get("whatsappNumber"):
         result["whatsappNumber"] = consultant["whatsappNumber"]

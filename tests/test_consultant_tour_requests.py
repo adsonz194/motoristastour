@@ -473,6 +473,24 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         deleted = self.client.delete(f"/api/self-gens/{self_gen_id}", headers=self.auth("token-admin"))
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
 
+    def test_consultant_elite_status_is_returned_after_refresh(self) -> None:
+        updated = self.client.put(
+            "/api/consultants/con_dimitri",
+            headers=self.auth("token-admin"),
+            json={"name": "Dimitri", "active": True, "elite": True},
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.get_json())
+        self.assertTrue(updated.json["consultant"]["elite"])
+
+        refreshed = self.client.get("/api/bootstrap", headers=self.auth("token-admin"))
+        self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
+        consultant = next(
+            item for item in refreshed.json["data"]["consultants"]
+            if item["id"] == "con_dimitri"
+        )
+        self.assertTrue(consultant["elite"])
+
     def test_self_gen_can_also_be_registered_as_consultant_without_a_login(self):
         created = self.client.post(
             "/api/self-gens",
