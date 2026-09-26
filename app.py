@@ -2550,8 +2550,7 @@ def validate_consultant_link(db: dict[str, Any], consultant_id: Any, user_id: st
     if not consultant.get("active", True):
         raise APIError("Esse consultor está inativo e não pode receber um login.", 409)
     if any(
-        item.get("role") == ROLE_CONSULTANT
-        and item.get("consultantId") == consultant_id
+        item.get("consultantId") == consultant_id
         and item.get("id") != user_id
         for item in db.get("users", [])
     ):
@@ -3210,6 +3209,7 @@ def public_consultant_support_request_payload(car_request: dict[str, Any]) -> di
         "guestLocationLabel": car_request.get("guestLocationLabel"),
         "destinationId": car_request.get("destinationId"),
         "destinationName": car_request.get("destinationName"),
+        "eliteSupport": bool(car_request.get("eliteSupport", False)),
         "assignedDriverName": car_request.get("assignedDriverName"),
         "createdAt": car_request.get("createdAt"),
         "acceptedAt": car_request.get("acceptedAt"),
@@ -3244,6 +3244,9 @@ def consultant_support_request_for_access(
         consultant = consultant_for_account(db, requester_user)
         identity_field = "selfGenId" if requester_user["role"] == ROLE_SELF_GEN else "consultantId"
         if car_request and car_request.get(identity_field) == consultant.get("id"):
+            return car_request
+        linked_consultant = dual_consultant_for_self_gen_account(db, requester_user)
+        if car_request and linked_consultant and car_request.get("consultantId") == linked_consultant.get("id"):
             return car_request
         raise APIError("Acompanhamento de apoio não encontrado.", 404)
     token = str(access_token or "").strip()
@@ -3554,6 +3557,19 @@ def consultant_for_account(db: dict[str, Any], user: dict[str, Any]) -> dict[str
     if not consultant.get("active", True):
         raise APIError("O cadastro deste consultor está inativo.", 403)
     return consultant
+
+
+def dual_consultant_for_self_gen_account(
+    db: dict[str, Any], user: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return the optional Consultant identity linked to a Self Gen login."""
+    if user.get("role") != ROLE_SELF_GEN:
+        return None
+    consultant_id = str(user.get("consultantId") or "").strip()
+    if not consultant_id:
+        return None
+    consultant = find(db.get("consultants", []), consultant_id, "Consultor vinculado")
+    return consultant if consultant.get("active", True) else None
 
 
 def quantity_slot_number(tour: dict[str, Any]) -> int | None:
@@ -4091,7 +4107,7 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
         None,
     )
     if active_request:
-        label = str(active_request.get("tourLabel") or "Seu Tour")
+        label = "Apoio Elite — Tour de sócios" if active_request.get("eliteSupport") else str(active_request.get("tourLabel") or "Seu Tour")
         driver_name = str(active_request.get("assignedDriverName") or "").strip()
         status = "foi assumido por " + driver_name if driver_name else "está aguardando um motorista"
         return whatsapp_text_payload(f"{label}: seu pedido {status}.")
@@ -4127,20 +4143,27 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
         )
 
     tours = whatsapp_free_tours(db)
-    if not tours:
+    if not tours and not consultant.get("elite", False):
         return whatsapp_text_payload("Não há Tours disponíveis agora. Envie MENU novamente em alguns instantes.")
+    displayed_tours = tours[:9] if consultant.get("elite", False) else tours[:10]
     rows = [
         {
             "id": f"select-tour:{tour['id']}",
             "title": tour_whatsapp_label(tour)[:24],
             "description": f"{TRANSFER_SCHEDULES.get(tour.get('wave'), {}).get('label', 'Tour')} - disponível"[:72],
         }
-        for tour in tours[:10]
+        for tour in displayed_tours
     ]
-    suffix = " Os primeiros 10 aparecem abaixo." if len(tours) > len(rows) else ""
+    if consultant.get("elite", False):
+        rows.insert(0, {
+            "id": "elite-support",
+            "title": "Solicitar apoio Elite",
+            "description": "Tour de sócios — chamar motorista"[:72],
+        })
+    suffix = " Os primeiros Tours aparecem abaixo." if len(tours) > len(displayed_tours) else ""
     return whatsapp_list_payload(
         f"Olá, {consultant['name']}. Há {len(tours)} Tour(es) disponível(is). Escolha o seu Tour para solicitar o carrinho no Prestige.{suffix}",
-        "Escolher Tour",
+        "Ver opções",
         rows,
     )
 
@@ -4352,6 +4375,40 @@ def whatsapp_hostess_assignment_messages(
     return [(number, message) for number in recipients]
 
 
+def whatsapp_consultant_assignment_messages(
+    db: dict[str, Any], car_request: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Notify the Consultant when a driver accepts an Elite support call."""
+    if (
+        car_request.get("requesterType") != CONSULTANT_REQUESTER
+        or not car_request.get("eliteSupport")
+        or not car_request.get("assignedDriverName")
+    ):
+        return []
+    consultant = next(
+        (
+            item for item in db.get("consultants", [])
+            if item.get("id") == car_request.get("consultantId")
+            and item.get("active", True)
+        ),
+        None,
+    )
+    if not consultant:
+        return []
+    try:
+        recipient = normalize_whatsapp_number(consultant.get("whatsappNumber"))
+    except APIError:
+        return []
+    if not recipient:
+        return []
+    return [(
+        recipient,
+        whatsapp_text_payload(
+            f"Motorista {car_request['assignedDriverName']} assumiu seu pedido de apoio Elite para o Tour de sócios e está a caminho."
+        ),
+    )]
+
+
 def whatsapp_message_interaction_id(message: dict[str, Any]) -> str:
     message_type = str(message.get("type") or "").strip().lower()
     if message_type == "interactive":
@@ -4470,6 +4527,16 @@ def whatsapp_reply_for_incoming_message(
         return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para registrar Tours."), None
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
         return recipient, whatsapp_menu_message(db, consultant), None
+    if interaction_id == "elite-support":
+        car_request, _access_token = create_elite_consultant_support_request(
+            db,
+            consultant,
+            source="WhatsApp",
+        )
+        return recipient, whatsapp_request_confirmation(
+            db,
+            "Pedido de apoio Elite enviado para o Tour de sócios. Aguarde um motorista assumir.",
+        ), car_request
     if interaction_id.startswith("select-tour:"):
         tour_id = interaction_id.removeprefix("select-tour:").strip()
         tour = next((item for item in whatsapp_free_tours(db) if item.get("id") == tour_id), None)
@@ -4851,10 +4918,13 @@ def public_consultant_support_options():
         db = operational_database()
         authenticated_consultant = None
         authenticated_self_gen = False
+        linked_consultant = None
         if "/consultant/" in request.path:
             account = get_current_user(db)
             authenticated_self_gen = account.get("role") == ROLE_SELF_GEN
             authenticated_consultant = consultant_for_account(db, account)
+            if authenticated_self_gen:
+                linked_consultant = dual_consultant_for_self_gen_account(db, account)
         consultants = sorted(
             (
                 {"id": item.get("id"), "name": item.get("name")}
@@ -4928,16 +4998,49 @@ def public_consultant_support_options():
             )
         elif authenticated_self_gen:
             self_gens = [{"id": authenticated_consultant["id"], "name": authenticated_consultant["name"]}]
-            tours = [item for item in tours if (
-                (item.get("status") == STATE_AVAILABLE and not item.get("selfGenId") and not item.get("selfGenName"))
-                or tour_identity_matches(item, authenticated_consultant, "selfGenId", "selfGenName")
-            )]
+            tours = [
+                item for item in tours
+                if (
+                    (
+                        (
+                            item.get("status") == STATE_AVAILABLE
+                            and not item.get("selfGenId")
+                            and not item.get("selfGenName")
+                        )
+                        or tour_identity_matches(item, authenticated_consultant, "selfGenId", "selfGenName")
+                    )
+                    or (
+                        linked_consultant
+                        and not item.get("selfGuide")
+                        and (
+                            (
+                                item.get("status") == STATE_AVAILABLE
+                                and not item.get("consultantId")
+                                and not item.get("consultantName")
+                            )
+                            or tour_identity_matches(
+                                item,
+                                linked_consultant,
+                                "consultantId",
+                                "consultantName",
+                            )
+                        )
+                    )
+                )
+            ]
             active_request = next((
                 public_consultant_support_request_payload(item)
                 for item in db.get("hostessRequests", [])
-                if item.get("selfGenId") == authenticated_consultant["id"]
+                if (
+                    item.get("selfGenId") == authenticated_consultant["id"]
+                    or (
+                        linked_consultant
+                        and item.get("consultantId") == linked_consultant["id"]
+                    )
+                )
                 and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
             ), None)
+        session_consultant = linked_consultant if authenticated_self_gen else authenticated_consultant
         response = jsonify(
             operationDate=db["operationDate"],
             consultants=consultants,
@@ -4951,6 +5054,16 @@ def public_consultant_support_options():
             ],
             consultantMode=bool(authenticated_consultant),
             selfGenMode=authenticated_self_gen,
+            canActAsConsultant=bool(linked_consultant),
+            linkedConsultant=(
+                {
+                    "id": linked_consultant["id"],
+                    "name": linked_consultant["name"],
+                    "elite": bool(linked_consultant.get("elite", False)),
+                }
+                if linked_consultant else None
+            ),
+            eliteSupportEnabled=bool((session_consultant or {}).get("elite", False)),
             activeRequest=active_request,
         )
         response.headers["Cache-Control"] = "private, no-store"
@@ -4971,6 +5084,7 @@ def create_public_consultant_support_request():
     identity_type = str(payload.get("identityType") or CONSULTANT_REQUESTER).strip().upper()
     consultant_id = str(payload.get("consultantId") or "").strip()
     self_gen_id = str(payload.get("selfGenId") or "").strip()
+    acting_as_consultant = bool(payload.get("actingAsConsultant", False))
     authenticated_consultant_endpoint = "/consultant/" in request.path
     if not authenticated_consultant_endpoint and identity_type not in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}:
         raise APIError("Selecione Consultor ou Self Gen.")
@@ -4986,8 +5100,19 @@ def create_public_consultant_support_request():
             requester_user = get_current_user(db)
             authenticated_consultant = consultant_for_account(db, requester_user)
             if requester_user.get("role") == ROLE_SELF_GEN:
-                identity_type = SELF_GEN_REQUESTER
-                self_gen_id = authenticated_consultant["id"]
+                if acting_as_consultant:
+                    linked_consultant = dual_consultant_for_self_gen_account(db, requester_user)
+                    if not linked_consultant:
+                        raise APIError(
+                            "Este login Self Gen não possui um consultor adicional vinculado.",
+                            403,
+                        )
+                    identity_type = CONSULTANT_REQUESTER
+                    consultant_id = linked_consultant["id"]
+                    self_gen_id = ""
+                else:
+                    identity_type = SELF_GEN_REQUESTER
+                    self_gen_id = authenticated_consultant["id"]
             else:
                 identity_type = CONSULTANT_REQUESTER
                 consultant_id = authenticated_consultant["id"]
@@ -5009,6 +5134,15 @@ def create_public_consultant_support_request():
             for item in db.setdefault("hostessRequests", [])
         ):
             raise APIError(f"{identity['name']} já possui uma solicitação de carrinho aberta.", 409)
+        if requester_user and any(
+            item.get("requestedById") == requester_user["id"]
+            and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+            for item in db.setdefault("hostessRequests", [])
+        ):
+            raise APIError(
+                "Este login já possui uma solicitação de carrinho aberta. Aguarde o encerramento antes de iniciar outro atendimento.",
+                409,
+            )
 
         route_fields: dict[str, Any] = {}
         supporting_consultant = None
@@ -5194,6 +5328,100 @@ def create_public_consultant_support_request():
         db,
         "REQUESTED",
         requester_type=identity_type,
+        car_request=car_request,
+    )
+    return response
+
+
+def create_elite_consultant_support_request(
+    db: dict[str, Any],
+    consultant: dict[str, Any],
+    requester_user: dict[str, Any] | None = None,
+    source: str = "painel",
+) -> tuple[dict[str, Any], str]:
+    """Open a driver-support call for an Elite consultant's member Tour."""
+    if not consultant.get("active", True) or not consultant.get("elite", False):
+        raise APIError("Este consultor não está habilitado para solicitar apoio Elite.", 403)
+    if any(
+        item.get("consultantId") == consultant["id"]
+        and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+        for item in db.setdefault("hostessRequests", [])
+    ):
+        raise APIError("Você já possui uma solicitação de apoio aberta.", 409)
+    if requester_user and any(
+        item.get("requestedById") == requester_user["id"]
+        and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+        for item in db.setdefault("hostessRequests", [])
+    ):
+        raise APIError("Este login já possui uma solicitação de carrinho aberta.", 409)
+    access_token = secrets.token_urlsafe(32)
+    created_at = timestamp()
+    car_request = {
+        "id": new_id("supportreq"),
+        "status": HOSTESS_REQUEST_OPEN,
+        "requesterType": CONSULTANT_REQUESTER,
+        "requestedById": requester_user.get("id") if requester_user else None,
+        "requestedByName": consultant["name"],
+        "consultantId": consultant["id"],
+        "consultantName": consultant["name"],
+        "selfGenId": None,
+        "selfGenName": None,
+        "eliteSupport": True,
+        "note": "Apoio Elite solicitado para Tour de sócios.",
+        "assignedDriverId": None,
+        "assignedDriverName": None,
+        "acceptedAt": None,
+        "operationDate": operation_date(),
+        "publicAccessTokenHash": public_support_access_token_digest(access_token),
+        "createdAt": created_at,
+        "updatedAt": created_at,
+    }
+    db["hostessRequests"].insert(0, car_request)
+    actor = requester_user or {
+        "id": consultant["id"],
+        "name": consultant["name"],
+        "username": source,
+        "role": ROLE_CONSULTANT,
+    }
+    log_activity(
+        db,
+        actor,
+        None,
+        None,
+        HOSTESS_REQUEST_OPEN,
+        f"{consultant['name']} solicitou apoio Elite para Tour de sócios pelo {source}.",
+    )
+    return car_request, access_token
+
+
+@app.post("/api/consultant/elite-support-requests")
+def create_elite_consultant_support_request_endpoint():
+    """Allow only an Elite consultant (or linked Self Gen) to call support."""
+    with DB_LOCK:
+        db = operational_database()
+        requester_user = get_current_user(db)
+        if requester_user.get("role") == ROLE_SELF_GEN:
+            consultant = dual_consultant_for_self_gen_account(db, requester_user)
+            if not consultant:
+                raise APIError("Este login Self Gen não possui um consultor adicional vinculado.", 403)
+        else:
+            consultant = consultant_for_account(db, requester_user)
+        car_request, access_token = create_elite_consultant_support_request(
+            db,
+            consultant,
+            requester_user,
+        )
+        save_database(db)
+        response = jsonify(
+            request=public_consultant_support_request_payload(car_request),
+            accessToken=access_token,
+        )
+        response.status_code = 201
+        response.headers["Cache-Control"] = "private, no-store"
+    notify_hostess_car_update(
+        db,
+        "REQUESTED",
+        requester_type=CONSULTANT_REQUESTER,
         car_request=car_request,
     )
     return response
@@ -5700,7 +5928,14 @@ def create_user():
         if any(item["username"] == username for item in db["users"]):
             raise APIError("Esse usuário já existe.", 409)
         driver_id = validate_driver_link(db, payload.get("driverId")) if role == ROLE_DRIVER else None
-        consultant_id = validate_consultant_link(db, payload.get("consultantId")) if role == ROLE_CONSULTANT else None
+        consultant_id = None
+        if role == ROLE_CONSULTANT:
+            consultant_id = validate_consultant_link(db, payload.get("consultantId"))
+        elif role == ROLE_SELF_GEN and str(payload.get("consultantId") or "").strip():
+            # A Self Gen may also cover a normal Consultant Tour without a
+            # duplicate login. The Self Gen identity remains the account's
+            # primary role; this is an optional second operational identity.
+            consultant_id = validate_consultant_link(db, payload.get("consultantId"))
         self_gen_id = validate_self_gen_link(db, payload.get("selfGenId")) if role == ROLE_SELF_GEN else None
         if consultant_id:
             name = find(db.get("consultants", []), consultant_id, "Consultor")["name"]
@@ -5777,8 +6012,11 @@ def update_user(user_id: str):
         ) if role == ROLE_HOSTESS else []
         driver_id = payload.get("driverId", target.get("driverId")) if role == ROLE_DRIVER else None
         driver_id = validate_driver_link(db, driver_id, target["id"])
-        consultant_id = payload.get("consultantId", target.get("consultantId")) if role == ROLE_CONSULTANT else None
-        consultant_id = validate_consultant_link(db, consultant_id, target["id"]) if role == ROLE_CONSULTANT else None
+        consultant_id = None
+        if role in {ROLE_CONSULTANT, ROLE_SELF_GEN}:
+            consultant_id = payload.get("consultantId", target.get("consultantId"))
+            if role == ROLE_CONSULTANT or str(consultant_id or "").strip():
+                consultant_id = validate_consultant_link(db, consultant_id, target["id"])
         self_gen_id = validate_self_gen_link(db, payload.get("selfGenId", target.get("selfGenId")), target["id"]) if role == ROLE_SELF_GEN else None
         if consultant_id:
             name = find(db.get("consultants", []), consultant_id, "Consultor")["name"]
@@ -6396,6 +6634,7 @@ def driver_hostess_availability():
     if not isinstance(payload, dict):
         raise APIError("Envie os dados da solicitação em um objeto JSON válido.")
     accepted_hostess_request: dict[str, Any] | None = None
+    accepted_consultant_request: dict[str, Any] | None = None
     with DB_LOCK:
         db = operational_database()
         user = get_current_user(db)
@@ -6444,6 +6683,7 @@ def driver_hostess_availability():
             )
             if notification_requester_type in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}:
                 action = f"assumiu a solicitação de apoio de {requester_name}"
+                accepted_consultant_request = car_request
             else:
                 action = f"assumiu a solicitação de carro de {requester_name} para a Hostess"
                 accepted_hostess_request = car_request
@@ -6492,6 +6732,10 @@ def driver_hostess_availability():
         # request has been saved successfully.
         send_whatsapp_messages(
             whatsapp_hostess_assignment_messages(db, accepted_hostess_request)
+        )
+    if accepted_consultant_request:
+        send_whatsapp_messages(
+            whatsapp_consultant_assignment_messages(db, accepted_consultant_request)
         )
     return response
 
@@ -6747,7 +6991,12 @@ def create_consultant():
             for item in db.get("consultants", [])
         ):
             raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)
-        consultant = {"id": new_id("con"), "name": name, "active": bool(payload.get("active", True))}
+        consultant = {
+            "id": new_id("con"),
+            "name": name,
+            "active": bool(payload.get("active", True)),
+            "elite": bool(payload.get("elite", False)),
+        }
         if whatsapp_number:
             consultant["whatsappNumber"] = whatsapp_number
         db["consultants"].append(consultant)
@@ -6777,7 +7026,11 @@ def update_consultant(consultant_id: str):
             for item in db.get("consultants", [])
         ):
             raise APIError("Esse número de WhatsApp já está vinculado a outro consultor.", 409)
-        consultant.update({"name": name, "active": bool(payload["active"]) if "active" in payload else consultant.get("active", True)})
+        consultant.update({
+            "name": name,
+            "active": bool(payload["active"]) if "active" in payload else consultant.get("active", True),
+            "elite": bool(payload["elite"]) if "elite" in payload else bool(consultant.get("elite", False)),
+        })
         if whatsapp_number:
             consultant["whatsappNumber"] = whatsapp_number
         else:
@@ -6800,7 +7053,7 @@ def delete_consultant(consultant_id: str):
         user = get_current_user(db)
         require_permission(user, PERMISSION_MANAGE_CONSULTANTS, "Seu usuário não possui permissão para gerenciar consultores.")
         consultant = find(db["consultants"], consultant_id, "Consultor")
-        if any(item.get("role") == ROLE_CONSULTANT and item.get("consultantId") == consultant_id for item in db.get("users", [])):
+        if any(item.get("consultantId") == consultant_id for item in db.get("users", [])):
             raise APIError("Exclua primeiro o usuário de acesso vinculado a este consultor.", 409)
         db["consultants"] = [item for item in db["consultants"] if item["id"] != consultant_id]
         log_activity(db, user, None, None, None, f"Consultor {consultant['name']} excluído.")

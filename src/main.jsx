@@ -597,7 +597,7 @@ function DriverHostessAvailability({ data, user, token, refresh, notify }) {
     const note = String(item.note || '').trim();
     const reference = note ? ` · ${note.length > 65 ? `${note.slice(0, 62)}…` : note}` : '';
     if (isTourRouteRequest(item)) return `${item.tourLabel || 'Tour'} · ${item.requestedByName || 'não identificado'} · ${item.guestLocationLabel || item.routeStageLabel || 'local não informado'}${item.destinationName ? ` → ${item.destinationName}` : ''}`;
-    return `${isConsultantRequest(item) ? (item.requesterType === 'SELF_GEN' ? 'Self Gen' : 'Consultor') : 'Hostess'} ${item.requestedByName || 'não identificado'} · ${time(item.createdAt)}${reference}`;
+    return `${isConsultantRequest(item) ? (item.eliteSupport ? 'Apoio Elite' : item.requesterType === 'SELF_GEN' ? 'Self Gen' : 'Consultor') : 'Hostess'} ${item.requestedByName || 'não identificado'} · ${time(item.createdAt)}${reference}`;
   };
   const consultantRequestCount = requests.filter(isConsultantRequest).length;
   const hostessRequestCount = requests.length - consultantRequestCount;
@@ -606,7 +606,7 @@ function DriverHostessAvailability({ data, user, token, refresh, notify }) {
   const selectedReference = String(selectedRequest?.note || '').trim();
   const startLabel = selectedRequest?.routeStage === 'PRESTIGE' ? 'Iniciar tour' : selectedRequest?.routeStage === 'CASA' ? 'Iniciar busca na Casa' : 'Iniciar destino';
   const descriptionOpen = expandedRequestId === selectedRequest?.id;
-  return <><section className={classNames('hostess-call', 'driver-hostess-call', routeRequest && 'tour-route-call')}><div><span>{routeRequest ? 'PEDIDO VINCULADO AO TOUR' : 'CHAMADOS DE APOIO'}</span><h2>{routeRequest ? `${selectedRequest.tourLabel || 'Tour'} · ${selectedRequest.requestedByName || 'Responsável'}` : requests.length === 1 ? `${isConsultantRequest(requests[0]) ? 'Um consultor ou Self Gen' : 'A Hostess'} solicitou um carro` : `${requests.length} solicitações abertas · ${requestSummary}`}</h2>{routeRequest ? <div className="route-request-details"><button type="button" className="route-request-preview" onClick={() => setExpandedRequestId(descriptionOpen ? '' : selectedRequest.id)} aria-expanded={descriptionOpen}><span><strong><MapPin size={16} /> {selectedRequest.guestLocationLabel || selectedRequest.routeStageLabel}</strong>{selectedRequest.destinationName && <small>Destino: {selectedRequest.destinationName}</small>}</span><span className="route-request-open-label">Ver descrição <ChevronRight size={17} className={descriptionOpen ? 'expanded' : ''} /></span></button>{descriptionOpen && <div className="route-request-description"><strong>Descrição para o motorista</strong><p>{selectedReference || 'Nenhuma descrição foi informada neste pedido.'}</p><small>Confira esta informação antes de tocar em “{startLabel}”.</small></div>}</div> : <p>{available ? `Você está atendendo ${assignedRequester}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para que a pessoa acompanhe somente o atendimento dela.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}{selectedReference && <> <strong> Referência:</strong> {selectedReference}</>}</p>}{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : routeRequest ? <button className="button button-primary" onClick={startRoute} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} {startLabel}</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>{assignedRequest && !isConsultantRequest(assignedRequest) && <HostessApproachLocationPanel requestId={assignedRequest.id} token={token} />}</>;
+  return <><section className={classNames('hostess-call', 'driver-hostess-call', routeRequest && 'tour-route-call')}><div><span>{routeRequest ? 'PEDIDO VINCULADO AO TOUR' : 'CHAMADOS DE APOIO'}</span><h2>{routeRequest ? `${selectedRequest.tourLabel || 'Tour'} · ${selectedRequest.requestedByName || 'Responsável'}` : requests.length === 1 ? `${isConsultantRequest(requests[0]) ? requests[0].eliteSupport ? 'Um consultor Elite' : 'Um consultor ou Self Gen' : 'A Hostess'} solicitou um carro` : `${requests.length} solicitações abertas · ${requestSummary}`}</h2>{routeRequest ? <div className="route-request-details"><button type="button" className="route-request-preview" onClick={() => setExpandedRequestId(descriptionOpen ? '' : selectedRequest.id)} aria-expanded={descriptionOpen}><span><strong><MapPin size={16} /> {selectedRequest.guestLocationLabel || selectedRequest.routeStageLabel}</strong>{selectedRequest.destinationName && <small>Destino: {selectedRequest.destinationName}</small>}</span><span className="route-request-open-label">Ver descrição <ChevronRight size={17} className={descriptionOpen ? 'expanded' : ''} /></span></button>{descriptionOpen && <div className="route-request-description"><strong>Descrição para o motorista</strong><p>{selectedReference || 'Nenhuma descrição foi informada neste pedido.'}</p><small>Confira esta informação antes de tocar em “{startLabel}”.</small></div>}</div> : <p>{available ? `Você está atendendo ${assignedRequester}. Ao encerrar seu apoio, essa solicitação também será encerrada.` : canAnswer ? 'Você está livre. Assuma um chamado para que a pessoa acompanhe somente o atendimento dela.' : unassignedRequests.length ? 'Faça check-in e fique disponível para responder a este chamado.' : 'Todos os chamados abertos já têm motorista em apoio.'}{selectedReference && <> <strong> Referência:</strong> {selectedReference}</>}</p>}{!available && unassignedRequests.length > 1 && <label className="hostess-request-picker">Qual solicitação você vai atender?<select value={requestId} onChange={(event) => setRequestId(event.target.value)}>{unassignedRequests.map((item) => <option value={item.id} key={item.id}>{requestLabel(item)}</option>)}</select></label>}</div>{available ? <button className="button button-secondary" onClick={() => setAvailability(false)} disabled={saving}>Encerrar apoio e solicitação</button> : routeRequest ? <button className="button button-primary" onClick={startRoute} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} {startLabel}</button> : <button className="button button-primary" onClick={() => setAvailability(true)} disabled={saving || !canAnswer}>{saving && <LoaderCircle className="spin" size={17} />} Assumir solicitação</button>}</section>{assignedRequest && !isConsultantRequest(assignedRequest) && <HostessApproachLocationPanel requestId={assignedRequest.id} token={token} />}</>;
 }
 
 function Flow({ counts }) {
@@ -978,13 +978,13 @@ function ResponsibleEditorModal({ person, kind, onClose, token, refresh, notify 
   const label = selfGen ? 'Self Gen' : 'consultor';
   const endpoint = selfGen ? '/api/self-gens' : '/api/consultants';
   const editing = Boolean(person);
-  const [form, setForm] = useState({ name: person?.name || '', whatsappNumber: person?.whatsappNumber || '', active: person?.active ?? true });
+  const [form, setForm] = useState({ name: person?.name || '', whatsappNumber: person?.whatsappNumber || '', elite: person?.elite ?? false, active: person?.active ?? true });
   const [saving, setSaving] = useState(false);
   async function submit(event) {
     event.preventDefault(); setSaving(true);
     try { await api(token, editing ? `${endpoint}/${person.id}` : endpoint, { method: editing ? 'PUT' : 'POST', body: JSON.stringify(form) }); await refresh(); notify(editing ? `${label} atualizado.` : `${label} cadastrado.`, 'success'); onClose(); } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
-  return <Modal title={editing ? `Editar ${label}` : `Novo ${label}`} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>{!selfGen && <label>WhatsApp com DDI (opcional)<input type="tel" value={form.whatsappNumber} onChange={(event) => setForm({ ...form, whatsappNumber: event.target.value })} placeholder="Ex.: +55 71 92843-791" /><small>Para celulares brasileiros, informe o DDI e DDD sem o nono dígito. Ex.: +55 71 92843-791.</small></label>}<label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : `Cadastrar ${label}`}</button></form></Modal>;
+  return <Modal title={editing ? `Editar ${label}` : `Novo ${label}`} onClose={onClose}><form className="modal-form" onSubmit={submit}><label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>{!selfGen && <><label>WhatsApp com DDI (opcional)<input type="tel" value={form.whatsappNumber} onChange={(event) => setForm({ ...form, whatsappNumber: event.target.value })} placeholder="Ex.: +55 71 92843-791" /><small>Para celulares brasileiros, informe o DDI e DDD sem o nono dígito. Ex.: +55 71 92843-791.</small></label><label className="checkbox-label"><input type="checkbox" checked={form.elite} onChange={(event) => setForm({ ...form, elite: event.target.checked })} /> Consultor Elite <small>Libera o pedido de apoio para Tours de sócios.</small></label></>}<label className="checkbox-label"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} /> Cadastro ativo</label><button className="button button-primary" disabled={saving}>{saving && <LoaderCircle className="spin" size={17} />} {editing ? 'Salvar alterações' : `Cadastrar ${label}`}</button></form></Modal>;
 }
 
 function ConsultantsPage({ data, user, token, refresh, notify }) {
@@ -999,7 +999,7 @@ function ConsultantsPage({ data, user, token, refresh, notify }) {
     const label = deleting.kind === 'self-gen' ? 'Self Gen' : 'Consultor';
     try { await api(token, `${endpoint}/${deleting.person.id}`, { method: 'DELETE' }); await refresh(); setDeleting(null); notify(`${label} excluído.`, 'success'); } catch (error) { notify(error.message, 'error'); } finally { setSavingDelete(false); }
   }
-  const renderCards = (people, kind) => <section className="consultants-grid">{people.length ? people.map((person) => { const tours = currentTours.filter((tour) => kind === 'self-gen' ? tour.selfGenId === person.id : tour.consultantId === person.id); return <article className="consultant-card" key={person.id}><Avatar name={person.name} color={kind === 'self-gen' ? 'teal' : 'pink'} /><h2>{person.name}</h2><span className={person.active ? 'active-dot' : 'inactive-dot'}>{person.active ? 'Ativo' : 'Inativo'}</span><div><strong>{tours.length}</strong><small>tours ativos</small></div>{canManageConsultants && <p className="card-actions"><button className="mini-action" onClick={() => setEditing({ kind, person })}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting({ kind, person })}>Excluir</button></p>}</article>; }) : <div className="empty-state">Nenhum {kind === 'self-gen' ? 'Self Gen' : 'consultor'} cadastrado.</div>}</section>;
+  const renderCards = (people, kind) => <section className="consultants-grid">{people.length ? people.map((person) => { const tours = currentTours.filter((tour) => kind === 'self-gen' ? tour.selfGenId === person.id : tour.consultantId === person.id); return <article className="consultant-card" key={person.id}><Avatar name={person.name} color={kind === 'self-gen' ? 'teal' : 'pink'} /><h2>{person.name}</h2><span className={person.active ? 'active-dot' : 'inactive-dot'}>{person.active ? 'Ativo' : 'Inativo'}</span>{kind === 'consultant' && person.elite && <span className="role-tag">Elite</span>}<div><strong>{tours.length}</strong><small>tours ativos</small></div>{canManageConsultants && <p className="card-actions"><button className="mini-action" onClick={() => setEditing({ kind, person })}>Editar</button><button className="mini-action danger-mini" onClick={() => setDeleting({ kind, person })}>Excluir</button></p>}</article>; }) : <div className="empty-state">Nenhum {kind === 'self-gen' ? 'Self Gen' : 'consultor'} cadastrado.</div>}</section>;
   return <><SectionHeader title="Consultores" description="Cadastros dos consultores vinculados aos Tours." action={canManageConsultants ? () => setEditing({ kind: 'consultant', person: null }) : undefined} actionText="Novo consultor" />{renderCards(data.consultants || [], 'consultant')}<SectionHeader title="Self Gen" description="Somente os nomes ativos aparecem na seleção dos Tours Self Gen." action={canManageConsultants ? () => setEditing({ kind: 'self-gen', person: null }) : undefined} actionText="Novo Self Gen" />{renderCards(data.selfGens || [], 'self-gen')}{editing && <ResponsibleEditorModal key={`${editing.kind}-${editing.person?.id || 'new'}`} person={editing.person} kind={editing.kind} onClose={() => setEditing(null)} token={token} refresh={refresh} notify={notify} />}{deleting && <Modal title={`Excluir ${deleting.kind === 'self-gen' ? 'Self Gen' : 'consultor'}`} onClose={() => setDeleting(null)}><div className="danger-copy"><UserRound size={25} /><p>Excluir <strong>{deleting.person.name}</strong> remove o cadastro, preservando os registros antigos dos Tours.</p></div><div className="modal-actions"><button className="button button-secondary" onClick={() => setDeleting(null)}>Cancelar</button><button className="button button-danger" onClick={removePerson} disabled={savingDelete}>{savingDelete && <LoaderCircle className="spin" size={17} />} Excluir</button></div></Modal>}</>;
 }
 
@@ -1095,10 +1095,10 @@ function UserEditorModal({ account, drivers, consultants, selfGens = [], permiss
       <label>Nome<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
       <label>Usuário<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label>
       <label>{editing ? 'Nova senha (opcional)' : 'Senha inicial'}<input type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} minLength="8" required={!editing} /></label>
-      <label>Perfil<select value={form.role} onChange={(event) => { const role = event.target.value; setForm({ ...form, role, driverId: role === 'MOTORISTA' ? form.driverId : '', consultantId: role === 'CONSULTOR' ? form.consultantId : '', selfGenId: role === 'SELF_GEN' ? form.selfGenId : '' }); }}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="CONCIERGE">Concierge</option><option value="CONSULTOR">Consultor</option><option value="SELF_GEN">Self Gen</option><option value="VISUALIZADOR">Somente visualização</option><option value="ADMIN">Administrador</option></select></label>
+      <label>Perfil<select value={form.role} onChange={(event) => { const role = event.target.value; setForm({ ...form, role, driverId: role === 'MOTORISTA' ? form.driverId : '', consultantId: ['CONSULTOR', 'SELF_GEN'].includes(role) ? form.consultantId : '', selfGenId: role === 'SELF_GEN' ? form.selfGenId : '' }); }}><option value="MOTORISTA">Motorista</option><option value="HOSTESS">Hostess</option><option value="CONCIERGE">Concierge</option><option value="CONSULTOR">Consultor</option><option value="SELF_GEN">Self Gen</option><option value="VISUALIZADOR">Somente visualização</option><option value="ADMIN">Administrador</option></select></label>
       {form.role === 'MOTORISTA' && <label>Motorista vinculado<select value={form.driverId} onChange={(event) => setForm({ ...form, driverId: event.target.value })}><option value="">Criar automaticamente com este nome</option>{drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.name}</option>)}</select></label>}
       {form.role === 'CONSULTOR' && <label>Consultor vinculado<select value={form.consultantId} onChange={(event) => { const consultantId = event.target.value; const selected = consultants.find((item) => String(item.id) === consultantId); setForm({ ...form, consultantId, name: selected?.name || form.name }); }} required><option value="">Selecione o consultor</option>{consultants.filter((item) => item.active !== false).map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}</select></label>}
-      {form.role === 'SELF_GEN' && <label>Self Gen vinculado<select value={form.selfGenId} onChange={(event) => { const selfGenId = event.target.value; const person = selfGens.find((item) => String(item.id) === selfGenId); setForm({ ...form, selfGenId, name: person?.name || form.name }); }} required><option value="">Selecione o Self Gen</option>{selfGens.filter((item) => item.active !== false).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><small>Solicita Tours Self Gen e Tours normais em apoio aos consultores.</small></label>}
+      {form.role === 'SELF_GEN' && <><label>Self Gen vinculado<select value={form.selfGenId} onChange={(event) => { const selfGenId = event.target.value; const person = selfGens.find((item) => String(item.id) === selfGenId); setForm({ ...form, selfGenId, name: person?.name || form.name }); }} required><option value="">Selecione o Self Gen</option>{selfGens.filter((item) => item.active !== false).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><small>Solicita Tours Self Gen e Tours normais em apoio aos consultores.</small></label><label>Também atua como consultor (opcional)<select value={form.consultantId} onChange={(event) => setForm({ ...form, consultantId: event.target.value })}><option value="">Não atua como consultor</option>{consultants.filter((item) => item.active !== false).map((consultant) => <option key={consultant.id} value={consultant.id}>{consultant.name}</option>)}</select><small>Libera a opção de assumir um Tour normal como consultor com este mesmo login.</small></label></>}
       {form.role === 'HOSTESS' && <fieldset className="hostess-phone-fieldset"><legend>Telefones da Hostess</legend><p>Um único login pode ter vários números de contato.</p>{(form.hostessPhoneNumbers || ['']).map((phone, index) => <div className="hostess-phone-row" key={`hostess-phone-${index}`}><input value={phone} onChange={(event) => setForm({ ...form, hostessPhoneNumbers: (form.hostessPhoneNumbers || ['']).map((item, itemIndex) => itemIndex === index ? event.target.value : item) })} placeholder="Ex.: +55 71 99999-9999" inputMode="tel" aria-label={`Telefone ${index + 1} da Hostess`} /><button type="button" className="mini-action danger-mini" onClick={() => setForm({ ...form, hostessPhoneNumbers: (form.hostessPhoneNumbers || ['']).filter((_, itemIndex) => itemIndex !== index) })} disabled={(form.hostessPhoneNumbers || ['']).length === 1}>Remover</button></div>)}<button type="button" className="text-button" onClick={() => setForm({ ...form, hostessPhoneNumbers: [...(form.hostessPhoneNumbers || ['']), ''] })}>+ Adicionar telefone</button></fieldset>}
       {['MOTORISTA', 'HOSTESS'].includes(form.role) && <label>Local de check-in<input value={form.checkInLocation} onChange={(event) => setForm({ ...form, checkInLocation: event.target.value })} placeholder="Ex.: Prestige Praia do Forte" required /></label>}
       {!['CONSULTOR', 'SELF_GEN'].includes(form.role) && <UserPermissionsFieldset role={form.role} catalog={catalog} permissions={form.permissions} onTogglePermission={togglePermission} onApplyRoleDefaults={applyRoleDefaults} />}
@@ -1463,10 +1463,12 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
   const [optionsError, setOptionsError] = useState('');
   const [requestError, setRequestError] = useState('');
   const isSelfGen = user?.role === 'SELF_GEN';
-  const identityType = isSelfGen ? 'SELF_GEN' : 'CONSULTANT';
   const [tourMode, setTourMode] = useState('SELF_GEN');
   const [consultantId, setConsultantId] = useState('');
   const [selfGenId, setSelfGenId] = useState('');
+  const [canActAsConsultant, setCanActAsConsultant] = useState(false);
+  const [linkedConsultant, setLinkedConsultant] = useState(null);
+  const [eliteSupportEnabled, setEliteSupportEnabled] = useState(false);
   const [tourId, setTourId] = useState('');
   const [routeStage, setRouteStage] = useState('PRESTIGE');
   const [guestLocations, setGuestLocations] = useState([{ id: 'SELECTION', name: 'Selection' }]);
@@ -1476,6 +1478,8 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
   const [requestSaving, setRequestSaving] = useState(false);
   const [requestAccess, setRequestAccess] = useState(readConsultantSupportAccess);
   const [activeRequest, setActiveRequest] = useState(null);
+  const actingAsConsultant = isSelfGen && tourMode === 'CONSULTANT';
+  const identityType = actingAsConsultant || !isSelfGen ? 'CONSULTANT' : 'SELF_GEN';
   const loadBoard = useCallback(async () => {
     try {
       const payload = await api(token, '/api/consultant/driver-status');
@@ -1492,15 +1496,19 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
       const payload = await api(token, '/api/consultant/support/options');
       const values = (Array.isArray(payload.consultants) ? payload.consultants : []).filter((item) => item?.id && item?.name && item.active !== false);
       const selfGenValues = (Array.isArray(payload.selfGens) ? payload.selfGens : []).filter((item) => item?.id && item?.name && item.active !== false);
+      const dualConsultant = payload.linkedConsultant?.id && payload.linkedConsultant?.name ? payload.linkedConsultant : null;
       setConsultants(values);
       setSelfGens(selfGenValues);
+      setCanActAsConsultant(Boolean(payload.canActAsConsultant && dualConsultant));
+      setLinkedConsultant(dualConsultant);
+      setEliteSupportEnabled(Boolean(payload.eliteSupportEnabled));
       const scopedTours = Array.isArray(payload.tours) ? payload.tours : [];
       setTours(scopedTours);
       setDestinations(Array.isArray(payload.destinations) ? payload.destinations : []);
       const locationValues = (Array.isArray(payload.guestLocations) ? payload.guestLocations : []).filter((item) => item?.id && item?.name);
       setGuestLocations(locationValues);
       setGuestLocation((current) => locationValues.some((item) => item.id === current) ? current : (locationValues[0]?.id || ''));
-      setConsultantId((current) => values.some((item) => String(item.id) === String(current)) ? current : (isSelfGen ? '' : String(values[0]?.id || '')));
+      setConsultantId((current) => values.some((item) => String(item.id) === String(current)) ? current : String(dualConsultant?.id || (isSelfGen ? '' : values[0]?.id || '')));
       setSelfGenId((current) => selfGenValues.some((item) => String(item.id) === String(current)) ? current : String(selfGenValues[0]?.id || ''));
       const stageHasTour = (stage) => scopedTours.some((tour) => {
         if (tour.requestOpen) return false;
@@ -1536,6 +1544,9 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
     return () => window.clearInterval(timer);
   }, [loadBoard]);
   useEffect(() => { loadOptions(); }, [loadOptions]);
+  useEffect(() => {
+    if (!canActAsConsultant && tourMode === 'CONSULTANT') setTourMode('SELF_GEN');
+  }, [canActAsConsultant, tourMode]);
 
   async function requestSupport(event) {
     event.preventDefault();
@@ -1548,6 +1559,7 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
         method: 'POST',
         body: JSON.stringify({
           identityType,
+          actingAsConsultant,
           consultantId: consultantId || undefined,
           selfGenId: identityType === 'SELF_GEN' ? selfGenId : undefined,
           tourId,
@@ -1571,6 +1583,29 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
       await loadBoard();
     } catch (error) {
       setRequestError(error.message || 'Não foi possível solicitar o apoio.');
+    } finally {
+      setRequestSaving(false);
+    }
+  }
+
+  async function requestEliteSupport() {
+    if (requestSaving || !eliteSupportEnabled) return;
+    setRequestSaving(true);
+    setRequestError('');
+    try {
+      const payload = await api(token, '/api/consultant/elite-support-requests', { method: 'POST' });
+      const nextRequest = payload.request && typeof payload.request === 'object' ? payload.request : null;
+      const nextAccess = {
+        requestId: String(nextRequest?.id || payload.requestId || '').trim(),
+        accessToken: String(payload.accessToken || '').trim()
+      };
+      if (!nextAccess.requestId) throw new Error('O servidor não liberou o acompanhamento deste pedido.');
+      storeConsultantSupportAccess(nextAccess);
+      setRequestAccess(nextAccess);
+      setActiveRequest(nextRequest);
+      await loadBoard();
+    } catch (error) {
+      setRequestError(error.message || 'Não foi possível solicitar o apoio Elite.');
     } finally {
       setRequestSaving(false);
     }
@@ -1602,11 +1637,11 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
   }
   const requestClosed = publicSupportRequestIsClosed(activeRequest);
   const identityId = identityType === 'SELF_GEN' ? selfGenId : consultantId;
-  const identityOptions = identityType === 'SELF_GEN' ? selfGens : consultants;
+  const identityOptions = identityType === 'SELF_GEN' ? selfGens : (actingAsConsultant && linkedConsultant ? [linkedConsultant] : consultants);
   const identityName = identityOptions.find((person) => String(person.id) === String(identityId))?.name || '';
   const normalizeIdentityName = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pt-BR');
   const eligibleTours = toursInAscendingOrder(tours).filter((tour) => {
-    if (Boolean(tour.selfGuide) !== (isSelfGen && tourMode === 'SELF_GEN') || tour.requestOpen) return false;
+    if (Boolean(tour.selfGuide) !== (identityType === 'SELF_GEN') || tour.requestOpen) return false;
     if (isSelfGen && tourMode === 'NORMAL' && routeStage === 'PRESTIGE' && tour.consultantId && String(tour.consultantId) !== String(consultantId)) return false;
     const expectedStatus = routeStage === 'PRESTIGE' ? 'DISPONIVEL' : routeStage === 'CASA' ? ['NA_CASA', 'AGUARDANDO_CASA'] : 'AGUARDANDO_DESTINO';
     if (Array.isArray(expectedStatus) ? !expectedStatus.includes(tour.status) : tour.status !== expectedStatus) return false;
@@ -1627,7 +1662,7 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
 
   return <main className="consultant-public-page">
     <header className="consultant-public-header"><Logo /><button type="button" className="public-login-link" onClick={onLogout}><LogOut size={16} /> Sair</button></header>
-    <section className="consultant-public-hero"><span>{isSelfGen ? 'ÁREA DO SELF GEN' : 'ÁREA EXCLUSIVA DO CONSULTOR'}</span><h1>{user?.name || 'Consultor'}, solicite seu carrinho</h1><p>Cada pedido acompanha um trecho do Tour. Ao chegar à Casa ou à Galeria, o trecho encerra e o próximo pedido é liberado.</p></section>
+    <section className="consultant-public-hero"><span>{isSelfGen ? (canActAsConsultant ? 'ÁREA DO SELF GEN E CONSULTOR' : 'ÁREA DO SELF GEN') : 'ÁREA EXCLUSIVA DO CONSULTOR'}</span><h1>{user?.name || 'Consultor'}, solicite seu carrinho</h1><p>Cada pedido acompanha um trecho do Tour. Ao chegar à Casa ou à Galeria, o trecho encerra e o próximo pedido é liberado.</p></section>
     <section className="consultant-public-summary"><CarFront size={28} /><div><strong>{board.drivers.length}</strong><span>motorista{board.drivers.length === 1 ? '' : 's'} ativo{board.drivers.length === 1 ? '' : 's'}</span></div><small>Operação: {board.operationDate || '—'}</small></section>
     {requestError && <div className="consultant-public-error" role="alert">{requestError}</div>}
     {requestAccess ? <>
@@ -1636,9 +1671,10 @@ function ConsultantDriverPanel({ token, user, onLogout }) {
     </> : <section className="consultant-support-request">
       <div className="consultant-support-request-copy"><span>SOLICITAR CARRINHO</span><h2>{routeStage === 'PRESTIGE' ? 'Onde o hóspede está?' : routeStage === 'CASA' ? 'Buscar hóspedes na Casa' : 'Para onde o hóspede vai?'}</h2><p>Escolha o número do seu Tour e o trecho que precisa de motorista.</p><small><ShieldCheck size={15} /> Esta conta mostra os Tours disponíveis para começar e os vinculados a {user?.name || 'você'}.</small></div>
       <form className="consultant-support-form" onSubmit={requestSupport}>
-        {isSelfGen && <label>Tipo de Tour<select value={tourMode} onChange={(event) => { setTourMode(event.target.value); setTourId(''); }} disabled={requestSaving}><option value="SELF_GEN">Tour Self Gen</option><option value="NORMAL">Tour normal — apoio a consultor</option></select></label>}
+        {isSelfGen && <label>Atuar como<select value={tourMode} onChange={(event) => { const nextMode = event.target.value; setTourMode(nextMode); if (nextMode === 'CONSULTANT' && linkedConsultant) setConsultantId(String(linkedConsultant.id)); setTourId(''); }} disabled={requestSaving}><option value="SELF_GEN">Self Gen — meu Tour</option><option value="NORMAL">Self Gen — apoio a consultor</option>{canActAsConsultant && <option value="CONSULTANT">Consultor — assumir Tour normal</option>}</select></label>}
         {isSelfGen && tourMode === 'NORMAL' && routeStage === 'PRESTIGE' && <label>Consultor apoiado<select value={consultantId} onChange={(event) => { setConsultantId(event.target.value); setTourId(''); }} required disabled={requestSaving}><option value="">Selecione o consultor</option>{consultants.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>}
-        <div className="consultant-identity-lock"><ShieldCheck size={18} /><div><span>{isSelfGen ? 'Self Gen conectado' : 'Consultor conectado'}</span><strong>{identityName || user?.name || 'Consultor'}</strong></div></div>
+        <div className="consultant-identity-lock"><ShieldCheck size={18} /><div><span>{identityType === 'SELF_GEN' ? 'Self Gen conectado' : 'Consultor conectado'}</span><strong>{identityName || user?.name || 'Consultor'}</strong></div></div>
+        {eliteSupportEnabled && (!isSelfGen || actingAsConsultant) && <button className="button button-secondary" type="button" onClick={requestEliteSupport} disabled={requestSaving}><HandHeart size={18} /> Solicitar apoio Elite — Tour de sócios</button>}
         <div className="consultant-route-field"><span>Local do pedido</span><div className="consultant-route-options" role="group" aria-label="Local do pedido">{[['PRESTIGE', 'Prestige'], ['CASA', 'Casa — buscar hóspedes'], ['GALERIA_EXIT', 'Galeria — levar ao destino']].map(([value, label]) => <button key={value} type="button" className={classNames('consultant-route-option', routeStage === value && 'active')} aria-pressed={routeStage === value} onClick={() => { setRouteStage(value); setTourId(''); setDestinationId(''); }} disabled={requestSaving}>{label}</button>)}</div></div>
         {routeStage === 'PRESTIGE' && <label>Onde o hóspede está?<select value={guestLocation} onChange={(event) => setGuestLocation(event.target.value)} disabled={requestSaving || !guestLocations.length}>{guestLocations.map((location) => <option value={location.id} key={location.id}>{location.name}</option>)}</select></label>}
         <label>Número do Tour<select value={tourId} onChange={(event) => setTourId(event.target.value)} required disabled={!identityId || requestSaving}><option value="">Selecione o Tour</option>{eligibleTours.map((tour) => <option value={tour.id} key={tour.id}>{tour.label} · {WAVES[tour.wave]?.label || 'Ola'}</option>)}</select>{identityId && !eligibleTours.length && <small className="field-help">{routeStage === 'CASA' ? 'Nenhum Tour deste nome está aguardando busca na Casa.' : routeStage === 'GALERIA_EXIT' ? 'Nenhum Tour deste nome está aguardando saída da Galeria.' : 'Não há Tour disponível para este nome e esta etapa.'}</small>}</label>

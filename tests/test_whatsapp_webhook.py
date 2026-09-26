@@ -335,6 +335,35 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual({recipient for recipient, _ in messages}, {"557192843791", "557188885678"})
         self.assertTrue(all("Motorista Um assumiu" in message["text"]["body"] for _, message in messages))
 
+    def test_elite_consultant_can_request_member_tour_support_in_whatsapp(self) -> None:
+        self.database["consultants"][0]["elite"] = True
+
+        menu = self._post_webhook({
+            "id": "wamid-elite-menu",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+        self.assertEqual(menu.status_code, 200)
+        rows = self.sent_messages[-1][0][1]["interactive"]["action"]["sections"][0]["rows"]
+        self.assertIn("elite-support", {row["id"] for row in rows})
+
+        requested = self._post_webhook({
+            "id": "wamid-elite-support",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "interactive",
+            "interactive": {"type": "list_reply", "list_reply": {"id": "elite-support"}},
+        })
+        self.assertEqual(requested.status_code, 200)
+        car_request = self.database["hostessRequests"][0]
+        self.assertTrue(car_request["eliteSupport"])
+        self.assertIn("apoio Elite enviado", self.sent_messages[-1][0][1]["text"]["body"])
+
+        car_request.update(assignedDriverName="Motorista Um")
+        messages = tour_app.whatsapp_consultant_assignment_messages(self.database, car_request)
+        self.assertIn(messages[0][0], tour_app.whatsapp_number_variants(self.CONSULTANT_NUMBER))
+        self.assertIn("Motorista Um assumiu", messages[0][1]["text"]["body"])
+
     def test_webhook_selects_a_tour_then_creates_one_idempotent_request(self) -> None:
         self.database["drivers"] = [
             {"id": "drv_available", "name": "Motorista Livre", "active": True, "status": tour_app.DRIVER_AVAILABLE},

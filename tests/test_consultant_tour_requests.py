@@ -754,15 +754,63 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         return self.auth("token-self")
 
     def test_self_gen_account_can_be_created_and_cannot_elevate_permissions(self):
-        payload = dict(name="Ana", username="ana", password="safe-test-pass", role="SELF_GEN", selfGenId="self_ana", permissions=["MANAGE_USERS"])
+        self.database["consultants"].append({"id": "con_ana", "name": "Ana Consultora", "active": True})
+        payload = dict(name="Ana", username="ana", password="safe-test-pass", role="SELF_GEN", selfGenId="self_ana", consultantId="con_ana", permissions=["MANAGE_USERS"])
         created = self.client.post("/api/users", headers=self.auth("token-admin"), json=payload)
         self.assertEqual(created.status_code, 201, created.get_json())
         self.assertEqual(created.json["user"]["selfGenId"], "self_ana")
+        self.assertEqual(created.json["user"]["consultantId"], "con_ana")
         self.assertEqual(created.json["user"]["permissions"], [])
         duplicate = self.client.post("/api/users", headers=self.auth("token-admin"), json={**payload, "username": "ana2"})
         self.assertEqual(duplicate.status_code, 409)
         removed = self.client.delete("/api/self-gens/self_ana", headers=self.auth("token-admin"))
         self.assertEqual(removed.status_code, 409)
+
+    def test_self_gen_can_act_as_its_linked_consultant_without_a_second_login(self):
+        self.database["consultants"].append({
+            "id": "con_ana", "name": "Ana Consultora", "active": True,
+        })
+        self.database["users"].append({
+            "id": "user_self_dual", "username": "ana.dual", "name": "Ana",
+            "role": tour_app.ROLE_SELF_GEN, "selfGenId": "self_ana",
+            "consultantId": "con_ana", "permissions": [], "active": True,
+        })
+        tour_app.SESSIONS["token-self-dual"] = {
+            "userId": "user_self_dual", "expiresAt": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
+        headers = self.auth("token-self-dual")
+
+        options = self.client.get("/api/consultant/support/options", headers=headers)
+        self.assertEqual(options.status_code, 200, options.get_json())
+        self.assertTrue(options.json["canActAsConsultant"])
+        self.assertEqual(options.json["linkedConsultant"]["id"], "con_ana")
+
+        created = self.client.post("/api/consultant/support-requests", headers=headers, json={
+            "actingAsConsultant": True,
+            "tourId": "tour_01",
+            "routeStage": "PRESTIGE",
+            "guestLocation": "WAVES",
+        })
+        self.assertEqual(created.status_code, 201, created.get_json())
+        request_record = self.database["hostessRequests"][0]
+        self.assertEqual(request_record["consultantId"], "con_ana")
+        self.assertIsNone(request_record["selfGenId"])
+        self.assertEqual(self.database["tours"][0]["consultantId"], "con_ana")
+
+    def test_elite_consultant_can_open_a_member_tour_support_call(self):
+        self.database["consultants"][0]["elite"] = True
+
+        created = self.client.post(
+            "/api/consultant/elite-support-requests",
+            headers=self.auth("token-consultant"),
+        )
+
+        self.assertEqual(created.status_code, 201, created.get_json())
+        request_record = self.database["hostessRequests"][0]
+        self.assertTrue(request_record["eliteSupport"])
+        self.assertEqual(request_record["consultantId"], "con_dimitri")
+        self.assertIsNone(request_record.get("tourId"))
+        self.assertTrue(created.json["request"]["eliteSupport"])
 
     def test_self_gen_has_same_request_flow_but_identity_is_bound_to_login(self):
         headers = self.self_gen_headers()
