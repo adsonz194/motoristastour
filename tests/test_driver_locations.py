@@ -1276,6 +1276,22 @@ class DriverLocationApiTest(unittest.TestCase):
             {"name", "status", "active", "lastActivity"},
         )
 
+    def test_hostess_can_request_a_gallery_car_without_creating_a_tour(self) -> None:
+        original_tours = list(self.database["tours"])
+
+        created = self._request(
+            "token-hostess",
+            "POST",
+            "/api/hostess-requests",
+            json={"requestLocation": tour_app.HOSTESS_REQUEST_LOCATION_GALLERY},
+        )
+
+        self.assertEqual(created.status_code, 201, created.get_json())
+        self.assertEqual(self.database["tours"], original_tours)
+        car_request = created.get_json()["request"]
+        self.assertEqual(car_request["requestLocation"], tour_app.HOSTESS_REQUEST_LOCATION_GALLERY)
+        self.assertIn("Galeria", car_request["note"])
+
     def test_hostess_and_assigned_driver_privately_track_their_approach(self) -> None:
         created = self._request(
             "token-hostess",

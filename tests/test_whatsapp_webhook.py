@@ -281,6 +281,59 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(car_request["requestedById"], "user_hostess")
         self.assertIn("Motorista Livre: ✅ Disponível", self.sent_messages[-1][0][1]["text"]["body"])
 
+    def test_hostess_can_request_gallery_car_without_registering_a_tour(self) -> None:
+        self.database["users"].append({
+            "id": "user_hostess_gallery",
+            "username": "hostess.gallery",
+            "name": "Hostess Galeria",
+            "role": tour_app.ROLE_HOSTESS,
+            "permissions": [tour_app.PERMISSION_REQUEST_HOSTESS_CAR],
+            "hostessPhoneNumbers": ["+55 71 99284-3791"],
+            "active": True,
+        })
+        self.database["attendance"] = [{
+            "id": "attendance_hostess_gallery",
+            "userId": "user_hostess_gallery",
+            "operationDate": self.OPERATION_DAY,
+            "status": "TRABALHANDO",
+            "checkInAt": "2026-09-20T10:00:00+00:00",
+        }]
+        self.database["drivers"] = [{
+            "id": "drv_available",
+            "name": "Motorista Livre",
+            "active": True,
+            "status": tour_app.DRIVER_AVAILABLE,
+        }]
+        meta_identifier = "557192843791"
+        original_tours = list(self.database["tours"])
+
+        menu = self._post_webhook({
+            "id": "wamid-hostess-gallery-menu",
+            "from": meta_identifier,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+        self.assertEqual(menu.status_code, 200)
+        buttons = self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"]
+        self.assertEqual([button["reply"]["id"] for button in buttons], ["hostess-gallery-request"])
+
+        requested = self._post_webhook({
+            "id": "wamid-hostess-gallery-request",
+            "from": meta_identifier,
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": "hostess-gallery-request"}},
+        })
+        self.assertEqual(requested.status_code, 200)
+        self.assertEqual(self.database["tours"], original_tours)
+        car_request = self.database["hostessRequests"][0]
+        self.assertEqual(car_request["requestedById"], "user_hostess_gallery")
+        self.assertEqual(car_request["requestLocation"], tour_app.HOSTESS_REQUEST_LOCATION_GALLERY)
+        self.assertIn("Galeria", self.sent_messages[-1][0][1]["text"]["body"])
+
+        car_request["assignedDriverName"] = "Motorista Livre"
+        messages = tour_app.whatsapp_hostess_assignment_messages(self.database, car_request)
+        self.assertIn("na Galeria", messages[0][1]["text"]["body"])
+
     def test_tour_request_push_reaches_every_active_driver_and_opens_the_tour(self) -> None:
         self.database["users"] = [
             {"id": "driver_one", "role": tour_app.ROLE_DRIVER, "active": True, "permissions": []},

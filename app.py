@@ -262,6 +262,10 @@ CONSULTANT_GUEST_LOCATIONS = {
     "WAVES": "Waves",
     "SELECTION": "Selection",
 }
+HOSTESS_REQUEST_LOCATION_GALLERY = "GALERIA"
+HOSTESS_REQUEST_LOCATION_LABELS = {
+    HOSTESS_REQUEST_LOCATION_GALLERY: "Galeria",
+}
 
 DRIVER_LOCATION_STALE_SECONDS = 90
 DRIVER_LOCATION_EXPIRES_SECONDS = 5 * 60
@@ -1366,9 +1370,11 @@ def hostess_push_messages(
                 "url": "/",
             }
         else:
+            location = hostess_request_location_label(car_request)
+            location_suffix = f" na {location}" if location else ""
             payload = {
-                "title": "Solicitação de carro da Hostess",
-                "body": "Uma Hostess solicitou um carro. Se estiver livre e com check-in, informe disponibilidade.",
+                "title": f"Solicitação de carro da Hostess{location_suffix}",
+                "body": f"Uma Hostess solicitou um carro{location_suffix}. Se estiver livre e com check-in, informe disponibilidade.",
                 "tag": "iberostar-hostess-request",
                 "url": "/",
             }
@@ -1382,9 +1388,11 @@ def hostess_push_messages(
                 "url": "/",
             }
         else:
+            location = hostess_request_location_label(car_request)
+            location_suffix = f" na {location}" if location else ""
             payload = {
-                "title": "Carro da Hostess já assumido",
-                "body": f"{name} já assumiu o apoio à Hostess e está disponível para buscá-la.",
+                "title": f"Carro da Hostess{location_suffix} já assumido",
+                "body": f"{name} já assumiu o apoio à Hostess{location_suffix} e está disponível para buscá-la.",
                 "tag": "iberostar-hostess-request",
                 "url": "/",
             }
@@ -3148,6 +3156,21 @@ def clean_hostess_request(car_request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_hostess_request_location(value: Any) -> str | None:
+    """Accept a known optional meeting location for a Hostess car request."""
+    location = str(value or "").strip().upper()
+    if not location:
+        return None
+    if location not in HOSTESS_REQUEST_LOCATION_LABELS:
+        raise APIError("Selecione um local válido para a solicitação da Hostess.")
+    return location
+
+
+def hostess_request_location_label(car_request: dict[str, Any] | None) -> str:
+    location = str((car_request or {}).get("requestLocation") or "").strip().upper()
+    return HOSTESS_REQUEST_LOCATION_LABELS.get(location, "")
+
+
 def is_consultant_route_request(car_request: dict[str, Any]) -> bool:
     return bool(
         car_request.get("tourId")
@@ -4266,7 +4289,7 @@ def whatsapp_request_confirmation(db: dict[str, Any], message: str) -> dict[str,
 
 
 def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -> dict[str, Any]:
-    """Present the required quantity → Ola → car-request Hostess flow."""
+    """Offer Tour registration and the independent Gallery car request."""
     current_request = next(
         (
             item for item in db.get("hostessRequests", [])
@@ -4286,8 +4309,11 @@ def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -
         self_gen_quantity = draft.get("selfGenQuantity", 0)
         wave_label = TRANSFER_SCHEDULES.get(draft.get("wave"), {}).get("label", "Ola selecionada")
         return whatsapp_button_payload(
-            f"Foram registrados {quantity} Tour(es) e {self_gen_quantity} Self Gen para a {wave_label}. Agora solicite o carrinho.",
-            [("hostess-request", "Solicitar carrinho")],
+            f"Foram registrados {quantity} Tour(es) e {self_gen_quantity} Self Gen para a {wave_label}. Agora solicite o carrinho do Tour ou um carro avulso na Galeria.",
+            [
+                ("hostess-request", "Carro do Tour"),
+                ("hostess-gallery-request", "Carro na Galeria"),
+            ],
         )
     if draft and draft.get("step") in {"WAITING_QUANTITY", "WAITING_TOUR_QUANTITY"}:
         return whatsapp_text_payload(
@@ -4304,21 +4330,26 @@ def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -
             f"Quantidade registrada: {quantity} Tour(es) e {self_gen_quantity} Self Gen. Escolha a Ola.",
             [("hostess-wave:WAVE_1", "1ª Ola"), ("hostess-wave:WAVE_2", "2ª Ola")],
         )
-    if not user_has_permission(hostess, PERMISSION_MANAGE_TOUR_QUANTITIES):
-        return whatsapp_text_payload("Este login de hostess não tem permissão para registrar quantidades de Tours.")
+    buttons = [("hostess-gallery-request", "Carro na Galeria")]
+    if user_has_permission(hostess, PERMISSION_MANAGE_TOUR_QUANTITIES):
+        buttons.insert(0, ("hostess-register-tours", "Registrar Tours"))
     return whatsapp_button_payload(
-        f"Olá, {hostess['name']}. Primeiro registre a quantidade de Tours antes de solicitar o carrinho.",
-        [("hostess-register-tours", "Registrar Tours")],
+        f"Olá, {hostess['name']}. Registre Tours quando necessário ou solicite um carro avulso na Galeria sem registrar Tour.",
+        buttons,
     )
 
 
-def create_whatsapp_hostess_request(db: dict[str, Any], hostess: dict[str, Any]) -> dict[str, Any]:
+def create_whatsapp_hostess_request(
+    db: dict[str, Any], hostess: dict[str, Any], *, request_location: Any = None
+) -> dict[str, Any]:
     """Open a Hostess car request after WhatsApp identity and check-in checks."""
     require_permission(hostess, PERMISSION_REQUEST_HOSTESS_CAR, "Este login de hostess não tem permissão para solicitar carro.")
     if not user_has_permission(hostess, PERMISSION_MANAGE_SETTINGS) and not attendance_for(db, hostess["id"]):
         raise APIError("Faça o check-in no Motoristas Tour antes de solicitar um carro pelo WhatsApp.", 409)
     if any(item.get("requestedById") == hostess["id"] for item in open_hostess_requests(db)):
         raise APIError("Você já possui uma solicitação de carro aberta.", 409)
+    location = normalize_hostess_request_location(request_location)
+    location_label = HOSTESS_REQUEST_LOCATION_LABELS.get(location, "")
     created_at = timestamp()
     car_request = {
         "id": new_id("hostreq"),
@@ -4328,7 +4359,8 @@ def create_whatsapp_hostess_request(db: dict[str, Any], hostess: dict[str, Any])
         "requestedByName": hostess["name"],
         "consultantId": None,
         "consultantName": None,
-        "note": "",
+        "requestLocation": location,
+        "note": f"Pedido avulso na {location_label}." if location_label else "",
         "assignedDriverId": None,
         "assignedDriverName": None,
         "acceptedAt": None,
@@ -4337,7 +4369,8 @@ def create_whatsapp_hostess_request(db: dict[str, Any], hostess: dict[str, Any])
         "updatedAt": created_at,
     }
     db.setdefault("hostessRequests", []).insert(0, car_request)
-    log_activity(db, hostess, None, None, HOSTESS_REQUEST_OPEN, f"{hostess['name']} solicitou um carro pelo WhatsApp.")
+    location_suffix = f" na {location_label}" if location_label else ""
+    log_activity(db, hostess, None, None, HOSTESS_REQUEST_OPEN, f"{hostess['name']} solicitou um carro{location_suffix} pelo WhatsApp.")
     return car_request
 
 
@@ -4386,8 +4419,10 @@ def whatsapp_hostess_assignment_messages(
             continue
         if number and number not in recipients:
             recipients.append(number)
+    location = hostess_request_location_label(car_request)
+    location_suffix = f" na {location}" if location else ""
     message = whatsapp_text_payload(
-        f"Motorista {driver_name} assumiu sua solicitação de carro e está a caminho."
+        f"Motorista {driver_name} assumiu sua solicitação de carro{location_suffix} e está a caminho."
     )
     return [(number, message) for number in recipients]
 
@@ -4528,8 +4563,11 @@ def whatsapp_reply_for_incoming_message(
             )
             wave_label = TRANSFER_SCHEDULES[wave]["label"]
             return recipient, whatsapp_button_payload(
-                f"{len(tours)} lançamento(s) registrado(s): {draft.get('quantity')} Tour(es) e {draft.get('selfGenQuantity', 0)} Self Gen para a {wave_label}. Agora solicite o carrinho.",
-                [("hostess-request", "Solicitar carrinho")],
+                f"{len(tours)} lançamento(s) registrado(s): {draft.get('quantity')} Tour(es) e {draft.get('selfGenQuantity', 0)} Self Gen para a {wave_label}. Solicite o carro do Tour ou um carro avulso na Galeria.",
+                [
+                    ("hostess-request", "Carro do Tour"),
+                    ("hostess-gallery-request", "Carro na Galeria"),
+                ],
             ), None
         if interaction_id == "hostess-request":
             if not draft or draft.get("step") != "READY_TO_REQUEST":
@@ -4540,6 +4578,16 @@ def whatsapp_reply_for_incoming_message(
             clear_whatsapp_hostess_tour_draft(db, hostess)
             return recipient, whatsapp_request_confirmation(
                 db, "Solicitação de carro enviada. Aguarde um motorista assumir."
+            ), car_request
+        if interaction_id == "hostess-gallery-request" or normalized_action == "galeria":
+            car_request = create_whatsapp_hostess_request(
+                db,
+                hostess,
+                request_location=HOSTESS_REQUEST_LOCATION_GALLERY,
+            )
+            clear_whatsapp_hostess_tour_draft(db, hostess)
+            return recipient, whatsapp_request_confirmation(
+                db, "Solicitação de carro para a Galeria enviada. Aguarde um motorista assumir."
             ), car_request
         return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para registrar Tours."), None
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
@@ -6505,7 +6553,7 @@ def list_driver_locations():
 
 @app.post("/api/hostess-requests")
 def create_hostess_request():
-    """A Hostess calls for one car without having to select a hotel or driver."""
+    """A Hostess calls for one car without having to register or select a Tour."""
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         raise APIError("Envie os dados da solicitação em um objeto JSON válido.")
@@ -6523,6 +6571,8 @@ def create_hostess_request():
             require_driver_location_window(db=db)
         if any(item.get("requestedById") == user["id"] for item in open_hostess_requests(db)):
             raise APIError("Você já possui uma solicitação de carro aberta.", 409)
+        request_location = normalize_hostess_request_location(payload.get("requestLocation"))
+        location_label = HOSTESS_REQUEST_LOCATION_LABELS.get(request_location, "")
         car_request = {
             "id": new_id("hostreq"),
             "status": HOSTESS_REQUEST_OPEN,
@@ -6531,7 +6581,8 @@ def create_hostess_request():
             "requestedByName": user["name"],
             "consultantId": None,
             "consultantName": None,
-            "note": "",
+            "requestLocation": request_location,
+            "note": f"Pedido avulso na {location_label}." if location_label else "",
             "assignedDriverId": None,
             "assignedDriverName": None,
             "acceptedAt": None,
@@ -6545,7 +6596,8 @@ def create_hostess_request():
                 db,
                 hostess_request_location_record(car_request, user, attendance, payload),
             )
-        log_activity(db, user, None, None, HOSTESS_REQUEST_OPEN, f"{user['name']} solicitou um carro para a Hostess.")
+        location_suffix = f" na {location_label}" if location_label else ""
+        log_activity(db, user, None, None, HOSTESS_REQUEST_OPEN, f"{user['name']} solicitou um carro{location_suffix} para a Hostess.")
         save_database(db)
         response = jsonify(request=clean_hostess_request(car_request)), 201
     # Send after persisting the request. This must not hold the operational
@@ -6742,6 +6794,7 @@ def driver_hostess_availability():
             "ACCEPTED",
             accepted_driver_name,
             requester_type=notification_requester_type,
+            car_request=accepted_hostess_request or accepted_consultant_request,
         )
     if accepted_hostess_request:
         # The Hostess may use more than one WhatsApp device/number under the

@@ -97,7 +97,7 @@ Todas as rotas autenticadas do site possuem um endereço equivalente com o prefi
 | Criar/alterar motoristas | `POST /drivers`, `PUT /drivers/{driverId}` |
 | Criar/alterar consultores | `POST /consultants`, `PUT /consultants/{consultantId}` |
 | Criar/alterar Self Gen | `POST /self-gens`, `PUT /self-gens/{selfGenId}` |
-| Solicitar carro da Hostess | `POST /hostess-requests` |
+| Solicitar carro da Hostess na Galeria | `POST /hostess-requests` com `{"requestLocation":"GALERIA"}` |
 | Assumir chamado | `POST /drivers/hostess-availability` |
 | Acompanhar aproximação | `GET /hostess-requests/{requestId}/approach` |
 | Registrar apoio | `POST /driver-supports` |
@@ -121,7 +121,7 @@ O aplicativo deve pedir a permissão de localização ao usuário e enviar latit
 3. Envie `PUT /drivers/me/location` aproximadamente a cada 15 segundos enquanto o compartilhamento estiver ativo.
 4. Encerre com `DELETE /drivers/me/location-sharing`.
 
-A Hostess envia as coordenadas em `POST /hostess-requests` e atualiza `PUT /hostess-requests/{requestId}/location` enquanto o chamado estiver aberto. Depois do aceite, Hostess e motorista designado consultam `GET /hostess-requests/{requestId}/approach`.
+A Hostess pode solicitar um carro avulso na Galeria sem registrar Tour enviando `{"requestLocation":"GALERIA"}` em `POST /hostess-requests`, junto das coordenadas quando o GPS estiver disponível. Ela atualiza `PUT /hostess-requests/{requestId}/location` enquanto o chamado estiver aberto. Depois do aceite, Hostess e motorista designado consultam `GET /hostess-requests/{requestId}/approach`.
 
 As regras atuais continuam obrigatórias: check-in ativo, janela normal até 15:00 no horário de Salvador ou modo temporário de teste para o motorista selecionado, expiração de pontos antigos e remoção ao encerrar o atendimento.
 
