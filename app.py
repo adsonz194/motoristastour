@@ -613,16 +613,27 @@ def active_operation_settings(db: dict[str, Any], day: str | None = None) -> dic
 
 
 def destinations_for_current_prestige(db: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only destinations that belong to the currently open Prestige."""
+    """Return all active final destinations, prioritizing today's departure hotel.
+
+    The departure Prestige defines where a Tour starts, not where it is
+    allowed to finish.  A group can leave the Gallery for either hotel even
+    during a closure.  Keep every active final destination visible, while
+    placing the Lobby and Prestige of the operational departure hotel first.
+    """
     departure = active_operation_settings(db).get("departurePrestige", PRESTIGE_SELECTION)
-    return [
+    destinations = [
         destination
         for destination in db.get("destinations", [])
         if destination.get("active", True)
-        and DESTINATION_PRESTIGE_BY_NAME.get(
-            str(destination.get("name") or "").strip().casefold(), departure
-        ) == departure
     ]
+    return sorted(
+        destinations,
+        key=lambda destination: (
+            DESTINATION_PRESTIGE_BY_NAME.get(
+                str(destination.get("name") or "").strip().casefold(), departure
+            ) != departure,
+        ),
+    )
 
 
 def consultant_guest_locations_for_current_prestige(db: dict[str, Any]) -> list[dict[str, str]]:

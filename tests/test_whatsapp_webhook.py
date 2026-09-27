@@ -469,6 +469,8 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], [
             "destination:tour_02:lobby-selection",
             "destination:tour_02:prestige-selection",
+            "destination:tour_02:lobby-waves",
+            "destination:tour_02:prestige-waves",
         ])
 
         self.database["hotelClosures"] = [{
@@ -484,6 +486,8 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], [
             "destination:tour_02:lobby-waves",
             "destination:tour_02:prestige-waves",
+            "destination:tour_02:lobby-selection",
+            "destination:tour_02:prestige-selection",
         ])
 
 
