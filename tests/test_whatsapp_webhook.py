@@ -263,6 +263,10 @@ class WhatsAppWebhookTest(unittest.TestCase):
             "hostess-request",
         )
         self.assertEqual(
+            self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]["title"],
+            "Carrinho Lobby",
+        )
+        self.assertEqual(
             {tour["slotLabel"] for tour in self.database["tours"][:3]},
             {"Tour 1", "Tour 2", "Self Gen 1"},
         )
@@ -279,6 +283,7 @@ class WhatsAppWebhookTest(unittest.TestCase):
         car_request = self.database["hostessRequests"][0]
         self.assertEqual(car_request["requesterType"], tour_app.HOSTESS_REQUESTER)
         self.assertEqual(car_request["requestedById"], "user_hostess")
+        self.assertEqual(car_request["requestLocation"], tour_app.HOSTESS_REQUEST_LOCATION_LOBBY)
         self.assertIn("Motorista Livre: ✅ Disponível", self.sent_messages[-1][0][1]["text"]["body"])
 
     def test_hostess_can_request_gallery_car_without_registering_a_tour(self) -> None:

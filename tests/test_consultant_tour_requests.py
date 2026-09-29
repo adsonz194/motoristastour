@@ -564,6 +564,33 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         self.assertEqual(drivers["drv_one"]["toursStarted"], 0)
         self.assertEqual(drivers["drv_two"]["toursStarted"], 1)
 
+    def test_operator_can_add_a_second_cart_and_driver_to_a_whatsapp_route_request(self) -> None:
+        created = self.client.post("/api/public/consultant-support-requests", json={
+            "identityType": "CONSULTANT",
+            "consultantId": "con_dimitri",
+            "tourId": "tour_01",
+            "routeStage": "PRESTIGE",
+            "guestLocation": "WAVES",
+        })
+        request_id = created.get_json()["request"]["id"]
+
+        started = self.client.post(
+            f"/api/consultant-tour-requests/{request_id}/start",
+            headers=self.auth("token-driver"),
+            json={"allocations": [{"driverId": "drv_one"}, {"driverId": "drv_two"}]},
+        )
+
+        self.assertEqual(started.status_code, 200, started.get_json())
+        request_payload = started.get_json()["request"]
+        self.assertEqual(request_payload["assignedDriverIds"], ["drv_one", "drv_two"])
+        self.assertEqual(request_payload["assignedDriverNames"], ["Motorista Um", "Motorista Dois"])
+        self.assertEqual(
+            [allocation["driverId"] for allocation in self.database["tours"][0]["allocations"]],
+            ["drv_one", "drv_two"],
+        )
+        self.assertEqual(self.database["tours"][0]["requiredCartCount"], 2)
+        self.assertTrue(all(driver["status"] == tour_app.DRIVER_IN_TOUR for driver in self.database["drivers"]))
+
     def test_gallery_exit_request_requires_and_applies_selected_destination(self) -> None:
         tour = self._tour("tour_gallery", "Tour 02", status=tour_app.STATE_WAITING_DESTINATION)
         tour.update({
@@ -600,6 +627,7 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
             "requiresDetails": False,
             "consultantName": "  DIMITRI ",
             "phase": "Casa",
+            "requiredCartCount": 2,
         })
         self.database["tours"] = [tour]
 
@@ -624,10 +652,12 @@ class ConsultantTourRequestApiTest(unittest.TestCase):
         started = self.client.post(
             f"/api/consultant-tour-requests/{created.get_json()['request']['id']}/start",
             headers=self.auth("token-driver"),
+            json={"allocations": [{"driverId": "drv_one"}, {"driverId": "drv_two"}]},
         )
         self.assertEqual(started.status_code, 200, started.get_json())
         self.assertEqual(started.get_json()["action"], "pickup-home")
         self.assertEqual(tour["status"], tour_app.STATE_IN_TOUR)
+        self.assertEqual(len(tour["allocations"]), 2)
 
     def test_gallery_request_accepts_legacy_tour_linked_only_by_consultant_name(self) -> None:
         tour = self._tour("tour_gallery_legacy", "Tour 04", status=tour_app.STATE_WAITING_DESTINATION)

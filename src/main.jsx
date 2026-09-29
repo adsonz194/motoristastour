@@ -1379,29 +1379,45 @@ function ConsultantTourRequestModal({ tour, data, user, onClose, token, refresh,
   const stage = request?.routeStage || tour.routeRequestStage || 'PRESTIGE';
   const actionLabel = stage === 'CASA' ? 'Iniciar busca na Casa' : stage === 'GALERIA_EXIT' ? 'Iniciar destino' : 'Iniciar tour';
   const availableDrivers = (data.drivers || []).filter((driver) => driver.active !== false && driver.status === 'DISPONIVEL' && !driver.hostessAvailable && !driver.driverSupportId);
-  const ownDriverAvailable = availableDrivers.some((driver) => driver.id === user.driverId);
-  const [driverId, setDriverId] = useState(() => ownDriverAvailable ? user.driverId : '');
+  const homeDrivers = (tour.allocations || []).filter((allocation) => allocation.homeDecision === 'AGUARDOU_NA_CASA');
+  const requiredDriverCount = stage === 'CASA'
+    ? Math.max(1, (tour.requiredCartCount || 1) - homeDrivers.length)
+    : 1;
+  const [allocations, setAllocations] = useState(() => Array.from(
+    { length: requiredDriverCount },
+    (_, index) => ({ driverId: index === 0 && availableDrivers.some((driver) => driver.id === user.driverId) ? user.driverId : '' })
+  ));
   const [saving, setSaving] = useState(false);
-  const selectedDriver = availableDrivers.find((driver) => driver.id === driverId);
+  const selectedDriverIds = allocations.map((allocation) => allocation.driverId).filter(Boolean);
+  const selectedDrivers = availableDrivers.filter((driver) => selectedDriverIds.includes(driver.id));
+  const updateAllocation = (index, driverId) => setAllocations((current) => current.map(
+    (allocation, allocationIndex) => allocationIndex === index ? { ...allocation, driverId } : allocation
+  ));
+  const removeAllocation = (index) => setAllocations((current) => current.filter((_, allocationIndex) => allocationIndex !== index));
+  const canAddCart = stage !== 'CASA';
 
   async function submit(event) {
     event.preventDefault();
-    if (!driverId || !tour.pendingConsultantRequestId) return;
+    if (!tour.pendingConsultantRequestId || allocations.some((allocation) => !allocation.driverId)) return;
     setSaving(true);
     try {
       const result = await api(token, `/api/consultant-tour-requests/${tour.pendingConsultantRequestId}/start`, {
         method: 'POST',
-        body: JSON.stringify({ driverId })
+        body: JSON.stringify({ allocations })
       });
-      if (user.role === 'MOTORISTA' && user.driverId === driverId) window.dispatchEvent(new Event('motoristastour:start-driver-location'));
+      if (user.role === 'MOTORISTA' && selectedDriverIds.includes(user.driverId)) window.dispatchEvent(new Event('motoristastour:start-driver-location'));
       await refresh();
       const success = result.action === 'start' ? 'Tour iniciado.' : result.action === 'assign-destination' ? 'Saída para o destino iniciada.' : 'Busca na Casa iniciada.';
-      notify(`${success} ${selectedDriver?.name || 'O motorista'} assumiu a solicitação.`, 'success');
+      const driverNames = result.request?.assignedDriverNames || selectedDrivers.map((driver) => driver.name);
+      const driverLabel = driverNames.length > 1
+        ? `${driverNames.slice(0, -1).join(', ')} e ${driverNames[driverNames.length - 1]}`
+        : driverNames[0] || 'O motorista';
+      notify(`${success} ${driverNames.length > 1 ? `Motoristas ${driverLabel} foram vinculados ao pedido.` : `${driverLabel} assumiu a solicitação.`}`, 'success');
       onClose();
     } catch (error) { notify(error.message, 'error'); } finally { setSaving(false); }
   }
 
-  return <Modal title={actionLabel} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{request?.requestedByName || tour.consultantName || tour.selfGenName || 'Consultor'} · {tour.routeRequestLocation || request?.guestLocationLabel || 'local informado'}</span></div></div><p className="modal-intro">Selecione quem vai assumir este pedido. O motorista escolhido será vinculado ao Tour e um carrinho será reservado automaticamente.</p><form className="modal-form" onSubmit={submit}><label>Motorista que vai assumir<select value={driverId} onChange={(event) => setDriverId(event.target.value)} required><option value="">Selecione o motorista</option>{availableDrivers.map((driver) => <option value={driver.id} key={driver.id}>{driver.name}</option>)}</select>{!availableDrivers.length && <small className="field-help">Nenhum motorista com check-in está disponível neste momento.</small>}</label>{request?.note && <div className="role-help"><strong>Referência do consultor:</strong> {request.note}</div>}<button className="button button-primary" disabled={saving || !driverId}>{saving ? <LoaderCircle className="spin" size={17} /> : <CarFront size={17} />} {actionLabel}</button></form></Modal>;
+  return <Modal title={actionLabel} onClose={onClose}><div className="action-tour-summary"><Avatar name={tour.groupName} color="teal" /><div><strong>{tour.groupName}</strong><span>{request?.requestedByName || tour.consultantName || tour.selfGenName || 'Consultor'} · {tour.routeRequestLocation || request?.guestLocationLabel || 'local informado'}</span></div></div><p className="modal-intro">Selecione os motoristas que vão assumir este pedido. Um carrinho disponível será reservado para cada motorista.</p><form className="modal-form" onSubmit={submit}><div className="allocation-form"><div className="allocation-title"><span>Motoristas e carrinhos</span><small>{stage === 'CASA' ? `São necessários ${requiredDriverCount} motorista${requiredDriverCount === 1 ? '' : 's'} para esta busca.` : 'Adicione outro carrinho quando o grupo precisar.'}</small></div>{allocations.map((allocation, index) => <div className="allocation-row" key={index}><label>Motorista do carrinho {index + 1}<select value={allocation.driverId} onChange={(event) => updateAllocation(index, event.target.value)} required><option value="">Selecione o motorista</option>{availableDrivers.filter((driver) => driver.id === allocation.driverId || !allocations.some((item, itemIndex) => itemIndex !== index && item.driverId === driver.id)).map((driver) => <option value={driver.id} key={driver.id}>{driver.name}</option>)}</select>{!availableDrivers.length && <small className="field-help">Nenhum motorista com check-in está disponível neste momento.</small>}</label>{allocations.length > requiredDriverCount && <button type="button" className="remove-allocation" onClick={() => removeAllocation(index)}>Remover</button>}</div>)}<div className="allocation-footer"><span>{selectedDriverIds.length} motorista{selectedDriverIds.length === 1 ? '' : 's'} selecionado{selectedDriverIds.length === 1 ? '' : 's'}</span>{canAddCart && <button type="button" className="text-button" onClick={() => setAllocations((current) => [...current, { driverId: '' }])}><Plus size={15} /> Adicionar carrinho</button>}</div></div>{request?.note && <div className="role-help"><strong>Referência do consultor:</strong> {request.note}</div>}<button className="button button-primary" disabled={saving || allocations.some((allocation) => !allocation.driverId)}>{saving ? <LoaderCircle className="spin" size={17} /> : <CarFront size={17} />} {actionLabel}</button></form></Modal>;
 }
 
 function TransferActionModal({ transfer, action, onClose, token, refresh, notify }) {

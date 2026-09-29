@@ -262,8 +262,10 @@ CONSULTANT_GUEST_LOCATIONS = {
     "WAVES": "Waves",
     "SELECTION": "Selection",
 }
+HOSTESS_REQUEST_LOCATION_LOBBY = "LOBBY"
 HOSTESS_REQUEST_LOCATION_GALLERY = "GALERIA"
 HOSTESS_REQUEST_LOCATION_LABELS = {
+    HOSTESS_REQUEST_LOCATION_LOBBY: "Lobby",
     HOSTESS_REQUEST_LOCATION_GALLERY: "Galeria",
 }
 
@@ -1467,7 +1469,7 @@ def notify_whatsapp_consultant_for_route_event(
     db: dict[str, Any],
     tour: dict[str, Any],
     event_type: str,
-    driver_name: str | None = None,
+    driver_name: str | list[str] | None = None,
 ) -> dict[str, int | bool]:
     """Notify only the consultant attached to this Tour's WhatsApp number."""
     consultant = whatsapp_consultant_for_tour(db, tour)
@@ -1475,9 +1477,14 @@ def notify_whatsapp_consultant_for_route_event(
         return {"attempted": 0, "delivered": 0, "disabled": not whatsapp_messaging_is_configured()}
     label = tour_whatsapp_label(tour)
     if event_type == "DRIVER_ASSIGNED":
-        name = str(driver_name or "Um motorista").strip()
+        names = [str(name).strip() for name in driver_name] if isinstance(driver_name, list) else [str(driver_name or "").strip()]
+        names = [name for name in names if name]
+        if len(names) > 1:
+            subject = f"Motoristas {', '.join(names[:-1])} e {names[-1]} assumiram"
+        else:
+            subject = f"{names[0] if names else 'Um motorista'} assumiu"
         message = whatsapp_text_payload(
-            f"{name} assumiu {label}. O atendimento está em andamento."
+            f"{subject} {label}. O atendimento está em andamento."
         )
     elif event_type == "WAITING_HOME":
         message = whatsapp_button_payload(
@@ -3251,6 +3258,7 @@ def public_consultant_support_request_payload(car_request: dict[str, Any]) -> di
         "destinationName": car_request.get("destinationName"),
         "eliteSupport": bool(car_request.get("eliteSupport", False)),
         "assignedDriverName": car_request.get("assignedDriverName"),
+        "assignedDriverNames": car_request.get("assignedDriverNames", []),
         "createdAt": car_request.get("createdAt"),
         "acceptedAt": car_request.get("acceptedAt"),
         "updatedAt": car_request.get("updatedAt"),
@@ -4309,9 +4317,9 @@ def whatsapp_hostess_menu_message(db: dict[str, Any], hostess: dict[str, Any]) -
         self_gen_quantity = draft.get("selfGenQuantity", 0)
         wave_label = TRANSFER_SCHEDULES.get(draft.get("wave"), {}).get("label", "Ola selecionada")
         return whatsapp_button_payload(
-            f"Foram registrados {quantity} Tour(es) e {self_gen_quantity} Self Gen para a {wave_label}. Agora solicite o carrinho do Tour ou um carro avulso na Galeria.",
+            f"Foram registrados {quantity} Tour(es) e {self_gen_quantity} Self Gen para a {wave_label}. Agora solicite o Carrinho Lobby ou um carro avulso na Galeria.",
             [
-                ("hostess-request", "Carro do Tour"),
+                ("hostess-request", "Carrinho Lobby"),
                 ("hostess-gallery-request", "Carro na Galeria"),
             ],
         )
@@ -4563,9 +4571,9 @@ def whatsapp_reply_for_incoming_message(
             )
             wave_label = TRANSFER_SCHEDULES[wave]["label"]
             return recipient, whatsapp_button_payload(
-                f"{len(tours)} lançamento(s) registrado(s): {draft.get('quantity')} Tour(es) e {draft.get('selfGenQuantity', 0)} Self Gen para a {wave_label}. Solicite o carro do Tour ou um carro avulso na Galeria.",
+                f"{len(tours)} lançamento(s) registrado(s): {draft.get('quantity')} Tour(es) e {draft.get('selfGenQuantity', 0)} Self Gen para a {wave_label}. Solicite o Carrinho Lobby ou um carro avulso na Galeria.",
                 [
-                    ("hostess-request", "Carro do Tour"),
+                    ("hostess-request", "Carrinho Lobby"),
                     ("hostess-gallery-request", "Carro na Galeria"),
                 ],
             ), None
@@ -4574,10 +4582,12 @@ def whatsapp_reply_for_incoming_message(
                 return recipient, whatsapp_text_payload(
                     "Registre primeiro a quantidade de Tours e a Ola. Envie MENU para começar."
                 ), None
-            car_request = create_whatsapp_hostess_request(db, hostess)
+            car_request = create_whatsapp_hostess_request(
+                db, hostess, request_location=HOSTESS_REQUEST_LOCATION_LOBBY
+            )
             clear_whatsapp_hostess_tour_draft(db, hostess)
             return recipient, whatsapp_request_confirmation(
-                db, "Solicitação de carro enviada. Aguarde um motorista assumir."
+                db, "Solicitação de Carrinho Lobby enviada. Aguarde um motorista assumir."
             ), car_request
         if interaction_id == "hostess-gallery-request" or normalized_action == "galeria":
             car_request = create_whatsapp_hostess_request(
@@ -5231,18 +5241,6 @@ def create_public_consultant_support_request():
             }[route_stage]
             if tour.get("status") not in expected_states:
                 raise APIError(f"{tour.get('slotLabel') or tour.get('groupName') or 'Este Tour'} não está na etapa selecionada.", 409)
-            if route_stage == "CASA":
-                required_carts = int(tour.get("requiredCartCount") or 1)
-                staying_carts = sum(
-                    1 for item in tour.get("allocations", [])
-                    if item.get("homeDecision") == "AGUARDOU_NA_CASA"
-                )
-                requested_carts = required_carts if tour.get("status") == STATE_WAITING_HOME else required_carts - staying_carts
-                if requested_carts != 1:
-                    raise APIError(
-                        f"Este Tour precisa de {requested_carts} carrinhos na Casa. Use o painel da equipe para uma chamada com vários motoristas.",
-                        409,
-                    )
             normal_support = (identity_type == SELF_GEN_REQUESTER and not tour.get("selfGuide")
                               and requester_user and requester_user.get("role") == ROLE_SELF_GEN)
             if bool(tour.get("selfGuide")) != (identity_type == SELF_GEN_REQUESTER) and not normal_support:
@@ -5499,7 +5497,7 @@ def create_whatsapp_consultant_route_request(
     route_stage: str,
     destination_id: Any = None,
 ) -> dict[str, Any]:
-    """Create a single-cart request through the same Tour state machine as the UI."""
+    """Create a route request that the operating team can allocate one or more carts to."""
     normalized_tour_id = str(tour_id or "").strip()
     if not normalized_tour_id:
         raise APIError("Escolha o Tour antes de solicitar o carrinho.")
@@ -5532,13 +5530,6 @@ def create_whatsapp_consultant_route_request(
         for item in db.get("hostessRequests", [])
     ):
         raise APIError(f"{label} já possui uma solicitação de carrinho aberta.", 409)
-    if stage == "CASA":
-        required_carts = int(tour.get("requiredCartCount") or 1)
-        if required_carts != 1:
-            raise APIError(
-                f"{label} precisa de {required_carts} carrinhos na Casa. Solicite a coordenação pelo painel.",
-                409,
-            )
     destination = None
     if stage == "GALERIA_EXIT":
         normalized_destination_id = str(destination_id or "").strip()
@@ -5661,12 +5652,14 @@ def start_consultant_tour_request(request_id: str):
         db = operational_database()
         user = get_current_user(db)
         require_permission(user, PERMISSION_MANAGE_TOURS, "Seu usuário não possui permissão para iniciar tours.")
-        driver_id = str(payload.get("driverId") or user.get("driverId") or "").strip()
-        if not driver_id:
-            raise APIError("Selecione o motorista que está com este Tour.", 409)
-        driver = find(db.get("drivers", []), driver_id, "Motorista")
-        if not driver.get("active", True) or driver.get("status") != DRIVER_AVAILABLE or not driver_has_checked_in(db, driver_id):
-            raise APIError(f"{driver['name']} precisa estar com check-in feito e disponível para iniciar este atendimento.", 409)
+        raw_allocations = payload.get("allocations")
+        if raw_allocations is None:
+            # Keep the former one-tap behavior for older mobile and browser
+            # clients while new clients can send one allocation per cart.
+            driver_id = str(payload.get("driverId") or user.get("driverId") or "").strip()
+            if not driver_id:
+                raise APIError("Selecione pelo menos um motorista para este Tour.", 409)
+            raw_allocations = [{"driverId": driver_id}]
         car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
         if not is_consultant_route_request(car_request):
             raise APIError("Esta solicitação não está ligada a um Tour.", 409)
@@ -5676,7 +5669,7 @@ def start_consultant_tour_request(request_id: str):
         if tour.get("pendingConsultantRequestId") != car_request["id"]:
             raise APIError("O Tour já está ligado a outra solicitação. Atualize o painel.", 409)
         stage = car_request.get("routeStage")
-        action_payload: dict[str, Any] = {"allocations": [{"driverId": driver_id}]}
+        action_payload: dict[str, Any] = {"allocations": raw_allocations}
         if stage == "PRESTIGE":
             action = "start"
         elif stage == "CASA" and tour.get("status") == STATE_WAITING_HOME:
@@ -5698,10 +5691,23 @@ def start_consultant_tour_request(request_id: str):
         ):
             log_tour_route_change(db, user, tour, action, before_route, after_route)
         completed_at = timestamp()
+        selected_driver_ids = [
+            str(allocation.get("driverId") or "").strip()
+            for allocation in raw_allocations
+            if isinstance(allocation, dict) and str(allocation.get("driverId") or "").strip()
+        ]
+        selected_driver_names = [
+            find(db.get("drivers", []), driver_id, "Motorista")["name"]
+            for driver_id in selected_driver_ids
+        ]
         car_request.update({
             "status": HOSTESS_REQUEST_IN_PROGRESS,
-            "assignedDriverId": driver["id"],
-            "assignedDriverName": driver["name"],
+            # Singular fields remain for existing support tracking; plural
+            # fields make every cart and driver visible to current clients.
+            "assignedDriverId": selected_driver_ids[0],
+            "assignedDriverName": selected_driver_names[0],
+            "assignedDriverIds": selected_driver_ids,
+            "assignedDriverNames": selected_driver_names,
             "acceptedAt": completed_at,
             "completedAction": action,
             "updatedAt": completed_at,
@@ -5716,7 +5722,7 @@ def start_consultant_tour_request(request_id: str):
         )
     notify_operation_update(db, "TOURS")
     notify_whatsapp_consultant_for_route_event(
-        db, tour, "DRIVER_ASSIGNED", driver["name"],
+        db, tour, "DRIVER_ASSIGNED", selected_driver_names,
     )
     return response
 
