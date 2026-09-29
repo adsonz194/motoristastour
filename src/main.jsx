@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   ArrowRightLeft, BarChart3, Bell, Building2, CalendarDays, CarFront, Check, ChevronRight, CircleUserRound,
   Clock3, FileClock, Flag, HandHeart, House, Image, LayoutDashboard, LoaderCircle, LockKeyhole,
-  LogOut, MapPin, Menu, MoreHorizontal, Plus, Route, Settings, ShieldCheck, ShoppingCart, Trash2,
+  LogOut, MapPin, Menu, MoreHorizontal, Plus, RefreshCw, Route, Settings, ShieldCheck, ShoppingCart, Trash2,
   UserCog, UserRound, Users, Warehouse, WavesLadder, X
 } from 'lucide-react';
 import { ConsultantSupportLocationPanel, DriverLocationMapPanel, DriverLocationSharingCard, HostessApproachLocationPanel, getCurrentBrowserLocation } from './driver-location';
@@ -477,12 +477,12 @@ function MobileNav({ page, setPage, user, operationSettings }) {
   return <nav className={classNames('mobile-nav', count === 1 && 'mobile-nav-single')} style={{ gridTemplateColumns: `repeat(${count}, 1fr)` }}>{items.map(({ id, label, icon: Icon }) => { const itemLabel = id === 'prestige' ? departureLabel : label; return <button key={id} className={page === id ? 'active' : ''} onClick={() => setPage(id)}><Icon size={20} /><span>{id === 'dashboard' ? 'Painel' : id === 'prestige' ? departureLabel.includes('Selection') ? 'Selection' : 'Bahia' : itemLabel.split(' ')[0]}</span></button>; })}{showMore && <button onClick={() => setPage('settings')} className={page === 'settings' ? 'active' : ''}><MoreHorizontal size={20} /><span>Mais</span></button>}</nav>;
 }
 
-function Topbar({ user, setMenuOpen, notificationPermission, onNotifications }) {
+function Topbar({ user, setMenuOpen, notificationPermission, onNotifications, onRefresh, isRefreshing }) {
   const [clock, setClock] = useState(time(new Date()));
   useEffect(() => { const timer = setInterval(() => setClock(time(new Date())), 30000); return () => clearInterval(timer); }, []);
   const role = roleLabel(user.role);
   const notificationLabel = notificationPermission === 'granted' ? 'Notificações push ativas. Toque para enviar um teste.' : notificationPermission === 'denied' ? 'Notificações bloqueadas no navegador.' : 'Ativar notificações push neste aparelho';
-  return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className={classNames('bell', notificationPermission === 'granted' && 'bell-enabled')} onClick={onNotifications} aria-label={notificationLabel} title={notificationLabel}><Bell size={20} /><span className="bell-status" aria-hidden="true" /></button><div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
+  return <header className="topbar"><button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu size={29} /></button><div className="topbar-spacer" /><div className="topbar-date"><CalendarDays size={18} /><span>{dateLabel()}</span></div><div className="topbar-date"><Clock3 size={18} /><span>{clock}</span></div><button className={classNames('bell', notificationPermission === 'granted' && 'bell-enabled')} onClick={onNotifications} aria-label={notificationLabel} title={notificationLabel}><Bell size={20} /><span className="bell-status" aria-hidden="true" /></button><button className="topbar-refresh" onClick={onRefresh} disabled={isRefreshing} aria-label="Atualizar dados da operação" title="Atualizar dados da operação"><RefreshCw size={17} /><span>Atualizar</span></button>{isRefreshing && <LoaderCircle className="topbar-refresh-loader spin" size={19} role="status" aria-label="Atualizando dados" />}<div className="user-menu"><CircleUserRound size={25} /><div><strong>{user.name}</strong><span>{role}</span></div><ChevronRight size={16} /></div></header>;
 }
 
 function MetricCard({ icon: Icon, color, title, count, sub }) {
@@ -1716,12 +1716,24 @@ function App() {
   const [notice, setNotice] = useState(null);
   const [loading, setLoading] = useState(Boolean(token));
   const [notificationPermission, setNotificationPermission] = useState(() => 'Notification' in window ? window.Notification.permission : 'unsupported');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const notify = (message, type = 'success') => { setNotice({ message, type }); window.setTimeout(() => setNotice(null), 4000); };
   const refresh = useCallback(async () => {
     const payload = await api(token, '/api/bootstrap');
     setUser(payload.user); setData({ ...(payload.data || {}), permissionsCatalog: payload.permissionsCatalog || payload.data?.permissionsCatalog, rolePermissionDefaults: payload.rolePermissionDefaults || payload.data?.rolePermissionDefaults }); setPage((current) => canAccessPage(payload.user, current) ? current : firstAccessiblePage(payload.user));
   }, [token]);
+  const refreshFromButton = useCallback(async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refresh();
+    } catch (error) {
+      notify(error.message || 'Não foi possível atualizar os dados.', 'error');
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [isRefreshing, refresh]);
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return undefined;
     navigator.serviceWorker.register('/service-worker.js').catch(() => undefined);
@@ -1823,7 +1835,7 @@ function App() {
   if (!token) return <Login onLogin={login} />;
   if (loading || !data || !user) return <div className="loading-screen"><LoaderCircle className="spin" size={34} /><span>Carregando operação...</span></div>;
   if (['CONSULTOR', 'SELF_GEN'].includes(user.role)) return <ConsultantDriverPanel token={token} user={user} onLogout={signOut} />;
-  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} operationSettings={data.operationSettings} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} /><main className="content-area">{user.role === 'MOTORISTA' && can(user, 'CHECK_IN') && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{user.role === 'MOTORISTA' && can(user, 'SHARE_OWN_LOCATION') && <DriverLocationSharingCard data={data} user={user} token={token} notify={notify} />}{user.role === 'MOTORISTA' && can(user, 'MANAGE_HOSTESS_SUPPORT') && <DriverHostessAvailability data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'consultant-request' && <ConsultantTourRequestModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{<MobileNav page={page} setPage={setPage} user={user} operationSettings={data.operationSettings} />}</div>;
+  return <div className="app-shell"><Sidebar user={user} page={page} setPage={setPage} signOut={signOut} open={menuOpen} setOpen={setMenuOpen} operationSettings={data.operationSettings} /><div className="app-content"><Topbar user={user} setMenuOpen={setMenuOpen} notificationPermission={notificationPermission} onNotifications={requestNotifications} onRefresh={refreshFromButton} isRefreshing={isRefreshing} /><main className="content-area">{user.role === 'MOTORISTA' && can(user, 'CHECK_IN') && <CheckInCard data={data} user={user} token={token} refresh={refresh} notify={notify} />}{user.role === 'MOTORISTA' && can(user, 'SHARE_OWN_LOCATION') && <DriverLocationSharingCard data={data} user={user} token={token} notify={notify} />}{user.role === 'MOTORISTA' && can(user, 'MANAGE_HOSTESS_SUPPORT') && <DriverHostessAvailability data={data} user={user} token={token} refresh={refresh} notify={notify} />}{content}</main></div>{menuOpen && <button className="sidebar-scrim" aria-label="Fechar menu" onClick={() => setMenuOpen(false)} />}{notice && <div className={classNames('toast', notice.type)}>{notice.type === 'success' ? <Check size={19} /> : <X size={19} />}{notice.message}</div>}{modal?.kind === 'create' && <CreateTourModal data={data} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer' && <CreateTransferModal user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'consultant-request' && <ConsultantTourRequestModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'action' && <ActionModal {...modal} data={data} user={user} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{modal?.kind === 'transfer-action' && <TransferActionModal {...modal} onClose={() => setModal(null)} token={token} refresh={refresh} notify={notify} />}{<MobileNav page={page} setPage={setPage} user={user} operationSettings={data.operationSettings} />}</div>;
 }
 
 function Root() {
