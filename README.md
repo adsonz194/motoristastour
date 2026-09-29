@@ -60,6 +60,16 @@ O WhatsApp Business Cloud API permite que consultores iniciem e continuem o Tour
 
 O webhook aceita somente chamadas com a assinatura `X-Hub-Signature-256` válida da Meta e ignora reentregas pelo ID da mensagem. Não armazena o conteúdo da conversa; o sistema mantém apenas os IDs necessários para evitar duplicidade. O token de acesso e o `App Secret` nunca são enviados ao navegador nem registrados no banco operacional.
 
+## Treinamento privado
+
+O simulador prático fica em `/treinamento`, mas só é servido com um link-capacidade válido. No Render, crie o segredo `TRAINING_ACCESS_TOKEN` usando uma sequência aleatória longa (pelo menos 32 caracteres). Em seguida, compartilhe somente o endereço completo abaixo com as pessoas autorizadas:
+
+```text
+https://motoristastour.onrender.com/treinamento?convite=SEU_TRAINING_ACCESS_TOKEN
+```
+
+Sem o parâmetro correto, a página responde como inexistente. O link não é indexado, não fica em cache e não repassa o segredo como referência para os arquivos do simulador.
+
 ## Localização dos motoristas no mapa
 
 Somente com um check-in ativo, o motorista pode tocar em **Compartilhar minha localização** no próprio celular. O compartilhamento funciona estritamente antes das **15:00 no horário de Salvador/Bahia**; às 15:00, novos inícios e atualizações são bloqueados e os pontos existentes deixam de ser exibidos e são removidos. O navegador pede autorização para usar o GPS e, enquanto o painel permanecer aberto, envia somente a posição mais recente. O sistema não cria histórico de percurso. O motorista também pode parar manualmente; sair da conta e zerar a operação removem a posição.

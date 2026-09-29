@@ -17,7 +17,7 @@ from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 from mobile_updates import update_policy, requires_update
@@ -54,6 +54,9 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
 WHATSAPP_GRAPH_API_VERSION = os.getenv("WHATSAPP_GRAPH_API_VERSION", "v22.0").strip() or "v22.0"
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "").strip()
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
+# The training simulator uses a capability link instead of a user login. Keep
+# this high-entropy value only in Render; a missing value keeps the page closed.
+TRAINING_ACCESS_TOKEN = os.getenv("TRAINING_ACCESS_TOKEN", "").strip()
 WHATSAPP_PROCESSED_MESSAGE_LIMIT = 500
 # Shown only when a WhatsApp identity cannot be matched. This makes it possible
 # to confirm that a Render deployment contains the current lookup behavior.
@@ -4060,6 +4063,14 @@ app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
 
+def training_access_is_allowed(value: Any) -> bool:
+    """Return whether a private training capability matches the deployment secret."""
+    candidate = str(value or "").strip()
+    return bool(TRAINING_ACCESS_TOKEN and candidate) and secrets.compare_digest(
+        candidate, TRAINING_ACCESS_TOKEN
+    )
+
+
 @app.before_request
 def enforce_android_version():
     # Old native clients do not send a version header: treat them as version 0.
@@ -7900,6 +7911,18 @@ register_mobile_api_aliases()
 @app.get("/")
 def root():
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+@app.get("/treinamento")
+def training():
+    """Serve the private practical-training simulator through a capability link."""
+    if not training_access_is_allowed(request.args.get("convite")):
+        abort(404)
+    response = send_from_directory(STATIC_DIR, "training.html")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    return response
 
 
 @app.get("/assets/<path:filename>")
