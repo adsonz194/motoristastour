@@ -140,6 +140,39 @@ class HostessTourCorrectionsApiTest(unittest.TestCase):
             ["Tour 3", "Self Gen 2"],
         )
 
+    def test_push_notification_keeps_each_ola_count_separate(self) -> None:
+        first_wave_tours = [
+            {"wave": "WAVE_1", "selfGuide": False, "status": tour_app.STATE_AVAILABLE}
+            for _ in range(6)
+        ] + [{"wave": "WAVE_1", "selfGuide": True, "status": tour_app.STATE_AVAILABLE}]
+        second_wave_tours = [
+            {"wave": "WAVE_2", "selfGuide": False, "status": tour_app.STATE_AVAILABLE}
+            for _ in range(3)
+        ]
+        self.database["tours"] = first_wave_tours + second_wave_tours
+        viewer = self.database["users"][1]
+
+        first_body = tour_app.notification_body_for_user(
+            self.database,
+            viewer,
+            "TOURS",
+            tour_registration={"wave": "WAVE_1", "tourCount": 6, "selfGenCount": 1},
+        )
+        second_body = tour_app.notification_body_for_user(
+            self.database,
+            viewer,
+            "TOURS",
+            tour_registration={"wave": "WAVE_2", "tourCount": 3, "selfGenCount": 0},
+        )
+        general_body = tour_app.notification_body_for_user(self.database, viewer, "TOURS")
+
+        self.assertEqual(first_body, "1ª Ola • Tours: 6 • Self Gen: 1")
+        self.assertEqual(second_body, "2ª Ola • Tours: 3 • Self Gen: 0")
+        self.assertEqual(
+            general_body,
+            "1ª Ola • Tours: 6 • Self Gen: 1\n2ª Ola • Tours: 3 • Self Gen: 0",
+        )
+
     def test_selection_is_atomic_when_a_tour_has_already_started(self) -> None:
         response = self._request(
             "token-hostess",

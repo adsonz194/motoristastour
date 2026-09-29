@@ -1257,7 +1257,46 @@ def delete_invalid_push_subscriptions(db: dict[str, Any], endpoints: set[str]) -
         return
 
 
-def notification_body_for_user(db: dict[str, Any], user: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> str | None:
+def tour_notification_counts(tours: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the count and Ola for one quantity-registration notification."""
+    if not tours:
+        return None
+    wave = str(tours[0].get("wave") or "").strip()
+    if wave not in TRANSFER_SCHEDULES or any(tour.get("wave") != wave for tour in tours):
+        return None
+    return {
+        "wave": wave,
+        "tourCount": sum(1 for tour in tours if not tour.get("selfGuide")),
+        "selfGenCount": sum(1 for tour in tours if tour.get("selfGuide")),
+    }
+
+
+def tour_notification_body(tours: list[dict[str, Any]], registration: dict[str, Any] | None = None) -> str:
+    """Format counts by Ola; tours from separate departures must never be added."""
+    if registration:
+        wave = str(registration.get("wave") or "").strip()
+        if wave in TRANSFER_SCHEDULES:
+            tour_count = int(registration.get("tourCount") or 0)
+            self_gen_count = int(registration.get("selfGenCount") or 0)
+            return f"{TRANSFER_SCHEDULES[wave]['label']} • Tours: {tour_count} • Self Gen: {self_gen_count}"
+    lines = []
+    for wave, schedule in TRANSFER_SCHEDULES.items():
+        wave_tours = [tour for tour in tours if tour.get("wave") == wave and tour.get("status") not in TERMINAL_TOUR_STATES]
+        if not wave_tours:
+            continue
+        tour_count = sum(1 for tour in wave_tours if not tour.get("selfGuide"))
+        self_gen_count = sum(1 for tour in wave_tours if tour.get("selfGuide"))
+        lines.append(f"{schedule['label']} • Tours: {tour_count} • Self Gen: {self_gen_count}")
+    return "\n".join(lines) or "Nenhum Tour ativo nas Olas."
+
+
+def notification_body_for_user(
+    db: dict[str, Any],
+    user: dict[str, Any],
+    event_type: str,
+    concierge_user_id: str | None = None,
+    tour_registration: dict[str, Any] | None = None,
+) -> str | None:
     if event_type == "TOURS":
         if not any(user_has_permission(user, permission) for permission in {
             PERMISSION_VIEW_DASHBOARD,
@@ -1267,10 +1306,7 @@ def notification_body_for_user(db: dict[str, Any], user: dict[str, Any], event_t
             PERMISSION_MANAGE_TOURS,
         }):
             return None
-        active_tours = [tour for tour in db.get("tours", []) if tour.get("status") not in TERMINAL_TOUR_STATES]
-        tour_count = sum(1 for tour in active_tours if not tour.get("selfGuide"))
-        self_gean_count = sum(1 for tour in active_tours if tour.get("selfGuide"))
-        return f"Tours: {tour_count} • Self Gen: {self_gean_count}"
+        return tour_notification_body(db.get("tours", []), tour_registration)
     if event_type == "WAVES":
         if not any(user_has_permission(user, permission) for permission in {
             PERMISSION_VIEW_DASHBOARD,
@@ -1288,7 +1324,12 @@ def notification_body_for_user(db: dict[str, Any], user: dict[str, Any], event_t
     return None
 
 
-def operation_push_messages(db: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> list[tuple[dict[str, Any], dict[str, str]]]:
+def operation_push_messages(
+    db: dict[str, Any],
+    event_type: str,
+    concierge_user_id: str | None = None,
+    tour_registration: dict[str, Any] | None = None,
+) -> list[tuple[dict[str, Any], dict[str, str]]]:
     users = {user["id"]: user for user in db.get("users", []) if user.get("active", True)}
     title = "Atualização de tours" if event_type == "TOURS" else "Atualização dos convites Waves"
     tag = "iberostar-tour-totals" if event_type == "TOURS" else "iberostar-waves-totals"
@@ -1297,7 +1338,7 @@ def operation_push_messages(db: dict[str, Any], event_type: str, concierge_user_
         user = users.get(record.get("userId"))
         if not user:
             continue
-        body = notification_body_for_user(db, user, event_type, concierge_user_id)
+        body = notification_body_for_user(db, user, event_type, concierge_user_id, tour_registration)
         if body:
             messages.append((record, {"title": title, "body": body, "tag": tag, "url": "/"}))
     return messages
@@ -1333,8 +1374,15 @@ def send_push_messages(db: dict[str, Any], messages: list[tuple[dict[str, Any], 
     return {"attempted": len(messages), "delivered": delivered, "disabled": False}
 
 
-def notify_operation_update(db: dict[str, Any], event_type: str, concierge_user_id: str | None = None) -> dict[str, int | bool]:
-    return send_push_messages(db, operation_push_messages(db, event_type, concierge_user_id))
+def notify_operation_update(
+    db: dict[str, Any],
+    event_type: str,
+    concierge_user_id: str | None = None,
+    tour_registration: dict[str, Any] | None = None,
+) -> dict[str, int | bool]:
+    return send_push_messages(
+        db, operation_push_messages(db, event_type, concierge_user_id, tour_registration)
+    )
 
 
 def hostess_push_messages(
@@ -6155,6 +6203,7 @@ def create_tour():
             # Quantity registration remains available even when the departure
             # moves to the other Prestige.
             tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
+            tour_registration = tour_notification_counts(tours)
             save_database(db)
             response = jsonify(tours=tours), 201
         else:
@@ -6197,10 +6246,11 @@ def create_tour():
                 "allocations": [],
             }
             db["tours"].insert(0, tour)
+            tour_registration = None
             log_activity(db, user, tour, None, STATE_AVAILABLE, f"{group_name} cadastrado como disponível no Prestige.")
             save_database(db)
             response = jsonify(tour=tour), 201
-    notify_operation_update(db, "TOURS")
+    notify_operation_update(db, "TOURS", tour_registration=tour_registration)
     return response
 
 
@@ -6214,9 +6264,10 @@ def register_hostess_tours():
         # Hostess records the daily totals even when a hotel is closed; tours
         # continue from the other configured Prestige.
         tours = create_tour_slots(db, user, payload.get("quantity"), payload.get("wave", "WAVE_1"), payload.get("selfGeanQuantity", payload.get("selfGuideQuantity", 0)), allow_when_tours_closed=True)
+        tour_registration = tour_notification_counts(tours)
         save_database(db)
         response = jsonify(tours=tours), 201
-    notify_operation_update(db, "TOURS")
+    notify_operation_update(db, "TOURS", tour_registration=tour_registration)
     return response
 
 
