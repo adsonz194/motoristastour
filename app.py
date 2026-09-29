@@ -1471,18 +1471,23 @@ def notify_hostess_car_update(
 
 
 def whatsapp_consultant_for_tour(db: dict[str, Any], tour: dict[str, Any]) -> dict[str, Any] | None:
-    consultant_id = str(tour.get("consultantId") or "").strip()
+    """Return the responsible WhatsApp record for a normal Tour or Self Gen."""
+    is_self_gen = bool(tour.get("selfGuide"))
+    collection = "selfGens" if is_self_gen else "consultants"
+    id_field = "selfGenId" if is_self_gen else "consultantId"
+    name_field = "selfGenName" if is_self_gen else "consultantName"
+    identity_id = str(tour.get(id_field) or "").strip()
     consultant = next((
-        item for item in db.get("consultants", []) if item.get("id") == consultant_id
+        item for item in db.get(collection, []) if item.get("id") == identity_id
     ), None)
-    if not consultant_id:
-        legacy_name = normalized_identity_name(tour.get("consultantName"))
+    if not identity_id:
+        legacy_name = normalized_identity_name(tour.get(name_field))
         legacy_matches = [
-            item for item in db.get("consultants", [])
+            item for item in db.get(collection, [])
             if legacy_name and normalized_identity_name(item.get("name")) == legacy_name
         ]
-        # Old Tours can have only a consultant name. Deliver to it only when
-        # that name maps unambiguously to one current consultant.
+        # Old Tours can have only the responsible name. Deliver only when it
+        # identifies one active record unambiguously.
         consultant = legacy_matches[0] if len(legacy_matches) == 1 else None
     if not consultant or not consultant.get("active", True) or not consultant.get("whatsappNumber"):
         return None
@@ -1493,10 +1498,12 @@ def tour_whatsapp_label(tour: dict[str, Any]) -> str:
     return str(tour.get("slotLabel") or tour.get("groupName") or "Tour").strip() or "Tour"
 
 
-def whatsapp_gallery_destination_message(db: dict[str, Any], tour: dict[str, Any]) -> dict[str, Any]:
+def whatsapp_gallery_destination_message(
+    db: dict[str, Any], tour: dict[str, Any], *, interaction_prefix: str = "destination"
+) -> dict[str, Any]:
     rows = [
         {
-            "id": f"destination:{tour['id']}:{destination['id']}",
+            "id": f"{interaction_prefix}:{tour['id']}:{destination['id']}",
             "title": str(destination.get("name") or "Destino")[:24],
             "description": "Solicitar carrinho",
         }
@@ -1519,7 +1526,7 @@ def notify_whatsapp_consultant_for_route_event(
     event_type: str,
     driver_name: str | list[str] | None = None,
 ) -> dict[str, int | bool]:
-    """Notify only the consultant attached to this Tour's WhatsApp number."""
+    """Notify the WhatsApp identity attached to this Tour or Self Gen slot."""
     consultant = whatsapp_consultant_for_tour(db, tour)
     if not consultant:
         return {"attempted": 0, "delivered": 0, "disabled": not whatsapp_messaging_is_configured()}
@@ -1535,12 +1542,17 @@ def notify_whatsapp_consultant_for_route_event(
             f"{subject} {label}. O atendimento está em andamento."
         )
     elif event_type == "WAITING_HOME":
+        request_prefix = "selfgen-request" if tour.get("selfGuide") else "request"
         message = whatsapp_button_payload(
             f"{label}: o motorista foi liberado e você está aguardando na Casa. Quando precisar, solicite outro carrinho.",
-            [(f"request:{tour['id']}:CASA", "Solicitar na Casa")],
+            [(f"{request_prefix}:{tour['id']}:CASA", "Solicitar na Casa")],
         )
     elif event_type == "GALLERY":
-        message = whatsapp_gallery_destination_message(db, tour)
+        message = whatsapp_gallery_destination_message(
+            db,
+            tour,
+            interaction_prefix="selfgen-destination" if tour.get("selfGuide") else "destination",
+        )
     elif event_type == "COMPLETE":
         message = whatsapp_text_payload(
             f"{label} foi finalizado. Obrigado. Envie MENU quando precisar iniciar outro Tour."
@@ -4142,6 +4154,29 @@ def whatsapp_consultant_by_number(db: dict[str, Any], number: Any) -> dict[str, 
     return None
 
 
+def whatsapp_self_gen_by_number(db: dict[str, Any], number: Any) -> dict[str, Any] | None:
+    """Identify one active Self Gen from the number registered on the record."""
+    try:
+        incoming_variants = set(whatsapp_number_variants(number))
+    except APIError:
+        return None
+    if not incoming_variants:
+        return None
+    matches: list[dict[str, Any]] = []
+    for self_gen in db.get("selfGens", []):
+        if not self_gen.get("active", True):
+            continue
+        try:
+            if incoming_variants & set(whatsapp_number_variants(self_gen.get("whatsappNumber"))):
+                matches.append(self_gen)
+        except APIError:
+            continue
+    # A number shared by more than one Self Gen must never pick an identity at
+    # random. A Self Gen/its generated Consultant may share a number safely,
+    # because the Self Gen is selected before the Consultant below.
+    return matches[0] if len(matches) == 1 else None
+
+
 def whatsapp_hostess_by_number(db: dict[str, Any], number: Any) -> dict[str, Any] | None:
     """Identify one active Hostess from any WhatsApp phone on her login."""
     try:
@@ -4174,7 +4209,7 @@ def whatsapp_unknown_identity_message(number: str) -> dict[str, Any]:
     formats.
     """
     return whatsapp_text_payload(
-        "Este número não está vinculado a um consultor ou hostess ativa no Motoristas Tour. "
+        "Este número não está vinculado a um consultor, Self Gen ou hostess ativa no Motoristas Tour. "
         f"Diagnóstico de homologação {WHATSAPP_LOOKUP_DIAGNOSTIC_VERSION}: "
         f"a Meta identificou este WhatsApp como {number}. Cadastre exatamente "
         "esses dígitos, com DDI e sem espaços."
@@ -4188,6 +4223,18 @@ def whatsapp_free_tours(db: dict[str, Any]) -> list[dict[str, Any]]:
         and not tour.get("selfGuide")
         and not tour.get("consultantId")
         and not tour.get("consultantName")
+        and not tour.get("pendingConsultantRequestId")
+    ])
+
+
+def whatsapp_free_self_gen_tours(db: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only unclaimed Self Gen slots for the WhatsApp Self Gen flow."""
+    return tours_for_display([
+        tour for tour in db.get("tours", [])
+        if tour.get("status") == STATE_AVAILABLE
+        and bool(tour.get("selfGuide"))
+        and not tour.get("selfGenId")
+        and not tour.get("selfGenName")
         and not tour.get("pendingConsultantRequestId")
     ])
 
@@ -4210,7 +4257,8 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
 
     linked_tours = tours_for_display([
         tour for tour in db.get("tours", [])
-        if tour_identity_matches(tour, consultant, "consultantId", "consultantName")
+        if not tour.get("selfGuide")
+        and tour_identity_matches(tour, consultant, "consultantId", "consultantName")
         and tour.get("status") not in TERMINAL_TOUR_STATES
     ])
     waiting_home = next((tour for tour in linked_tours if tour.get("status") == STATE_WAITING_HOME), None)
@@ -4260,6 +4308,77 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
     return whatsapp_list_payload(
         f"Olá, {consultant['name']}. Há {len(tours)} Tour(es) disponível(is). Escolha o seu Tour para solicitar o carrinho no Prestige.{suffix}",
         "Ver opções",
+        rows,
+    )
+
+
+def whatsapp_self_gen_menu_message(db: dict[str, Any], self_gen: dict[str, Any]) -> dict[str, Any]:
+    """Build the Self Gen-only WhatsApp route menu.
+
+    A generated Consultant can share this same phone number, but its normal
+    Tours must not leak into the Self Gen view. The browser remains the place
+    for the explicit "atuar como consultor" switch.
+    """
+    active_request = next(
+        (
+            item for item in db.get("hostessRequests", [])
+            if item.get("selfGenId") == self_gen["id"]
+            and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
+        ),
+        None,
+    )
+    if active_request:
+        label = str(active_request.get("tourLabel") or "Seu Self Gen")
+        driver_name = str(active_request.get("assignedDriverName") or "").strip()
+        status = "foi assumido por " + driver_name if driver_name else "está aguardando um motorista"
+        return whatsapp_text_payload(f"{label}: seu pedido {status}.")
+
+    linked_tours = tours_for_display([
+        tour for tour in db.get("tours", [])
+        if bool(tour.get("selfGuide"))
+        and tour_identity_matches(tour, self_gen, "selfGenId", "selfGenName")
+        and tour.get("status") not in TERMINAL_TOUR_STATES
+    ])
+    waiting_home = next((tour for tour in linked_tours if tour.get("status") == STATE_WAITING_HOME), None)
+    if waiting_home:
+        return whatsapp_button_payload(
+            f"{tour_whatsapp_label(waiting_home)} está aguardando na Casa. Solicite um carrinho quando o grupo precisar continuar.",
+            [(f"selfgen-request:{waiting_home['id']}:CASA", "Solicitar na Casa")],
+        )
+    waiting_gallery = next((tour for tour in linked_tours if tour.get("status") == STATE_WAITING_DESTINATION), None)
+    if waiting_gallery:
+        return whatsapp_gallery_destination_message(
+            db, waiting_gallery, interaction_prefix="selfgen-destination"
+        )
+    in_progress = next((tour for tour in linked_tours if tour.get("status") == STATE_IN_TOUR), None)
+    if in_progress:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(in_progress)} está em atendimento. Aguarde o motorista registrar a próxima etapa."
+        )
+    at_home = next((tour for tour in linked_tours if tour.get("status") == STATE_HOME), None)
+    if at_home:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(at_home)} está na Casa com um motorista. Quando ele for liberado, você receberá a opção de solicitar outro carrinho."
+        )
+    at_destination = next((tour for tour in linked_tours if tour.get("status") == STATE_FINAL_DESTINATION), None)
+    if at_destination:
+        return whatsapp_text_payload(f"{tour_whatsapp_label(at_destination)} está a caminho do destino final.")
+
+    tours = whatsapp_free_self_gen_tours(db)
+    if not tours:
+        return whatsapp_text_payload("Não há Tours Self Gen disponíveis agora. Envie MENU novamente em alguns instantes.")
+    rows = [
+        {
+            "id": f"select-selfgen-tour:{tour['id']}",
+            "title": tour_whatsapp_label(tour)[:24],
+            "description": f"{TRANSFER_SCHEDULES.get(tour.get('wave'), {}).get('label', 'Tour')} - disponível"[:72],
+        }
+        for tour in tours[:10]
+    ]
+    suffix = " Os primeiros Tours Self Gen aparecem abaixo." if len(tours) > len(rows) else ""
+    return whatsapp_list_payload(
+        f"Olá, {self_gen['name']}. Há {len(tours)} Tour(es) Self Gen disponível(is). Escolha o seu Tour para solicitar o carrinho no Prestige.{suffix}",
+        "Ver Tours Self Gen",
         rows,
     )
 
@@ -4544,9 +4663,13 @@ def whatsapp_reply_for_incoming_message(
         return None, None, None
     if not recipient:
         return None, None, None
-    consultant = whatsapp_consultant_by_number(db, recipient)
-    hostess = None if consultant else whatsapp_hostess_by_number(db, recipient)
-    if not consultant and not hostess:
+    # A Self Gen and the generated Consultant can intentionally share one
+    # WhatsApp number. In that case, default the chat to the Self Gen route so
+    # normal Tours are never shown in the Self Gen flow.
+    self_gen = whatsapp_self_gen_by_number(db, recipient)
+    consultant = None if self_gen else whatsapp_consultant_by_number(db, recipient)
+    hostess = None if self_gen or consultant else whatsapp_hostess_by_number(db, recipient)
+    if not self_gen and not consultant and not hostess:
         return recipient, whatsapp_unknown_identity_message(recipient), None
     interaction_id = whatsapp_message_interaction_id(message)
     normalized_action = interaction_id.casefold()
@@ -4648,6 +4771,39 @@ def whatsapp_reply_for_incoming_message(
                 db, "Solicitação de carro para a Galeria enviada. Aguarde um motorista assumir."
             ), car_request
         return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para registrar Tours."), None
+    if self_gen:
+        if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
+            return recipient, whatsapp_self_gen_menu_message(db, self_gen), None
+        if interaction_id.startswith("select-selfgen-tour:"):
+            tour_id = interaction_id.removeprefix("select-selfgen-tour:").strip()
+            tour = next((item for item in whatsapp_free_self_gen_tours(db) if item.get("id") == tour_id), None)
+            if not tour:
+                return recipient, whatsapp_text_payload("Esse Tour Self Gen não está mais disponível. Envie MENU para atualizar a lista."), None
+            return recipient, whatsapp_button_payload(
+                f"{tour_whatsapp_label(tour)} selecionado. Confirme para solicitar o carrinho no Prestige.",
+                [(f"selfgen-request:{tour['id']}:PRESTIGE", "Solicitar carrinho"), ("menu", "Voltar")],
+            ), None
+        if interaction_id.startswith("selfgen-request:"):
+            parts = interaction_id.split(":", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
+            _, tour_id, stage = parts
+            car_request = create_whatsapp_self_gen_route_request(db, self_gen, tour_id, stage)
+            return recipient, whatsapp_request_confirmation(
+                db, f"Solicitação enviada: {car_request['tourLabel']} em {car_request['guestLocationLabel']}. Aguarde um motorista assumir."
+            ), car_request
+        if interaction_id.startswith("selfgen-destination:"):
+            parts = interaction_id.split(":", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
+            _, tour_id, destination_id = parts
+            car_request = create_whatsapp_self_gen_route_request(
+                db, self_gen, tour_id, "GALERIA_EXIT", destination_id,
+            )
+            return recipient, whatsapp_request_confirmation(
+                db, f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
+            ), car_request
+        return recipient, whatsapp_text_payload("Não entendi a opção. Envie MENU para ver seus Tours Self Gen."), None
     if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
         return recipient, whatsapp_menu_message(db, consultant), None
     if interaction_id == "elite-support":
@@ -5125,12 +5281,17 @@ def public_consultant_support_options():
                 item for item in tours
                 if (
                     (
-                        (
-                            item.get("status") == STATE_AVAILABLE
-                            and not item.get("selfGenId")
-                            and not item.get("selfGenName")
+                        item.get("selfGuide")
+                        and (
+                            (
+                                item.get("status") == STATE_AVAILABLE
+                                and not item.get("selfGenId")
+                                and not item.get("selfGenName")
+                            )
+                            or tour_identity_matches(
+                                item, authenticated_consultant, "selfGenId", "selfGenName"
+                            )
                         )
-                        or tour_identity_matches(item, authenticated_consultant, "selfGenId", "selfGenName")
                     )
                     or (
                         linked_consultant
@@ -5538,17 +5699,25 @@ def create_elite_consultant_support_request_endpoint():
     return response
 
 
-def create_whatsapp_consultant_route_request(
+def create_whatsapp_route_request(
     db: dict[str, Any],
-    consultant: dict[str, Any],
+    identity: dict[str, Any],
     tour_id: Any,
     route_stage: str,
     destination_id: Any = None,
+    *,
+    requester_type: str,
 ) -> dict[str, Any]:
-    """Create a route request that the operating team can allocate one or more carts to."""
+    """Create a WhatsApp route request scoped to one Tour identity."""
     normalized_tour_id = str(tour_id or "").strip()
     if not normalized_tour_id:
         raise APIError("Escolha o Tour antes de solicitar o carrinho.")
+    is_self_gen = requester_type == SELF_GEN_REQUESTER
+    if requester_type not in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}:
+        raise APIError("Identidade de solicitação inválida.")
+    identity_id_field = "selfGenId" if is_self_gen else "consultantId"
+    identity_name_field = "selfGenName" if is_self_gen else "consultantName"
+    identity_label = "Self Gen" if is_self_gen else "consultor"
     stage = str(route_stage or "").strip().upper()
     if stage not in CONSULTANT_ROUTE_STAGES:
         raise APIError("A etapa solicitada não está disponível.")
@@ -5561,16 +5730,17 @@ def create_whatsapp_consultant_route_request(
     label = tour_whatsapp_label(tour)
     if tour.get("status") not in expected_states:
         raise APIError(f"{label} não está disponível nesta etapa.", 409)
-    if tour.get("selfGuide"):
-        raise APIError("Este Tour é exclusivo de Self Gen.", 409)
+    if bool(tour.get("selfGuide")) != is_self_gen:
+        target_label = "Self Gen" if tour.get("selfGuide") else "consultor"
+        raise APIError(f"Este Tour é exclusivo de {target_label}.", 409)
     if stage == "PRESTIGE":
-        linked_id = str(tour.get("consultantId") or "").strip()
-        linked_name = normalized_identity_name(tour.get("consultantName"))
-        if linked_id and linked_id != consultant["id"]:
-            raise APIError("Este Tour já está ligado a outro consultor.", 409)
-        if not linked_id and linked_name and linked_name != normalized_identity_name(consultant.get("name")):
-            raise APIError("Este Tour já está ligado a outro consultor.", 409)
-    elif not tour_identity_matches(tour, consultant, "consultantId", "consultantName"):
+        linked_id = str(tour.get(identity_id_field) or "").strip()
+        linked_name = normalized_identity_name(tour.get(identity_name_field))
+        if linked_id and linked_id != identity["id"]:
+            raise APIError(f"Este Tour já está ligado a outro {identity_label}.", 409)
+        if not linked_id and linked_name and linked_name != normalized_identity_name(identity.get("name")):
+            raise APIError(f"Este Tour já está ligado a outro {identity_label}.", 409)
+    elif not tour_identity_matches(tour, identity, identity_id_field, identity_name_field):
         raise APIError("Este Tour não está ligado ao seu WhatsApp.", 409)
     if any(
         item.get("tourId") == tour["id"]
@@ -5589,7 +5759,12 @@ def create_whatsapp_consultant_route_request(
         if not any(item.get("id") == destination.get("id") for item in destinations_for_current_prestige(db)):
             raise APIError("Esse destino não está disponível para o Prestige atual.", 409)
     if stage == "PRESTIGE":
-        confirm_quantity_tour_start(db, tour, consultant_id=consultant["id"])
+        confirm_quantity_tour_start(
+            db,
+            tour,
+            self_gen_id=identity["id"] if is_self_gen else None,
+            consultant_id=identity["id"] if not is_self_gen else None,
+        )
     guest_location = (
         "SELECTION"
         if active_operation_settings(db).get("departurePrestige") == PRESTIGE_SELECTION
@@ -5604,13 +5779,13 @@ def create_whatsapp_consultant_route_request(
     car_request = {
         "id": new_id("supportreq"),
         "status": HOSTESS_REQUEST_OPEN,
-        "requesterType": CONSULTANT_REQUESTER,
+        "requesterType": requester_type,
         "requestedById": None,
-        "requestedByName": consultant["name"],
-        "consultantId": consultant["id"],
-        "consultantName": consultant["name"],
-        "selfGenId": None,
-        "selfGenName": None,
+        "requestedByName": identity["name"],
+        "consultantId": identity["id"] if not is_self_gen else None,
+        "consultantName": identity["name"] if not is_self_gen else None,
+        "selfGenId": identity["id"] if is_self_gen else None,
+        "selfGenName": identity["name"] if is_self_gen else None,
         "note": "Solicitação recebida pelo WhatsApp.",
         "assignedDriverId": None,
         "assignedDriverName": None,
@@ -5638,17 +5813,43 @@ def create_whatsapp_consultant_route_request(
         "updatedAt": created_at,
     })
     whatsapp_actor = {
-        "id": consultant["id"],
-        "name": consultant["name"],
+        "id": identity["id"],
+        "name": identity["name"],
         "username": "whatsapp",
-        "role": ROLE_CONSULTANT,
+        "role": ROLE_SELF_GEN if is_self_gen else ROLE_CONSULTANT,
     }
     destination_text = f" para {car_request['destinationName']}" if car_request["destinationName"] else ""
     log_activity(
         db, whatsapp_actor, tour, tour.get("status"), tour.get("status"),
-        f"{consultant['name']} solicitou carrinho pelo WhatsApp para {car_request['tourLabel']} em {location_label}{destination_text}.",
+        f"{identity['name']} solicitou carrinho pelo WhatsApp para {car_request['tourLabel']} em {location_label}{destination_text}.",
     )
     return car_request
+
+
+def create_whatsapp_consultant_route_request(
+    db: dict[str, Any],
+    consultant: dict[str, Any],
+    tour_id: Any,
+    route_stage: str,
+    destination_id: Any = None,
+) -> dict[str, Any]:
+    return create_whatsapp_route_request(
+        db, consultant, tour_id, route_stage, destination_id,
+        requester_type=CONSULTANT_REQUESTER,
+    )
+
+
+def create_whatsapp_self_gen_route_request(
+    db: dict[str, Any],
+    self_gen: dict[str, Any],
+    tour_id: Any,
+    route_stage: str,
+    destination_id: Any = None,
+) -> dict[str, Any]:
+    return create_whatsapp_route_request(
+        db, self_gen, tour_id, route_stage, destination_id,
+        requester_type=SELF_GEN_REQUESTER,
+    )
 
 
 @app.get("/api/public/consultant-support-requests/<request_id>")
@@ -6739,13 +6940,30 @@ def close_hostess_request(request_id: str):
         db = operational_database()
         user = get_current_user(db)
         car_request = find(db.setdefault("hostessRequests", []), request_id, "Solicitação")
-        require_permission(user, PERMISSION_REQUEST_HOSTESS_CAR, "Seu usuário não possui permissão para encerrar solicitações da Hostess.")
-        if not user_has_permission(user, PERMISSION_MANAGE_SETTINGS) and car_request.get("requestedById") != user["id"]:
-            raise APIError("Você pode encerrar somente a solicitação de carro feita pela sua conta.", 403)
+        may_request_hostess_car = user_has_permission(user, PERMISSION_REQUEST_HOSTESS_CAR)
+        may_manage_hostess_support = user_has_permission(user, PERMISSION_MANAGE_HOSTESS_SUPPORT)
+        is_hostess_call = car_request.get("requesterType", HOSTESS_REQUESTER) == HOSTESS_REQUESTER
+        may_clear_pending_hostess_call = (
+            may_manage_hostess_support
+            and is_hostess_call
+            and not car_request.get("assignedDriverId")
+        )
+        if not may_request_hostess_car and not may_manage_hostess_support:
+            raise APIError("Seu usuário não possui permissão para encerrar solicitações da Hostess.", 403)
+        if (
+            not user_has_permission(user, PERMISSION_MANAGE_SETTINGS)
+            and car_request.get("requestedById") != user["id"]
+            and not may_clear_pending_hostess_call
+        ):
+            raise APIError("Você pode encerrar somente a sua solicitação ou um chamado pendente da Hostess.", 403)
         if car_request.get("status") != HOSTESS_REQUEST_OPEN:
             raise APIError("Esta solicitação já foi encerrada.", 409)
         consultant_request = car_request.get("requesterType") in {CONSULTANT_REQUESTER, SELF_GEN_REQUESTER}
-        close_reason = "COORDENADOR_ENCERROU_APOIO_CONSULTOR" if consultant_request else "HOSTESS_ENCERROU_SOLICITACAO"
+        close_reason = (
+            "COORDENADOR_ENCERROU_APOIO_CONSULTOR"
+            if consultant_request else
+            "MOTORISTA_LIMPOU_CHAMADO_HOSTESS" if may_clear_pending_hostess_call else "HOSTESS_ENCERROU_SOLICITACAO"
+        )
         close_hostess_request_record(db, car_request, user, close_reason)
         request_label = "solicitação de apoio do consultor" if consultant_request else "solicitação de carro da Hostess"
         log_activity(db, user, None, HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_CLOSED, f"{user['name']} encerrou a {request_label}.")

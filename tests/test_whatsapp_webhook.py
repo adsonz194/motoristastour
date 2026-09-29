@@ -478,6 +478,90 @@ class WhatsAppWebhookTest(unittest.TestCase):
         self.assertEqual(duplicate.status_code, 200)
         self.assertEqual(len(self.database["hostessRequests"]), 1)
 
+    def test_self_gen_whatsapp_flow_lists_only_self_gen_tours(self) -> None:
+        self.database["selfGens"] = [{
+            "id": "self_ana",
+            "name": "Ana",
+            "active": True,
+            # This can intentionally be the number also used by the generated
+            # Consultant record. The Self Gen flow must take precedence.
+            "whatsappNumber": self.CONSULTANT_NUMBER,
+        }]
+        self.database["tours"].append({
+            **self.database["tours"][0],
+            "id": "self_01",
+            "groupName": "Self Gen 1",
+            "slotLabel": "Self Gen 1",
+            "selfGuide": True,
+            "consultantId": None,
+            "consultantName": None,
+            "selfGenId": None,
+            "selfGenName": None,
+        })
+
+        menu = self._post_webhook({
+            "id": "wamid-self-gen-menu",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+        self.assertEqual(menu.status_code, 200)
+        rows = self.sent_messages[-1][0][1]["interactive"]["action"]["sections"][0]["rows"]
+        self.assertEqual([row["id"] for row in rows], ["select-selfgen-tour:self_01"])
+
+        selected = self._post_webhook({
+            "id": "wamid-self-gen-select",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "interactive",
+            "interactive": {"type": "list_reply", "list_reply": {"id": "select-selfgen-tour:self_01"}},
+        })
+        self.assertEqual(selected.status_code, 200)
+        button = self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]
+        self.assertEqual(button["id"], "selfgen-request:self_01:PRESTIGE")
+
+        requested = self._post_webhook({
+            "id": "wamid-self-gen-request",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": "selfgen-request:self_01:PRESTIGE"}},
+        })
+        self.assertEqual(requested.status_code, 200)
+        car_request = self.database["hostessRequests"][0]
+        self.assertEqual(car_request["requesterType"], tour_app.SELF_GEN_REQUESTER)
+        self.assertEqual(car_request["selfGenId"], "self_ana")
+        self.assertIsNone(car_request["consultantId"])
+        self.assertEqual(self.database["tours"][0]["consultantId"], None)
+        self_gen_tour = next(tour for tour in self.database["tours"] if tour["id"] == "self_01")
+        self.assertEqual(self_gen_tour["selfGenId"], "self_ana")
+        self_gen_tour["status"] = tour_app.STATE_WAITING_HOME
+        tour_app.notify_whatsapp_consultant_for_route_event(self.database, self_gen_tour, "WAITING_HOME")
+        route_message = self.sent_messages[-1][0][1]
+        self.assertEqual(self.sent_messages[-1][0][0], self.CONSULTANT_NUMBER)
+        self.assertEqual(
+            route_message["interactive"]["action"]["buttons"][0]["reply"]["id"],
+            "selfgen-request:self_01:CASA",
+        )
+
+    def test_consultant_and_elite_whatsapp_menus_omit_self_gen_tours(self) -> None:
+        self.database["consultants"][0]["elite"] = True
+        self.database["tours"].append({
+            **self.database["tours"][0],
+            "id": "self_02",
+            "groupName": "Self Gen 2",
+            "slotLabel": "Self Gen 2",
+            "selfGuide": True,
+        })
+
+        menu = self._post_webhook({
+            "id": "wamid-elite-no-self-gen",
+            "from": self.CONSULTANT_NUMBER,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+        self.assertEqual(menu.status_code, 200)
+        rows = self.sent_messages[-1][0][1]["interactive"]["action"]["sections"][0]["rows"]
+        self.assertEqual({row["id"] for row in rows}, {"elite-support", "select-tour:tour_02"})
+
     def test_invalid_signature_cannot_open_a_request(self) -> None:
         payload = self._webhook_payload({
             "id": "wamid-invalid",

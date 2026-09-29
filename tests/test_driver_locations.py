@@ -1384,6 +1384,45 @@ class DriverLocationApiTest(unittest.TestCase):
         )
         self.assertEqual(unavailable.status_code, 404, unavailable.get_json())
 
+    def test_driver_can_clear_an_unassigned_duplicate_hostess_call(self) -> None:
+        created = self._request(
+            "token-hostess",
+            "POST",
+            "/api/hostess-requests",
+            json={"requestLocation": tour_app.HOSTESS_REQUEST_LOCATION_GALLERY},
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        first_request = next(
+            item for item in self.database["hostessRequests"]
+            if item["id"] == created.get_json()["request"]["id"]
+        )
+        duplicate_request = {
+            **first_request,
+            "id": "hostreq_duplicate",
+            "createdAt": "2026-09-05T10:02:00+00:00",
+            "updatedAt": "2026-09-05T10:02:00+00:00",
+        }
+        self.database["hostessRequests"].insert(0, duplicate_request)
+
+        closed = self._request(
+            "token-driver",
+            "POST",
+            f"/api/hostess-requests/{first_request['id']}/close",
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertEqual(first_request["status"], tour_app.HOSTESS_REQUEST_CLOSED)
+        self.assertEqual(duplicate_request["status"], tour_app.HOSTESS_REQUEST_OPEN)
+
+        # A driver can clean the pending queue, but cannot close a colleague's
+        # assigned Hostess call.
+        duplicate_request.update(assignedDriverId="drv_no_share", assignedDriverName="Outro Motorista")
+        denied = self._request(
+            "token-driver",
+            "POST",
+            f"/api/hostess-requests/{duplicate_request['id']}/close",
+        )
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+
 
 class DriverLocationTimeZonePolicyTest(unittest.TestCase):
     """The cutoff follows Salvador time, independently of the server timezone."""
