@@ -562,6 +562,76 @@ class WhatsAppWebhookTest(unittest.TestCase):
         rows = self.sent_messages[-1][0][1]["interactive"]["action"]["sections"][0]["rows"]
         self.assertEqual({row["id"] for row in rows}, {"elite-support", "select-tour:tour_02"})
 
+    def test_self_gen_enabled_as_consultant_can_support_normal_tours(self) -> None:
+        self_gen_number = "5571888888888"
+        self.database["consultants"].append({
+            "id": "con_ana",
+            "name": "Ana",
+            "active": True,
+            "whatsappNumber": self_gen_number,
+            "generatedFromSelfGenId": "self_ana",
+        })
+        self.database["selfGens"] = [{
+            "id": "self_ana",
+            "name": "Ana",
+            "active": True,
+            "whatsappNumber": self_gen_number,
+            "actsAsConsultant": True,
+            "consultantId": "con_ana",
+        }]
+        self.database["tours"].append({
+            **self.database["tours"][0],
+            "id": "self_03",
+            "groupName": "Self Gen 3",
+            "slotLabel": "Self Gen 3",
+            "selfGuide": True,
+        })
+
+        menu = self._post_webhook({
+            "id": "wamid-self-gen-support-menu",
+            "from": self_gen_number,
+            "type": "text",
+            "text": {"body": "MENU"},
+        })
+        self.assertEqual(menu.status_code, 200)
+        rows = self.sent_messages[-1][0][1]["interactive"]["action"]["sections"][0]["rows"]
+        self.assertEqual(
+            {row["id"] for row in rows},
+            {"select-selfgen-tour:self_03", "selfgen-normal-tours"},
+        )
+
+        normal_menu = self._post_webhook({
+            "id": "wamid-self-gen-support-normal-menu",
+            "from": self_gen_number,
+            "type": "interactive",
+            "interactive": {"type": "list_reply", "list_reply": {"id": "selfgen-normal-tours"}},
+        })
+        self.assertEqual(normal_menu.status_code, 200)
+        normal_row = self.sent_messages[-1][0][1]["interactive"]["action"]["sections"][0]["rows"][0]
+        self.assertEqual(normal_row["id"], "select-selfgen-normal-tour:tour_02")
+
+        selected = self._post_webhook({
+            "id": "wamid-self-gen-support-select",
+            "from": self_gen_number,
+            "type": "interactive",
+            "interactive": {"type": "list_reply", "list_reply": {"id": normal_row["id"]}},
+        })
+        self.assertEqual(selected.status_code, 200)
+        confirm = self.sent_messages[-1][0][1]["interactive"]["action"]["buttons"][0]["reply"]
+        self.assertEqual(confirm["id"], "request:tour_02:PRESTIGE")
+
+        requested = self._post_webhook({
+            "id": "wamid-self-gen-support-request",
+            "from": self_gen_number,
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": confirm["id"]}},
+        })
+        self.assertEqual(requested.status_code, 200)
+        car_request = self.database["hostessRequests"][0]
+        self.assertEqual(car_request["requesterType"], tour_app.CONSULTANT_REQUESTER)
+        self.assertEqual(car_request["consultantId"], "con_ana")
+        self.assertIsNone(car_request["selfGenId"])
+
     def test_invalid_signature_cannot_open_a_request(self) -> None:
         payload = self._webhook_payload({
             "id": "wamid-invalid",

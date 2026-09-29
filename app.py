@@ -4312,17 +4312,30 @@ def whatsapp_menu_message(db: dict[str, Any], consultant: dict[str, Any]) -> dic
     )
 
 
-def whatsapp_self_gen_menu_message(db: dict[str, Any], self_gen: dict[str, Any]) -> dict[str, Any]:
-    """Build the Self Gen-only WhatsApp route menu.
+def whatsapp_linked_consultant_for_self_gen(
+    db: dict[str, Any], self_gen: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Return the optional Consultant identity a Self Gen may cover for."""
+    if not self_gen.get("actsAsConsultant", False):
+        return None
+    consultant_id = str(self_gen.get("consultantId") or "").strip()
+    consultant = next(
+        (item for item in db.get("consultants", []) if item.get("id") == consultant_id),
+        None,
+    )
+    return consultant if consultant and consultant.get("active", True) else None
 
-    A generated Consultant can share this same phone number, but its normal
-    Tours must not leak into the Self Gen view. The browser remains the place
-    for the explicit "atuar como consultor" switch.
-    """
+
+def whatsapp_self_gen_menu_message(db: dict[str, Any], self_gen: dict[str, Any]) -> dict[str, Any]:
+    """Build a Self Gen menu with Self Gen Tours and permitted normal support."""
+    linked_consultant = whatsapp_linked_consultant_for_self_gen(db, self_gen)
     active_request = next(
         (
             item for item in db.get("hostessRequests", [])
-            if item.get("selfGenId") == self_gen["id"]
+            if (
+                item.get("selfGenId") == self_gen["id"]
+                or (linked_consultant and item.get("consultantId") == linked_consultant["id"])
+            )
             and item.get("status") in {HOSTESS_REQUEST_OPEN, HOSTESS_REQUEST_IN_PROGRESS}
         ),
         None,
@@ -4364,21 +4377,85 @@ def whatsapp_self_gen_menu_message(db: dict[str, Any], self_gen: dict[str, Any])
     if at_destination:
         return whatsapp_text_payload(f"{tour_whatsapp_label(at_destination)} está a caminho do destino final.")
 
+    normal_linked_tours = tours_for_display([
+        tour for tour in db.get("tours", [])
+        if linked_consultant
+        and not tour.get("selfGuide")
+        and tour_identity_matches(tour, linked_consultant, "consultantId", "consultantName")
+        and tour.get("status") not in TERMINAL_TOUR_STATES
+    ])
+    normal_waiting_home = next((tour for tour in normal_linked_tours if tour.get("status") == STATE_WAITING_HOME), None)
+    if normal_waiting_home:
+        return whatsapp_button_payload(
+            f"{tour_whatsapp_label(normal_waiting_home)} está aguardando na Casa. Solicite um carrinho quando o grupo precisar continuar.",
+            [(f"request:{normal_waiting_home['id']}:CASA", "Solicitar na Casa")],
+        )
+    normal_waiting_gallery = next((tour for tour in normal_linked_tours if tour.get("status") == STATE_WAITING_DESTINATION), None)
+    if normal_waiting_gallery:
+        return whatsapp_gallery_destination_message(db, normal_waiting_gallery)
+    normal_in_progress = next((tour for tour in normal_linked_tours if tour.get("status") == STATE_IN_TOUR), None)
+    if normal_in_progress:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(normal_in_progress)} está em atendimento. Aguarde o motorista registrar a próxima etapa."
+        )
+    normal_at_home = next((tour for tour in normal_linked_tours if tour.get("status") == STATE_HOME), None)
+    if normal_at_home:
+        return whatsapp_text_payload(
+            f"{tour_whatsapp_label(normal_at_home)} está na Casa com um motorista. Quando ele for liberado, você receberá a opção de solicitar outro carrinho."
+        )
+    normal_at_destination = next((tour for tour in normal_linked_tours if tour.get("status") == STATE_FINAL_DESTINATION), None)
+    if normal_at_destination:
+        return whatsapp_text_payload(f"{tour_whatsapp_label(normal_at_destination)} está a caminho do destino final.")
+
     tours = whatsapp_free_self_gen_tours(db)
-    if not tours:
-        return whatsapp_text_payload("Não há Tours Self Gen disponíveis agora. Envie MENU novamente em alguns instantes.")
+    normal_tours = whatsapp_free_tours(db) if linked_consultant else []
+    if not tours and not normal_tours:
+        return whatsapp_text_payload("Não há Tours disponíveis agora. Envie MENU novamente em alguns instantes.")
     rows = [
         {
             "id": f"select-selfgen-tour:{tour['id']}",
             "title": tour_whatsapp_label(tour)[:24],
             "description": f"{TRANSFER_SCHEDULES.get(tour.get('wave'), {}).get('label', 'Tour')} - disponível"[:72],
         }
+        for tour in tours[:9 if normal_tours else 10]
+    ]
+    if normal_tours:
+        rows.append({
+            "id": "selfgen-normal-tours",
+            "title": "Tours normais para apoio",
+            "description": f"{len(normal_tours)} Tour(es) disponível(is)"[:72],
+        })
+    self_gen_suffix = " Os primeiros Tours Self Gen aparecem abaixo." if len(tours) > (9 if normal_tours else 10) else ""
+    normal_suffix = f" Há também {len(normal_tours)} Tour(es) normal(is) para apoio." if normal_tours else ""
+    return whatsapp_list_payload(
+        f"Olá, {self_gen['name']}. Há {len(tours)} Tour(es) Self Gen disponível(is).{normal_suffix} Escolha uma opção para solicitar o carrinho no Prestige.{self_gen_suffix}",
+        "Ver opções",
+        rows,
+    )
+
+
+def whatsapp_self_gen_normal_tours_message(
+    db: dict[str, Any], self_gen: dict[str, Any]
+) -> dict[str, Any]:
+    """List normal Tour slots only for a Self Gen enabled as Consultant."""
+    linked_consultant = whatsapp_linked_consultant_for_self_gen(db, self_gen)
+    if not linked_consultant:
+        return whatsapp_text_payload("Seu cadastro Self Gen não está habilitado para apoiar Tours normais.")
+    tours = whatsapp_free_tours(db)
+    if not tours:
+        return whatsapp_text_payload("Não há Tours normais disponíveis para apoio agora.")
+    rows = [
+        {
+            "id": f"select-selfgen-normal-tour:{tour['id']}",
+            "title": tour_whatsapp_label(tour)[:24],
+            "description": f"{TRANSFER_SCHEDULES.get(tour.get('wave'), {}).get('label', 'Tour')} - apoio como consultor"[:72],
+        }
         for tour in tours[:10]
     ]
-    suffix = " Os primeiros Tours Self Gen aparecem abaixo." if len(tours) > len(rows) else ""
+    suffix = " Os primeiros Tours normais aparecem abaixo." if len(tours) > len(rows) else ""
     return whatsapp_list_payload(
-        f"Olá, {self_gen['name']}. Há {len(tours)} Tour(es) Self Gen disponível(is). Escolha o seu Tour para solicitar o carrinho no Prestige.{suffix}",
-        "Ver Tours Self Gen",
+        f"Escolha o Tour normal que você assumirá como consultor.{suffix}",
+        "Ver Tours normais",
         rows,
     )
 
@@ -4774,6 +4851,8 @@ def whatsapp_reply_for_incoming_message(
     if self_gen:
         if not normalized_action or normalized_action in {"menu", "oi", "olá", "ola", "iniciar", "tours"}:
             return recipient, whatsapp_self_gen_menu_message(db, self_gen), None
+        if interaction_id == "selfgen-normal-tours":
+            return recipient, whatsapp_self_gen_normal_tours_message(db, self_gen), None
         if interaction_id.startswith("select-selfgen-tour:"):
             tour_id = interaction_id.removeprefix("select-selfgen-tour:").strip()
             tour = next((item for item in whatsapp_free_self_gen_tours(db) if item.get("id") == tour_id), None)
@@ -4782,6 +4861,18 @@ def whatsapp_reply_for_incoming_message(
             return recipient, whatsapp_button_payload(
                 f"{tour_whatsapp_label(tour)} selecionado. Confirme para solicitar o carrinho no Prestige.",
                 [(f"selfgen-request:{tour['id']}:PRESTIGE", "Solicitar carrinho"), ("menu", "Voltar")],
+            ), None
+        if interaction_id.startswith("select-selfgen-normal-tour:"):
+            linked_consultant = whatsapp_linked_consultant_for_self_gen(db, self_gen)
+            tour_id = interaction_id.removeprefix("select-selfgen-normal-tour:").strip()
+            tour = next((item for item in whatsapp_free_tours(db) if item.get("id") == tour_id), None)
+            if not linked_consultant:
+                return recipient, whatsapp_text_payload("Seu cadastro Self Gen não está habilitado para apoiar Tours normais."), None
+            if not tour:
+                return recipient, whatsapp_text_payload("Esse Tour normal não está mais disponível. Envie MENU para atualizar a lista."), None
+            return recipient, whatsapp_button_payload(
+                f"{tour_whatsapp_label(tour)} selecionado para apoio. Confirme para solicitar o carrinho no Prestige como consultor.",
+                [(f"request:{tour['id']}:PRESTIGE", "Solicitar carrinho"), ("menu", "Voltar")],
             ), None
         if interaction_id.startswith("selfgen-request:"):
             parts = interaction_id.split(":", 2)
@@ -4799,6 +4890,28 @@ def whatsapp_reply_for_incoming_message(
             _, tour_id, destination_id = parts
             car_request = create_whatsapp_self_gen_route_request(
                 db, self_gen, tour_id, "GALERIA_EXIT", destination_id,
+            )
+            return recipient, whatsapp_request_confirmation(
+                db, f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
+            ), car_request
+        if interaction_id.startswith("request:"):
+            linked_consultant = whatsapp_linked_consultant_for_self_gen(db, self_gen)
+            parts = interaction_id.split(":", 2)
+            if not linked_consultant or len(parts) != 3 or not parts[1] or not parts[2]:
+                return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
+            _, tour_id, stage = parts
+            car_request = create_whatsapp_consultant_route_request(db, linked_consultant, tour_id, stage)
+            return recipient, whatsapp_request_confirmation(
+                db, f"Solicitação enviada: {car_request['tourLabel']} em {car_request['guestLocationLabel']}. Aguarde um motorista assumir."
+            ), car_request
+        if interaction_id.startswith("destination:"):
+            linked_consultant = whatsapp_linked_consultant_for_self_gen(db, self_gen)
+            parts = interaction_id.split(":", 2)
+            if not linked_consultant or len(parts) != 3 or not parts[1] or not parts[2]:
+                return recipient, whatsapp_text_payload("Essa opção expirou. Envie MENU para atualizar."), None
+            _, tour_id, destination_id = parts
+            car_request = create_whatsapp_consultant_route_request(
+                db, linked_consultant, tour_id, "GALERIA_EXIT", destination_id,
             )
             return recipient, whatsapp_request_confirmation(
                 db, f"Solicitação enviada: {car_request['tourLabel']} da Galeria para {car_request['destinationName']}. Aguarde um motorista assumir."
